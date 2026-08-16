@@ -32,11 +32,11 @@ jobs:
       - name: Deploy to Firebase (pulse-app-93)
         run: |
           if [ -n "$FIREBASE_TOKEN" ]; then
-            npx firebase-tools deploy --only functions,firestore --token "$FIREBASE_TOKEN" --project pulse-app-93
+            npx firebase-tools deploy --force --only functions,firestore --token "$FIREBASE_TOKEN" --project pulse-app-93
           elif [ -n "$GCP_SA_KEY" ]; then
             echo "$GCP_SA_KEY" > sa.json
             export GOOGLE_APPLICATION_CREDENTIALS=$(pwd)/sa.json
-            npx firebase-tools deploy --only functions,firestore --project pulse-app-93
+            npx firebase-tools deploy --force --only functions,firestore --project pulse-app-93
           else
             echo "Error: No se encontró ni FIREBASE_TOKEN ni FIREBASE_SERVICE_ACCOUNT_PULSE_APP_93 en los secrets de GitHub."
             exit 1
