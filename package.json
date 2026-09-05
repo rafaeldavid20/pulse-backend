@@ -5,7 +5,8 @@
   "main": "index.js",
   "scripts": {
     "build": "cd functions && npm run build",
-    "deploy": "firebase deploy --only functions,firestore"
+    "deploy": "firebase deploy --only functions,firestore",
+    "dev:emu": "npm run build && firebase emulators:start --import=./.emulator-data --export-on-exit=./.emulator-data"
   },
   "keywords": [
     "firebase",

@@ -57,5 +57,14 @@ service cloud.firestore {
     match /invitations/{invitationId} {
       allow read, write: if isAuthenticated();
     }
+
+    // Atomic issue-numbering counters (workspaceId_teamId -> value).
+    // Written both by the pulsePlatformAction Cloud Function and, as a
+    // fallback, directly from the client (see nextIssueNumber() in
+    // pulse-app/src/lib/firestore.ts) — must stay writable client-side
+    // until that fallback path is retired.
+    match /counters/{counterId} {
+      allow read, write: if isAuthenticated();
+    }
   }
 }

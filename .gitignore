@@ -4,4 +4,7 @@ functions/lib/
 .firebase/
 firebase-debug.log
 firebase-debug.*.log
+firestore-debug.log
+ui-debug.log
 .DS_Store
+.emulator-data/

@@ -2,6 +2,7 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { cleanUndefined } from '../../common/utils/clean';
+import { ISSUE_WRITABLE_FIELDS, pickWritableFields } from '../../common/utils/issue-fields';
 
 export class UpdateIssueAction extends PlatformActionHandler {
   constructor(request: PlatformActionRequest, callerUid?: string, callerEmail?: string) {
@@ -23,11 +24,11 @@ export class UpdateIssueAction extends PlatformActionHandler {
       throw new Error(`El issue con ID '${issueId}' no existe.`);
     }
 
-    const rawPayload: Record<string, any> = { ...data };
-    delete rawPayload.id;
-
+    // Whitelist, not a blind spread of `data`: this can be called from an MCP
+    // tool driven by an LLM, and a spread would let it overwrite
+    // server-owned fields like `workspaceId`, `identifier` or `creatorId`.
     const updates = cleanUndefined({
-      ...rawPayload,
+      ...pickWritableFields(data, ISSUE_WRITABLE_FIELDS),
       updatedAt: new Date().toISOString(),
     });
 
