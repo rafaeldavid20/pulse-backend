@@ -66,5 +66,13 @@ service cloud.firestore {
     match /counters/{counterId} {
       allow read, write: if isAuthenticated();
     }
+
+    // API keys for MCP access: contain a secret hash. Only the Admin SDK
+    // (Platform Actions apikeys.create/revoke/list, and the MCP request
+    // authenticator) ever reads or writes this collection — never the
+    // client, so there is no client-side fallback to preserve here.
+    match /api_keys/{keyId} {
+      allow read, write: if false;
+    }
   }
 }

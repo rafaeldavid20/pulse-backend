@@ -1,6 +1,8 @@
 import { Request as ExpressRequest, Response as ExpressResponse } from 'express';
 import { onRequest } from 'firebase-functions/v2/https';
 import { buildMcpTransport } from './server';
+import { authenticateRequest, McpAuthError, McpPrincipal } from './auth';
+import { mcpKeyPepper } from '../common/secrets';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -21,7 +23,7 @@ const CORS_HEADERS = {
  * firebase-functions has already consumed. Building the web Request
  * directly from the already-parsed `req.body` sidesteps that entirely.
  */
-async function bridgeToWebFetch(req: ExpressRequest, res: ExpressResponse) {
+async function bridgeToWebFetch(req: ExpressRequest, res: ExpressResponse, principal: McpPrincipal) {
   const url = `https://${req.headers.host ?? 'localhost'}${req.originalUrl}`;
   const headers = new Headers();
   for (const [key, value] of Object.entries(req.headers)) {
@@ -38,7 +40,7 @@ async function bridgeToWebFetch(req: ExpressRequest, res: ExpressResponse) {
     ...(hasBody ? { body: JSON.stringify(req.body), duplex: 'half' as const } : {}),
   });
 
-  const transport = await buildMcpTransport();
+  const transport = await buildMcpTransport(principal);
   const webResponse = await transport.handleRequest(webRequest, {
     parsedBody: hasBody ? req.body : undefined,
   });
@@ -50,7 +52,7 @@ async function bridgeToWebFetch(req: ExpressRequest, res: ExpressResponse) {
 }
 
 export const pulseMcp = onRequest(
-  { region: 'us-east4', memory: '512MiB', timeoutSeconds: 60 },
+  { region: 'us-east4', memory: '512MiB', timeoutSeconds: 60, secrets: [mcpKeyPepper] },
   async (req, res) => {
     for (const [key, value] of Object.entries(CORS_HEADERS)) res.setHeader(key, value);
 
@@ -59,13 +61,24 @@ export const pulseMcp = onRequest(
       return;
     }
     if (req.method === 'GET') {
-      // SSE streaming isn't needed for this spike/tool-only server.
+      // SSE streaming isn't needed for this tool-only server.
       res.status(405).send('Method Not Allowed: this MCP server only supports POST.');
       return;
     }
 
+    let principal: McpPrincipal;
     try {
-      await bridgeToWebFetch(req, res);
+      principal = await authenticateRequest(req.headers.authorization);
+    } catch (error) {
+      if (error instanceof McpAuthError) {
+        res.status(error.status).json({ error: error.message });
+        return;
+      }
+      throw error;
+    }
+
+    try {
+      await bridgeToWebFetch(req, res, principal);
     } catch (error) {
       console.error('[pulseMcp] Transport error:', error);
       res.status(500).json({ error: 'Internal MCP transport error' });

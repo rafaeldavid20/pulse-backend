@@ -10,7 +10,10 @@ export type PlatformActionCode =
   | 'projects.update'
   | 'projects.delete'
   | 'workspaces.create'
-  | 'workspaces.inviteMember';
+  | 'workspaces.inviteMember'
+  | 'apikeys.create'
+  | 'apikeys.revoke'
+  | 'apikeys.list';
 
 export interface PlatformActionCaller {
   readonly uid?: string;

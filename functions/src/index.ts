@@ -2,6 +2,7 @@ import { initializeApp } from 'firebase-admin/app';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { PlatformActionRequest } from './common/platform-actions/interfaces';
 import { dispatchPlatformAction } from './router/platform-actions-router';
+import { mcpKeyPepper } from './common/secrets';
 export { pulseMcp } from './mcp';
 
 // Initialize Firebase Admin SDK once
@@ -16,6 +17,7 @@ export const pulsePlatformAction = onCall(
   {
     cors: true,
     region: 'us-east4',
+    secrets: [mcpKeyPepper],
   },
   async (request) => {
     const callerUid = request.auth?.uid;

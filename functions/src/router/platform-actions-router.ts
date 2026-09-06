@@ -7,6 +7,9 @@ import { UpdateProjectAction } from '../actions/projects/update-project';
 import { DeleteProjectAction } from '../actions/projects/delete-project';
 import { CreateWorkspaceAction } from '../actions/workspaces/create-workspace';
 import { InviteMemberAction } from '../actions/workspaces/invite-member';
+import { CreateApiKeyAction } from '../actions/apikeys/create-api-key';
+import { RevokeApiKeyAction } from '../actions/apikeys/revoke-api-key';
+import { ListApiKeysAction } from '../actions/apikeys/list-api-keys';
 
 export async function dispatchPlatformAction(
   request: PlatformActionRequest,
@@ -39,6 +42,13 @@ export async function dispatchPlatformAction(
       return new CreateWorkspaceAction(request, callerUid, callerEmail).run();
     case 'workspaces.inviteMember':
       return new InviteMemberAction(request, callerUid, callerEmail).run();
+
+    case 'apikeys.create':
+      return new CreateApiKeyAction(request, callerUid, callerEmail).run();
+    case 'apikeys.revoke':
+      return new RevokeApiKeyAction(request, callerUid, callerEmail).run();
+    case 'apikeys.list':
+      return new ListApiKeysAction(request, callerUid, callerEmail).run();
 
     default:
       return {

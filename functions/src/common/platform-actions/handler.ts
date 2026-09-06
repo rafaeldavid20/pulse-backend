@@ -52,6 +52,24 @@ export abstract class PlatformActionHandler {
   }
 
   /**
+   * Checks whether the current caller is a member of the given workspace, by
+   * looking up the `members/{workspaceId}_{uid}` doc (the id convention used
+   * everywhere a member is created — see create-workspace.ts,
+   * invite-member.ts). Returns false for callers with no uid.
+   *
+   * Not used by every action yet — introduced for the first actions that
+   * need real per-workspace authorization (API keys) rather than the
+   * default "any authenticated caller" check. Existing actions keep their
+   * current `authorize()` until they're migrated in a later pass.
+   */
+  protected async isWorkspaceMember(workspaceId: string): Promise<boolean> {
+    if (!this.caller.uid) return false;
+    const db = getFirestore();
+    const memberSnap = await db.collection('members').doc(`${workspaceId}_${this.caller.uid}`).get();
+    return memberSnap.exists;
+  }
+
+  /**
    * Abstract core execution method implemented by each specific Platform Action
    */
   protected abstract handleAction(): Promise<Record<string, any>>;
