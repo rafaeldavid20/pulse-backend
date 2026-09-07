@@ -22,7 +22,8 @@ export type PlatformActionCode =
   | 'github.createInstallUrl'
   | 'github.status'
   | 'github.createBranch'
-  | 'github.linkPr';
+  | 'github.linkPr'
+  | 'github.syncFromWebhook';
 
 export interface PlatformActionCaller {
   readonly uid?: string;

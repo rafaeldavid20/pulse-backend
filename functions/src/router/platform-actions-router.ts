@@ -19,6 +19,7 @@ import { CreateInstallUrlAction } from '../actions/github/create-install-url';
 import { GithubStatusAction } from '../actions/github/github-status';
 import { CreateBranchAction } from '../actions/github/create-branch';
 import { LinkPrAction } from '../actions/github/link-pr';
+import { SyncFromWebhookAction } from '../actions/github/sync-from-webhook';
 
 export async function dispatchPlatformAction(
   request: PlatformActionRequest,
@@ -78,6 +79,8 @@ export async function dispatchPlatformAction(
       return new CreateBranchAction(request, callerUid, callerEmail).run();
     case 'github.linkPr':
       return new LinkPrAction(request, callerUid, callerEmail).run();
+    case 'github.syncFromWebhook':
+      return new SyncFromWebhookAction(request, callerUid, callerEmail).run();
 
     default:
       return {

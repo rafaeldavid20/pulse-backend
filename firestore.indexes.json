@@ -7,6 +7,15 @@
         { "fieldPath": "issueId", "order": "ASCENDING" },
         { "fieldPath": "createdAt", "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "issues",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "workspaceId", "order": "ASCENDING" },
+        { "fieldPath": "git.repoFullName", "order": "ASCENDING" },
+        { "fieldPath": "git.branch", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

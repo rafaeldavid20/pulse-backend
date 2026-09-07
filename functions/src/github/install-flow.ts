@@ -74,6 +74,11 @@ export const githubSetup = onRequest(
             workspaceId: claims.workspaceId,
             accountLogin: installation.account.login,
             repositories: repos.map((r) => ({ id: r.id, fullName: r.full_name, defaultBranch: r.default_branch })),
+            // Flat, alongside the detailed `repositories` above — Firestore
+            // can't query equality on a field *inside* an array of objects,
+            // only `array-contains` on a plain array. The webhook handler
+            // needs "which workspace owns repo X" as a query, not a scan.
+            repositoryFullNames: repos.map((r) => r.full_name),
             connectedBy: claims.uid,
             connectedAt: new Date().toISOString(),
           },

@@ -5,6 +5,7 @@ import { dispatchPlatformAction } from './router/platform-actions-router';
 import { mcpKeyPepper, githubAppId, githubAppPrivateKeyB64, githubAppSlug } from './common/secrets';
 export { pulseMcp } from './mcp';
 export { githubSetup, githubCallback } from './github/install-flow';
+export { githubWebhook } from './github/webhook';
 
 // Initialize Firebase Admin SDK once
 initializeApp();
