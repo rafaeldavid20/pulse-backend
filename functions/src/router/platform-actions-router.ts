@@ -10,6 +10,11 @@ import { InviteMemberAction } from '../actions/workspaces/invite-member';
 import { CreateApiKeyAction } from '../actions/apikeys/create-api-key';
 import { RevokeApiKeyAction } from '../actions/apikeys/revoke-api-key';
 import { ListApiKeysAction } from '../actions/apikeys/list-api-keys';
+import { CreateAgentAction } from '../actions/agents/create-agent';
+import { CreateCommentAction } from '../actions/comments/create-comment';
+import { ClaimIssueAction } from '../actions/issues/claim-issue';
+import { ClaimNextIssueAction } from '../actions/issues/claim-next-issue';
+import { ReleaseIssueAction } from '../actions/issues/release-issue';
 
 export async function dispatchPlatformAction(
   request: PlatformActionRequest,
@@ -49,6 +54,17 @@ export async function dispatchPlatformAction(
       return new RevokeApiKeyAction(request, callerUid, callerEmail).run();
     case 'apikeys.list':
       return new ListApiKeysAction(request, callerUid, callerEmail).run();
+
+    case 'agents.create':
+      return new CreateAgentAction(request, callerUid, callerEmail).run();
+    case 'comments.create':
+      return new CreateCommentAction(request, callerUid, callerEmail).run();
+    case 'issues.claim':
+      return new ClaimIssueAction(request, callerUid, callerEmail).run();
+    case 'issues.claimNext':
+      return new ClaimNextIssueAction(request, callerUid, callerEmail).run();
+    case 'issues.release':
+      return new ReleaseIssueAction(request, callerUid, callerEmail).run();
 
     default:
       return {

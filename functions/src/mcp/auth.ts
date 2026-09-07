@@ -14,6 +14,12 @@ export interface McpPrincipal {
   scopes: string[];
   source: 'api_key';
   apiKeyId: string;
+  /**
+   * Uid of the user who created this key. Write tools authorize as
+   * `agentId ?? createdBy` — a personal (non-agent) key still needs *some*
+   * uid to check workspace membership against for `authorize()`.
+   */
+  createdBy: string;
 }
 
 export class McpAuthError extends Error {
@@ -72,5 +78,6 @@ export async function authenticateRequest(authorizationHeader: string | undefine
     scopes: Array.isArray(record.scopes) ? record.scopes : [],
     source: 'api_key',
     apiKeyId: parsed.keyId,
+    createdBy: record.createdBy,
   };
 }

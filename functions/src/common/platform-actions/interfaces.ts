@@ -13,7 +13,12 @@ export type PlatformActionCode =
   | 'workspaces.inviteMember'
   | 'apikeys.create'
   | 'apikeys.revoke'
-  | 'apikeys.list';
+  | 'apikeys.list'
+  | 'comments.create'
+  | 'agents.create'
+  | 'issues.claim'
+  | 'issues.claimNext'
+  | 'issues.release';
 
 export interface PlatformActionCaller {
   readonly uid?: string;

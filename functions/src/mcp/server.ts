@@ -17,9 +17,11 @@ export async function buildMcpTransport(principal: McpPrincipal) {
     '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js'
   );
   const { registerReadTools } = await import('./tools/read');
+  const { registerWriteTools } = await import('./tools/write');
 
   const server = new McpServer({ name: 'pulse-mcp', version: '0.1.0' });
   registerReadTools(server, principal);
+  registerWriteTools(server, principal);
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,

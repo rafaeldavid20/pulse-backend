@@ -10,12 +10,12 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { McpPrincipal } from '../auth';
 
-function textResult(data: unknown) {
+export function textResult(data: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
 }
 
 /** Resolves `ENG-142` -> its Firestore doc, or an `issue-xxxx` doc id directly. */
-async function findIssue(workspaceId: string, identifier: string) {
+export async function findIssue(workspaceId: string, identifier: string) {
   const db = getFirestore();
   if (identifier.startsWith('issue-')) {
     const snap = await db.collection('issues').doc(identifier).get();
@@ -29,6 +29,18 @@ async function findIssue(workspaceId: string, identifier: string) {
     .limit(1)
     .get();
   return q.empty ? null : q.docs[0];
+}
+
+/** Resolves a team key (e.g. "ENG") to its doc within the workspace, or null if none matches. */
+export async function findTeamByKey(workspaceId: string, teamKey: string) {
+  const db = getFirestore();
+  const snap = await db
+    .collection('teams')
+    .where('workspaceId', '==', workspaceId)
+    .where('key', '==', teamKey.toUpperCase())
+    .limit(1)
+    .get();
+  return snap.empty ? null : snap.docs[0];
 }
 
 /**

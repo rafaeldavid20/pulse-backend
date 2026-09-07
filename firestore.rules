@@ -74,5 +74,22 @@ service cloud.firestore {
     match /api_keys/{keyId} {
       allow read, write: if false;
     }
+
+    // Comments on issues. Same openness as issues/projects for now — not
+    // hardened until Fase 5. Mirrored in pulse-app/firestore.rules too:
+    // whichever repo's workflow deploys rules last wins (see the plan's
+    // "two firestore.rules" known issue), so a collection the client needs
+    // open must be declared identically in both files, not just this one.
+    match /comments/{commentId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Operational agent config (defaultRepo, autonomousMode, etc). Admin SDK
+    // only via the agents.create Platform Action — no part of the app reads
+    // it directly (the agent's *presence* in the UI comes from its `members`
+    // doc, not this collection).
+    match /agents/{agentId} {
+      allow read, write: if false;
+    }
   }
 }
