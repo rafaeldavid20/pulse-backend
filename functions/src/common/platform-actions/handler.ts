@@ -45,10 +45,21 @@ export abstract class PlatformActionHandler {
   }
 
   /**
-   * Authorization check — override in subclass to enforce custom permission rules
+   * Authorization check — override in subclass to enforce custom permission
+   * rules. The default requires a real authenticated caller: it deliberately
+   * does NOT grant access via `isFromSystem`. `isFromSystem` is `!callerUid`
+   * (handler.ts constructor), which means a raw unauthenticated HTTP call to
+   * the `pulsePlatformAction` callable (no Firebase ID token, so
+   * `request.auth` is empty) looks exactly like a legitimate internal
+   * "system" caller. Any action that genuinely needs to run without a human
+   * caller (currently only `github.syncFromWebhook`, gated by the webhook's
+   * own HMAC signature check before it ever reaches the dispatcher) must
+   * override this and check `this.caller.isFromSystem` itself — that's an
+   * explicit opt-in per action instead of an implicit grant for every action
+   * that forgets to override this method.
    */
   protected async authorize(): Promise<boolean> {
-    return !!this.caller.uid || this.caller.isFromSystem;
+    return !!this.caller.uid;
   }
 
   /**
@@ -56,17 +67,30 @@ export abstract class PlatformActionHandler {
    * looking up the `members/{workspaceId}_{uid}` doc (the id convention used
    * everywhere a member is created — see create-workspace.ts,
    * invite-member.ts). Returns false for callers with no uid.
-   *
-   * Not used by every action yet — introduced for the first actions that
-   * need real per-workspace authorization (API keys) rather than the
-   * default "any authenticated caller" check. Existing actions keep their
-   * current `authorize()` until they're migrated in a later pass.
    */
   protected async isWorkspaceMember(workspaceId: string): Promise<boolean> {
     if (!this.caller.uid) return false;
     const db = getFirestore();
     const memberSnap = await db.collection('members').doc(`${workspaceId}_${this.caller.uid}`).get();
     return memberSnap.exists;
+  }
+
+  /**
+   * Like `isWorkspaceMember`, but additionally requires the member's `role`
+   * to be `minRole` or higher (`admin` and `owner` both satisfy `minRole:
+   * 'admin'`; only `owner` satisfies `minRole: 'owner'`). Use this for
+   * actions with real privilege implications — e.g. inviting a new member —
+   * where "any member" isn't a tight enough check.
+   */
+  protected async assertWorkspaceMember(workspaceId: string, minRole?: 'admin' | 'owner'): Promise<boolean> {
+    if (!this.caller.uid) return false;
+    const db = getFirestore();
+    const memberSnap = await db.collection('members').doc(`${workspaceId}_${this.caller.uid}`).get();
+    if (!memberSnap.exists) return false;
+    if (!minRole) return true;
+    const role = memberSnap.data()!.role;
+    if (minRole === 'owner') return role === 'owner';
+    return role === 'owner' || role === 'admin';
   }
 
   /**

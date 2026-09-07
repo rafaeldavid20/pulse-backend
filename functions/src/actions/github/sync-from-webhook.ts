@@ -31,6 +31,14 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
     super('github.syncFromWebhook', request, callerUid, callerEmail);
   }
 
+  // The base class no longer grants access to `isFromSystem` callers by
+  // default (see handler.ts) — this action is the one legitimate exception,
+  // so it opts in explicitly. The real gate is the HMAC signature check in
+  // webhook.ts, which runs before this action is ever dispatched.
+  protected async authorize(): Promise<boolean> {
+    return this.caller.isFromSystem;
+  }
+
   protected async handleAction(): Promise<Record<string, any>> {
     const db = getFirestore();
     const input = this.action.data as WebhookSyncInput;

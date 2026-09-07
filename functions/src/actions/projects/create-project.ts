@@ -5,8 +5,16 @@ import { PlatformActionRequest } from '../../common/platform-actions/interfaces'
 import { cleanUndefined } from '../../common/utils/clean';
 
 export class CreateProjectAction extends PlatformActionHandler {
+  private workspaceId?: string;
+
   constructor(request: PlatformActionRequest, callerUid?: string, callerEmail?: string) {
     super('projects.create', request, callerUid, callerEmail);
+    this.workspaceId = request.data?.workspaceId;
+  }
+
+  protected async authorize(): Promise<boolean> {
+    if (!this.workspaceId) return false;
+    return this.isWorkspaceMember(this.workspaceId);
   }
 
   protected async handleAction(): Promise<Record<string, any>> {

@@ -5,8 +5,19 @@ import { PlatformActionRequest } from '../../common/platform-actions/interfaces'
 import { cleanUndefined } from '../../common/utils/clean';
 
 export class InviteMemberAction extends PlatformActionHandler {
+  private workspaceId?: string;
+
   constructor(request: PlatformActionRequest, callerUid?: string, callerEmail?: string) {
     super('workspaces.inviteMember', request, callerUid, callerEmail);
+    this.workspaceId = request.data?.workspaceId;
+  }
+
+  // minRole: 'admin' — inviting a member (with any role, including
+  // 'owner') is a real privilege operation; "any member of the workspace"
+  // isn't a tight enough check for it.
+  protected async authorize(): Promise<boolean> {
+    if (!this.workspaceId) return false;
+    return this.assertWorkspaceMember(this.workspaceId, 'admin');
   }
 
   protected async handleAction(): Promise<Record<string, any>> {

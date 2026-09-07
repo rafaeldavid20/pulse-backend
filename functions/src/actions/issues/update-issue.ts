@@ -5,8 +5,24 @@ import { cleanUndefined } from '../../common/utils/clean';
 import { ISSUE_WRITABLE_FIELDS, pickWritableFields } from '../../common/utils/issue-fields';
 
 export class UpdateIssueAction extends PlatformActionHandler {
+  private issueId?: string;
+  private resolvedWorkspaceId?: string;
+
   constructor(request: PlatformActionRequest, callerUid?: string, callerEmail?: string) {
     super('issues.update', request, callerUid, callerEmail);
+    this.issueId = request.data?.id;
+  }
+
+  // Loads the issue to authorize against its *real* workspaceId — trusting
+  // a client-supplied workspaceId would let anyone update any workspace's
+  // issue just by guessing/copying an issueId (same lesson as
+  // comments.create / issues.claim).
+  protected async authorize(): Promise<boolean> {
+    if (!this.issueId) return false;
+    const snap = await getFirestore().collection('issues').doc(this.issueId).get();
+    if (!snap.exists) return false;
+    this.resolvedWorkspaceId = snap.data()!.workspaceId;
+    return this.isWorkspaceMember(this.resolvedWorkspaceId!);
   }
 
   protected async handleAction(): Promise<Record<string, any>> {

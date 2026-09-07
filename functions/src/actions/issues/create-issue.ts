@@ -7,8 +7,16 @@ import { nextIssueNumber } from '../../common/utils/counters';
 import { ISSUE_WRITABLE_FIELDS, pickWritableFields } from '../../common/utils/issue-fields';
 
 export class CreateIssueAction extends PlatformActionHandler {
+  private workspaceId?: string;
+
   constructor(request: PlatformActionRequest, callerUid?: string, callerEmail?: string) {
     super('issues.create', request, callerUid, callerEmail);
+    this.workspaceId = request.data?.workspaceId;
+  }
+
+  protected async authorize(): Promise<boolean> {
+    if (!this.workspaceId) return false;
+    return this.isWorkspaceMember(this.workspaceId);
   }
 
   protected async handleAction(): Promise<Record<string, any>> {
