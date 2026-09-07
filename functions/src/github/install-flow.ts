@@ -1,6 +1,6 @@
 import { onRequest } from 'firebase-functions/v2/https';
 import { getFirestore } from 'firebase-admin/firestore';
-import { mcpKeyPepper } from '../common/secrets';
+import { mcpKeyPepper, githubAppId, githubAppPrivateKeyB64 } from '../common/secrets';
 import { signShortJwt, verifyShortJwt } from '../common/utils/short-jwt';
 import { getInstallation, listInstallationRepos } from './client';
 
@@ -36,54 +36,57 @@ async function isWorkspaceAdmin(workspaceId: string, uid: string): Promise<boole
  * put it in the install link — our own signed `state`. This is where the
  * `github_installations/{installationId}` doc actually gets written.
  */
-export const githubSetup = onRequest({ region: 'us-east4', secrets: [mcpKeyPepper] }, async (req, res) => {
-  const installationId = req.query.installation_id as string | undefined;
-  const state = req.query.state as string | undefined;
+export const githubSetup = onRequest(
+  { region: 'us-east4', secrets: [mcpKeyPepper, githubAppId, githubAppPrivateKeyB64] },
+  async (req, res) => {
+    const installationId = req.query.installation_id as string | undefined;
+    const state = req.query.state as string | undefined;
 
-  if (!installationId || !state) {
-    res.status(400).send('Falta installation_id o state.');
-    return;
+    if (!installationId || !state) {
+      res.status(400).send('Falta installation_id o state.');
+      return;
+    }
+
+    const claims = verifyShortJwt<InstallState>(state, mcpKeyPepper.value());
+    if (!claims) {
+      res.status(400).send('El link de instalación expiró o es inválido. Volvé a intentar desde Settings.');
+      return;
+    }
+
+    const allowed = await isWorkspaceAdmin(claims.workspaceId, claims.uid);
+    if (!allowed) {
+      res.status(403).send('Solo un admin/owner del workspace puede conectar GitHub.');
+      return;
+    }
+
+    try {
+      const [installation, repos] = await Promise.all([
+        getInstallation(installationId),
+        listInstallationRepos(installationId),
+      ]);
+
+      await getFirestore()
+        .collection('github_installations')
+        .doc(installationId)
+        .set(
+          {
+            installationId,
+            workspaceId: claims.workspaceId,
+            accountLogin: installation.account.login,
+            repositories: repos.map((r) => ({ id: r.id, fullName: r.full_name, defaultBranch: r.default_branch })),
+            connectedBy: claims.uid,
+            connectedAt: new Date().toISOString(),
+          },
+          { merge: true }
+        );
+
+      res.redirect(302, `${PULSE_APP_URL}/settings?github=connected`);
+    } catch (err: any) {
+      console.error('[githubSetup] Failed to record installation:', err);
+      res.redirect(302, `${PULSE_APP_URL}/settings?github=error`);
+    }
   }
-
-  const claims = verifyShortJwt<InstallState>(state, mcpKeyPepper.value());
-  if (!claims) {
-    res.status(400).send('El link de instalación expiró o es inválido. Volvé a intentar desde Settings.');
-    return;
-  }
-
-  const allowed = await isWorkspaceAdmin(claims.workspaceId, claims.uid);
-  if (!allowed) {
-    res.status(403).send('Solo un admin/owner del workspace puede conectar GitHub.');
-    return;
-  }
-
-  try {
-    const [installation, repos] = await Promise.all([
-      getInstallation(installationId),
-      listInstallationRepos(installationId),
-    ]);
-
-    await getFirestore()
-      .collection('github_installations')
-      .doc(installationId)
-      .set(
-        {
-          installationId,
-          workspaceId: claims.workspaceId,
-          accountLogin: installation.account.login,
-          repositories: repos.map((r) => ({ id: r.id, fullName: r.full_name, defaultBranch: r.default_branch })),
-          connectedBy: claims.uid,
-          connectedAt: new Date().toISOString(),
-        },
-        { merge: true }
-      );
-
-    res.redirect(302, `${PULSE_APP_URL}/settings?github=connected`);
-  } catch (err: any) {
-    console.error('[githubSetup] Failed to record installation:', err);
-    res.redirect(302, `${PULSE_APP_URL}/settings?github=error`);
-  }
-});
+);
 
 /**
  * The App's "Callback URL" — only meaningfully hit if "Request user
