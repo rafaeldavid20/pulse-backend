@@ -20,6 +20,7 @@ import { GithubStatusAction } from '../actions/github/github-status';
 import { CreateBranchAction } from '../actions/github/create-branch';
 import { LinkPrAction } from '../actions/github/link-pr';
 import { SyncFromWebhookAction } from '../actions/github/sync-from-webhook';
+import { CreateLabelAction } from '../actions/labels/create-label';
 
 export async function dispatchPlatformAction(
   request: PlatformActionRequest,
@@ -81,6 +82,9 @@ export async function dispatchPlatformAction(
       return new LinkPrAction(request, callerUid, callerEmail).run();
     case 'github.syncFromWebhook':
       return new SyncFromWebhookAction(request, callerUid, callerEmail).run();
+
+    case 'labels.create':
+      return new CreateLabelAction(request, callerUid, callerEmail).run();
 
     default:
       return {

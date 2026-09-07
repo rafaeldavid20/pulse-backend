@@ -38,19 +38,27 @@ service cloud.firestore {
       allow read, write: if isAuthenticated();
     }
     
-    // Issues collection
+    // Issues collection — write is Admin SDK only (via Platform Actions,
+    // which is where `authorize()`/isWorkspaceMember actually runs). The
+    // client-side fallback that used to write here directly was removed
+    // from pulse-app/src/lib/firestore.ts in the same pass as this rule —
+    // don't loosen this back to `if isAuthenticated()` without re-adding an
+    // authorized write path first.
     match /issues/{issueId} {
-      allow read, write: if isAuthenticated();
+      allow read: if isAuthenticated();
+      allow write: if false;
     }
-    
-    // Projects collection
+
+    // Projects collection — same as issues, Admin SDK only.
     match /projects/{projectId} {
-      allow read, write: if isAuthenticated();
+      allow read: if isAuthenticated();
+      allow write: if false;
     }
-    
-    // Labels collection
+
+    // Labels collection — same as issues, Admin SDK only (via labels.create).
     match /labels/{labelId} {
-      allow read, write: if isAuthenticated();
+      allow read: if isAuthenticated();
+      allow write: if false;
     }
     
     // Invitations collection
@@ -58,11 +66,12 @@ service cloud.firestore {
       allow read, write: if isAuthenticated();
     }
 
-    // Atomic issue-numbering counters (workspaceId_teamId -> value).
-    // Written both by the pulsePlatformAction Cloud Function and, as a
-    // fallback, directly from the client (see nextIssueNumber() in
-    // pulse-app/src/lib/firestore.ts) — must stay writable client-side
-    // until that fallback path is retired.
+    // Atomic issue-numbering counters (workspaceId_teamId -> value). Written
+    // by the pulsePlatformAction Cloud Function only — the client-side
+    // fallback that used to write here directly was removed, but the rule
+    // itself is left open (not in scope for this hardening pass; it's an
+    // internal counter, not a piece of domain data an attacker gains
+    // anything from tampering with).
     match /counters/{counterId} {
       allow read, write: if isAuthenticated();
     }
@@ -75,13 +84,12 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
-    // Comments on issues. Same openness as issues/projects for now — not
-    // hardened until Fase 5. Mirrored in pulse-app/firestore.rules too:
-    // whichever repo's workflow deploys rules last wins (see the plan's
-    // "two firestore.rules" known issue), so a collection the client needs
-    // open must be declared identically in both files, not just this one.
+    // Comments on issues — Admin SDK only (comments.create always required
+    // this in practice, since it authorizes against the issue's real
+    // workspaceId; this just makes the rule match what was already true).
     match /comments/{commentId} {
-      allow read, write: if isAuthenticated();
+      allow read: if isAuthenticated();
+      allow write: if false;
     }
 
     // Operational agent config (defaultRepo, autonomousMode, etc). Admin SDK
