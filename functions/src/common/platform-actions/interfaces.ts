@@ -18,7 +18,11 @@ export type PlatformActionCode =
   | 'agents.create'
   | 'issues.claim'
   | 'issues.claimNext'
-  | 'issues.release';
+  | 'issues.release'
+  | 'github.createInstallUrl'
+  | 'github.status'
+  | 'github.createBranch'
+  | 'github.linkPr';
 
 export interface PlatformActionCaller {
   readonly uid?: string;

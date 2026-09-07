@@ -15,6 +15,10 @@ import { CreateCommentAction } from '../actions/comments/create-comment';
 import { ClaimIssueAction } from '../actions/issues/claim-issue';
 import { ClaimNextIssueAction } from '../actions/issues/claim-next-issue';
 import { ReleaseIssueAction } from '../actions/issues/release-issue';
+import { CreateInstallUrlAction } from '../actions/github/create-install-url';
+import { GithubStatusAction } from '../actions/github/github-status';
+import { CreateBranchAction } from '../actions/github/create-branch';
+import { LinkPrAction } from '../actions/github/link-pr';
 
 export async function dispatchPlatformAction(
   request: PlatformActionRequest,
@@ -65,6 +69,15 @@ export async function dispatchPlatformAction(
       return new ClaimNextIssueAction(request, callerUid, callerEmail).run();
     case 'issues.release':
       return new ReleaseIssueAction(request, callerUid, callerEmail).run();
+
+    case 'github.createInstallUrl':
+      return new CreateInstallUrlAction(request, callerUid, callerEmail).run();
+    case 'github.status':
+      return new GithubStatusAction(request, callerUid, callerEmail).run();
+    case 'github.createBranch':
+      return new CreateBranchAction(request, callerUid, callerEmail).run();
+    case 'github.linkPr':
+      return new LinkPrAction(request, callerUid, callerEmail).run();
 
     default:
       return {

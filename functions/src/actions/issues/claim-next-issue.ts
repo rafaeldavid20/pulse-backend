@@ -1,16 +1,7 @@
 import { getFirestore, Transaction } from 'firebase-admin/firestore';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
-
-function slugify(title: string): string {
-  return title
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/(^-|-$)/g, '')
-    .slice(0, 40);
-}
+import { suggestedBranchName } from '../../common/utils/slug';
 
 // Priority 0 means "None" — it should sort *last*, not first, when ranking
 // candidates by urgency (1 Urgent .. 4 Low, then 0).
@@ -99,7 +90,7 @@ export class ClaimNextIssueAction extends PlatformActionHandler {
 
       const allLabels = labelsSnap.docs.map((d) => d.data());
       const resolvedLabels = allLabels.filter((l) => (issue.labelIds || []).includes(l.id));
-      const branch = `pul/${String(issue.identifier).toLowerCase()}-${slugify(issue.title)}`;
+      const branch = suggestedBranchName(issue.identifier, issue.title);
       const agentDoc = agentSnap.exists ? agentSnap.data() : null;
 
       return {

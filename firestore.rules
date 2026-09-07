@@ -91,5 +91,13 @@ service cloud.firestore {
     match /agents/{agentId} {
       allow read, write: if false;
     }
+
+    // GitHub App installations: holds a cached installation access token per
+    // doc. Admin SDK only (githubSetup writes it, create-branch.ts reads
+    // it) — the frontend gets a sanitized view via the github.status
+    // Platform Action instead of reading this directly.
+    match /github_installations/{installationId} {
+      allow read, write: if false;
+    }
   }
 }

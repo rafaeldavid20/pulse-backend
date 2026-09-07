@@ -10,6 +10,8 @@ import { UpdateIssueAction } from '../../actions/issues/update-issue';
 import { CreateIssueAction } from '../../actions/issues/create-issue';
 import { CreateProjectAction } from '../../actions/projects/create-project';
 import { CreateCommentAction } from '../../actions/comments/create-comment';
+import { CreateBranchAction } from '../../actions/github/create-branch';
+import { LinkPrAction } from '../../actions/github/link-pr';
 
 type WritableActionCode =
   | 'issues.claimNext'
@@ -18,7 +20,9 @@ type WritableActionCode =
   | 'issues.update'
   | 'issues.create'
   | 'projects.create'
-  | 'comments.create';
+  | 'comments.create'
+  | 'github.createBranch'
+  | 'github.linkPr';
 
 const ACTIONS: Record<WritableActionCode, new (request: any, callerUid?: string) => { run(): Promise<PlatformActionResponse> }> = {
   'issues.claimNext': ClaimNextIssueAction,
@@ -28,6 +32,8 @@ const ACTIONS: Record<WritableActionCode, new (request: any, callerUid?: string)
   'issues.create': CreateIssueAction,
   'projects.create': CreateProjectAction,
   'comments.create': CreateCommentAction,
+  'github.createBranch': CreateBranchAction,
+  'github.linkPr': LinkPrAction,
 };
 
 /**
@@ -158,6 +164,38 @@ export function registerWriteTools(server: McpServer, principal: McpPrincipal) {
       const doc = await findIssue(principal.workspaceId, identifier);
       if (!doc) return textResult({ error: `No issue found for '${identifier}'.` });
       return runAction('comments.create', { issueId: doc.id, body, source: 'mcp' }, actorUid);
+    }
+  );
+
+  server.tool(
+    'pulse_create_branch',
+    'Creates a git branch for an issue in the workspace\'s connected GitHub repo, off the repo\'s default branch. Uses the naming convention pul/<identifier>-<slug> when no branch name is given.',
+    {
+      identifier: z.string(),
+      repoFullName: z.string().optional().describe('"owner/repo" — required only if more than one repo is connected.'),
+      branch: z.string().optional(),
+      baseBranch: z.string().optional(),
+    },
+    async ({ identifier, ...rest }) => {
+      const doc = await findIssue(principal.workspaceId, identifier);
+      if (!doc) return textResult({ error: `No issue found for '${identifier}'.` });
+      return runAction('github.createBranch', { issueId: doc.id, ...rest }, actorUid);
+    }
+  );
+
+  server.tool(
+    'pulse_link_pr',
+    'Records a pull request (number, URL, state) against an issue.',
+    {
+      identifier: z.string(),
+      prNumber: z.number().int(),
+      prUrl: z.string(),
+      prState: z.enum(['open', 'draft', 'merged', 'closed']).optional(),
+    },
+    async ({ identifier, ...rest }) => {
+      const doc = await findIssue(principal.workspaceId, identifier);
+      if (!doc) return textResult({ error: `No issue found for '${identifier}'.` });
+      return runAction('github.linkPr', { issueId: doc.id, ...rest }, actorUid);
     }
   );
 
