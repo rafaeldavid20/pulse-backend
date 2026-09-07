@@ -6,6 +6,7 @@ import { mcpKeyPepper, githubAppId, githubAppPrivateKeyB64, githubAppSlug } from
 export { pulseMcp } from './mcp';
 export { githubSetup, githubCallback } from './github/install-flow';
 export { githubWebhook } from './github/webhook';
+export { agentDispatchTrigger } from './triggers/agent-dispatch';
 
 // Initialize Firebase Admin SDK once
 initializeApp();

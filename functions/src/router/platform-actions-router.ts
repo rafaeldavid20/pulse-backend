@@ -11,6 +11,8 @@ import { CreateApiKeyAction } from '../actions/apikeys/create-api-key';
 import { RevokeApiKeyAction } from '../actions/apikeys/revoke-api-key';
 import { ListApiKeysAction } from '../actions/apikeys/list-api-keys';
 import { CreateAgentAction } from '../actions/agents/create-agent';
+import { UpdateAgentAction } from '../actions/agents/update-agent';
+import { ListAgentsAction } from '../actions/agents/list-agents';
 import { CreateCommentAction } from '../actions/comments/create-comment';
 import { ClaimIssueAction } from '../actions/issues/claim-issue';
 import { ClaimNextIssueAction } from '../actions/issues/claim-next-issue';
@@ -63,6 +65,10 @@ export async function dispatchPlatformAction(
 
     case 'agents.create':
       return new CreateAgentAction(request, callerUid, callerEmail).run();
+    case 'agents.update':
+      return new UpdateAgentAction(request, callerUid, callerEmail).run();
+    case 'agents.list':
+      return new ListAgentsAction(request, callerUid, callerEmail).run();
     case 'comments.create':
       return new CreateCommentAction(request, callerUid, callerEmail).run();
     case 'issues.claim':

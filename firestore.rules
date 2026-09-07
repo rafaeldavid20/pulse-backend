@@ -113,5 +113,11 @@ service cloud.firestore {
     match /webhook_events/{deliveryId} {
       allow read, write: if false;
     }
+
+    // Daily per-workspace counter for the Fase 6 autonomous-dispatch circuit
+    // breaker. Admin SDK only — agentDispatchTrigger is the only writer.
+    match /agent_dispatch_counters/{counterId} {
+      allow read, write: if false;
+    }
   }
 }

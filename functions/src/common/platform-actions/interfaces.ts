@@ -16,6 +16,8 @@ export type PlatformActionCode =
   | 'apikeys.list'
   | 'comments.create'
   | 'agents.create'
+  | 'agents.update'
+  | 'agents.list'
   | 'issues.claim'
   | 'issues.claimNext'
   | 'issues.release'

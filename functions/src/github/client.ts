@@ -94,3 +94,17 @@ export async function createBranch(
     branchUrl: `https://github.com/${repoFullName}/tree/${encodeURIComponent(branch)}`,
   };
 }
+
+/** Fires a `repository_dispatch` event — how the Fase 6 Firestore trigger
+ * kicks off `.github/workflows/pulse-agent.yml` without a human involved. */
+export async function dispatchRepositoryEvent(
+  installationId: string,
+  repoFullName: string,
+  eventType: string,
+  clientPayload: Record<string, unknown>
+): Promise<void> {
+  await githubInstallationFetch(installationId, `/repos/${repoFullName}/dispatches`, {
+    method: 'POST',
+    body: JSON.stringify({ event_type: eventType, client_payload: clientPayload }),
+  });
+}

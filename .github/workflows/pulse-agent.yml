@@ -1,0 +1,46 @@
+name: Pulse Agent
+
+# Fase 6 — disparado por `agentDispatchTrigger` (functions/src/triggers/agent-dispatch.ts)
+# via `POST /repos/{owner}/{repo}/dispatches` cuando un issue con un agente
+# `autonomousMode` asignado pasa a `todo`. No corre en push/PR: solo en este evento.
+on:
+  repository_dispatch:
+    types: [pulse_task]
+
+jobs:
+  work-on-issue:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Claude Code on the dispatched issue
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          mcp_config: |
+            {
+              "mcpServers": {
+                "pulse": {
+                  "type": "http",
+                  "url": "https://us-east4-pulse-app-93.cloudfunctions.net/pulseMcp",
+                  "headers": {
+                    "Authorization": "Bearer ${{ secrets.PULSE_AGENT_MCP_KEY }}"
+                  }
+                }
+              }
+            }
+          prompt: |
+            Usá el MCP de Pulse para trabajar el issue con id
+            "${{ github.event.client_payload.issueId }}"
+            (identifier ${{ github.event.client_payload.issueIdentifier }}).
+
+            Reclamalo con pulse_claim_issue (ya está en 'todo' y asignado a vos, no hace falta
+            pulse_next_task), leé su descripción y comentarios completos, creá una rama con
+            pulse_create_branch, implementá los cambios descritos, commiteá y pusheá, abrí un PR
+            y linkealo con pulse_link_pr, y comentá el progreso con pulse_comment_issue. No pases
+            el issue a in_review vos mismo — eso lo hace el webhook de GitHub automáticamente
+            cuando el PR se abre.
