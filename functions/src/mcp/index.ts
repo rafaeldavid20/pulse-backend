@@ -3,6 +3,7 @@ import { onRequest } from 'firebase-functions/v2/https';
 import { buildMcpTransport } from './server';
 import { authenticateRequest, McpAuthError, McpPrincipal } from './auth';
 import { mcpKeyPepper, githubAppId, githubAppPrivateKeyB64, githubAppSlug } from '../common/secrets';
+import { OAUTH_PROTECTED_RESOURCE_METADATA_URL } from '../oauth/constants';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -76,6 +77,14 @@ export const pulseMcp = onRequest(
       principal = await authenticateRequest(req.headers.authorization);
     } catch (error) {
       if (error instanceof McpAuthError) {
+        // RFC 9728 §5.1: a resource server rejecting a request for missing/
+        // invalid credentials points the client at its protected-resource
+        // metadata this way, so an OAuth-capable client (e.g. claude.ai) can
+        // discover the authorization server without needing the metadata
+        // co-located at a `/.well-known/...` path under this same origin.
+        if (error.status === 401) {
+          res.setHeader('WWW-Authenticate', `Bearer resource_metadata="${OAUTH_PROTECTED_RESOURCE_METADATA_URL}"`);
+        }
         res.status(error.status).json({ error: error.message });
         return;
       }

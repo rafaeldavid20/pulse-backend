@@ -28,7 +28,12 @@ export class CreateIssueAction extends PlatformActionHandler {
     }
 
     const issueId = `issue-${nanoid(8)}`;
-    const teamKey = data.teamKey || 'ORD';
+    // Resolve the real team key instead of trusting a caller-supplied
+    // `teamKey` — a caller that doesn't send it explicitly (e.g. this same
+    // issue, created via curl) used to fall back straight to 'ORD' and get
+    // an identifier with the wrong prefix.
+    const teamDoc = await db.collection('teams').doc(data.teamId).get();
+    const teamKey = teamDoc.exists ? teamDoc.data()!.key : data.teamKey || 'ORD';
 
     // Atomically reserve the next sequential issue number for this
     // workspace/team via a Firestore transaction-backed counter — avoids the
