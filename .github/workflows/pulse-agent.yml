@@ -18,6 +18,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Write Pulse MCP config
+        # Un archivo, no un string inline en claude_args: el header
+        # "Bearer <key>" tiene un espacio, y no vale la pena confiar en cómo
+        # el parser de argumentos de la acción tokeniza claude_args.
+        env:
+          PULSE_AGENT_MCP_KEY: ${{ secrets.PULSE_AGENT_MCP_KEY }}
+        run: |
+          cat > "$RUNNER_TEMP/pulse-mcp.json" <<EOF
+          {
+            "mcpServers": {
+              "pulse": {
+                "type": "http",
+                "url": "https://us-east4-pulse-app-93.cloudfunctions.net/pulseMcp",
+                "headers": { "Authorization": "Bearer ${PULSE_AGENT_MCP_KEY}" }
+              }
+            }
+          }
+          EOF
+
       - name: Run Claude Code on the dispatched issue
         uses: anthropics/claude-code-action@v1
         with:
@@ -29,18 +48,14 @@ jobs:
           # TODO(diagnóstico Fase 6): sacar una vez confirmado el ciclo — el
           # output completo no debería quedar en logs públicos del workflow.
           show_full_output: true
-          mcp_config: |
-            {
-              "mcpServers": {
-                "pulse": {
-                  "type": "http",
-                  "url": "https://us-east4-pulse-app-93.cloudfunctions.net/pulseMcp",
-                  "headers": {
-                    "Authorization": "Bearer ${{ secrets.PULSE_AGENT_MCP_KEY }}"
-                  }
-                }
-              }
-            }
+          # claude-code-action@v1 no tiene un input `mcp_config` propio (una
+          # versión anterior de la acción sí lo tenía) — se pasa como flag
+          # del CLI de Claude Code vía `claude_args`. `--allowedTools
+          # mcp__pulse` autoriza todas las tools de ese server sin pedir
+          # confirmación interactiva, que no existe en un run headless.
+          claude_args: |
+            --mcp-config ${{ runner.temp }}/pulse-mcp.json
+            --allowedTools mcp__pulse
           prompt: |
             Usá el MCP de Pulse para trabajar el issue con id
             "${{ github.event.client_payload.issueId }}"
