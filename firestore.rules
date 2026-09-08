@@ -12,9 +12,18 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
-    // Platform Actions collection audit log
+    // Membership check via custom claims (set by syncMemberClaimsTrigger on
+    // every `members` write), not a `get()` — rules cap at 10 `get()`s per
+    // request, and a list query over many issues/projects would blow past
+    // that immediately if membership were checked by loading the member doc.
+    function isMember(workspaceId) {
+      return isAuthenticated() && ('ws' in request.auth.token) && (workspaceId in request.auth.token.ws);
+    }
+
+    // Platform Actions collection audit log — infrastructure, never read by
+    // the frontend (confirmed: no `platform_actions` reference in pulse-app).
     match /platform_actions/{actionId} {
-      allow read, write: if isAuthenticated();
+      allow read, write: if false;
     }
     
     // User profile documents
@@ -45,19 +54,19 @@ service cloud.firestore {
     // don't loosen this back to `if isAuthenticated()` without re-adding an
     // authorized write path first.
     match /issues/{issueId} {
-      allow read: if isAuthenticated();
+      allow read: if isMember(resource.data.workspaceId);
       allow write: if false;
     }
 
     // Projects collection — same as issues, Admin SDK only.
     match /projects/{projectId} {
-      allow read: if isAuthenticated();
+      allow read: if isMember(resource.data.workspaceId);
       allow write: if false;
     }
 
     // Labels collection — same as issues, Admin SDK only (via labels.create).
     match /labels/{labelId} {
-      allow read: if isAuthenticated();
+      allow read: if isMember(resource.data.workspaceId);
       allow write: if false;
     }
     
@@ -88,7 +97,7 @@ service cloud.firestore {
     // this in practice, since it authorizes against the issue's real
     // workspaceId; this just makes the rule match what was already true).
     match /comments/{commentId} {
-      allow read: if isAuthenticated();
+      allow read: if isMember(resource.data.workspaceId);
       allow write: if false;
     }
 

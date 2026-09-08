@@ -7,6 +7,7 @@ export { pulseMcp } from './mcp';
 export { githubSetup, githubCallback } from './github/install-flow';
 export { githubWebhook } from './github/webhook';
 export { agentDispatchTrigger } from './triggers/agent-dispatch';
+export { syncMemberClaimsTrigger } from './triggers/sync-member-claims';
 
 // Initialize Firebase Admin SDK once
 initializeApp();
