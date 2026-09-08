@@ -26,6 +26,9 @@ jobs:
           # GitHub App pulse-app-agent, no un humano — claude-code-action
           # bloquea por default los workflows iniciados por bots.
           allowed_bots: pulse-app-agent
+          # TODO(diagnóstico Fase 6): sacar una vez confirmado el ciclo — el
+          # output completo no debería quedar en logs públicos del workflow.
+          show_full_output: true
           mcp_config: |
             {
               "mcpServers": {
