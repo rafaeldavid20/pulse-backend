@@ -22,6 +22,10 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # El repository_dispatch lo dispara agentDispatchTrigger vía la
+          # GitHub App pulse-app-agent, no un humano — claude-code-action
+          # bloquea por default los workflows iniciados por bots.
+          allowed_bots: pulse-app-agent
           mcp_config: |
             {
               "mcpServers": {
