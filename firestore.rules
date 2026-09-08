@@ -128,5 +128,20 @@ service cloud.firestore {
     match /agent_dispatch_counters/{counterId} {
       allow read, write: if false;
     }
+
+    // OAuth 2.1 + DCR (Fase 7): self-registered MCP clients, single-use
+    // authorization codes, and issued access tokens (contain a secret hash,
+    // same as api_keys). Admin SDK only — the oauthRegister/oauthAuthorize/
+    // oauthToken functions and the MCP request authenticator are the only
+    // readers/writers, never the client SDK.
+    match /oauth_clients/{clientId} {
+      allow read, write: if false;
+    }
+    match /oauth_codes/{code} {
+      allow read, write: if false;
+    }
+    match /oauth_tokens/{tokenId} {
+      allow read, write: if false;
+    }
   }
 }

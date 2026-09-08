@@ -18,6 +18,32 @@
       ]
     }
   ],
+  "hosting": {
+    "public": "hosting",
+    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+    "rewrites": [
+      {
+        "source": "/.well-known/oauth-protected-resource",
+        "function": { "functionId": "oauthProtectedResourceMetadata", "region": "us-east4" }
+      },
+      {
+        "source": "/.well-known/oauth-authorization-server",
+        "function": { "functionId": "oauthAuthorizationServerMetadata", "region": "us-east4" }
+      },
+      {
+        "source": "/register",
+        "function": { "functionId": "oauthRegister", "region": "us-east4" }
+      },
+      {
+        "source": "/authorize",
+        "function": { "functionId": "oauthAuthorize", "region": "us-east4" }
+      },
+      {
+        "source": "/token",
+        "function": { "functionId": "oauthToken", "region": "us-east4" }
+      }
+    ]
+  },
   "emulators": {
     "auth": { "port": 9099 },
     "functions": { "port": 5001 },

@@ -8,6 +8,10 @@ export { githubSetup, githubCallback } from './github/install-flow';
 export { githubWebhook } from './github/webhook';
 export { agentDispatchTrigger } from './triggers/agent-dispatch';
 export { syncMemberClaimsTrigger } from './triggers/sync-member-claims';
+export { oauthProtectedResourceMetadata, oauthAuthorizationServerMetadata } from './oauth/well-known';
+export { oauthRegister } from './oauth/register';
+export { oauthAuthorize } from './oauth/authorize';
+export { oauthToken } from './oauth/token';
 
 // Initialize Firebase Admin SDK once
 initializeApp();

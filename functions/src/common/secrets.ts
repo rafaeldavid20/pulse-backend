@@ -8,6 +8,16 @@ import { defineSecret } from 'firebase-functions/params';
  */
 export const mcpKeyPepper = defineSecret('MCP_KEY_PEPPER');
 
+/**
+ * Firebase Web API key, used client-side by the OAuth `/authorize` page
+ * (Fase 7) to init the Firebase Auth JS SDK for email/password + Google
+ * sign-in — the same login the pulse-app frontend already uses. Not secret
+ * by nature (every Firebase web app ships this value in its bundle), kept in
+ * Secret Manager anyway to avoid hardcoding it and to allow rotation without
+ * a code deploy, matching the githubAppId rationale below.
+ */
+export const firebaseWebApiKey = defineSecret('FIREBASE_WEB_API_KEY');
+
 // GitHub App credentials (Fase 3). All defined as secrets (not just the
 // private key) to keep a single mechanism for this whole group, even though
 // the App ID and Client ID aren't sensitive by themselves.
