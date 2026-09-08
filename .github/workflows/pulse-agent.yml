@@ -50,12 +50,13 @@ jobs:
           show_full_output: true
           # claude-code-action@v1 no tiene un input `mcp_config` propio (una
           # versión anterior de la acción sí lo tenía) — se pasa como flag
-          # del CLI de Claude Code vía `claude_args`. `--allowedTools
-          # mcp__pulse` autoriza todas las tools de ese server sin pedir
-          # confirmación interactiva, que no existe en un run headless.
+          # del CLI de Claude Code vía `claude_args`. `--allowedTools`
+          # autoriza sin pedir confirmación interactiva (que no existe en un
+          # run headless): las tools MCP de Pulse, Bash (para git/gh) y
+          # edición de archivos.
           claude_args: |
             --mcp-config ${{ runner.temp }}/pulse-mcp.json
-            --allowedTools mcp__pulse
+            --allowedTools mcp__pulse,Bash,Read,Edit,Write,Glob,Grep
           prompt: |
             Usá el MCP de Pulse para trabajar el issue con id
             "${{ github.event.client_payload.issueId }}"
