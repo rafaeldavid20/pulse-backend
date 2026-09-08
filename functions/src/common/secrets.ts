@@ -16,7 +16,7 @@ export const mcpKeyPepper = defineSecret('MCP_KEY_PEPPER');
  * Secret Manager anyway to avoid hardcoding it and to allow rotation without
  * a code deploy, matching the githubAppId rationale below.
  */
-export const firebaseWebApiKey = defineSecret('FIREBASE_WEB_API_KEY');
+export const firebaseWebApiKey = defineSecret('PULSE_FIREBASE_WEB_API_KEY');
 
 // GitHub App credentials (Fase 3). All defined as secrets (not just the
 // private key) to keep a single mechanism for this whole group, even though
