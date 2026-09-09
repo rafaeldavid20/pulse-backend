@@ -4,6 +4,7 @@ import { PlatformActionRequest } from '../../common/platform-actions/interfaces'
 import { cleanUndefined } from '../../common/utils/clean';
 import { ISSUE_WRITABLE_FIELDS, pickWritableFields } from '../../common/utils/issue-fields';
 import { canHaveChildren } from '../../common/domain.generated';
+import { validateRepoForWorkspace } from '../../common/utils/repo-field';
 import {
   adjustParentCounters,
   childIdsOf,
@@ -98,6 +99,22 @@ export class UpdateIssueAction extends PlatformActionHandler {
       updates.type = placement.type;
       updates.parentId = placement.parentId ?? FieldValue.delete();
       updates.epicId = placement.epicId ?? FieldValue.delete();
+    }
+
+    // --- Repo ------------------------------------------------------------
+    // `git.repoFullName` va anidado, así que no puede pasar por la whitelist
+    // (que mapea nombres de campo planos). Se acepta como `repoFullName` a
+    // nivel raíz y se escribe en su lugar real. Cadena vacía o null lo borran,
+    // que es cómo la UI dice "volvé a heredar de la épica".
+    if ('repoFullName' in data) {
+      const repo = data.repoFullName || null;
+      if (repo) {
+        await validateRepoForWorkspace(db, current.workspaceId, repo);
+        updates['git.repoFullName'] = repo;
+      } else {
+        updates['git.repoFullName'] = FieldValue.delete();
+      }
+      delete updates.repoFullName;
     }
 
     await issueRef.update(cleanUndefined(updates));

@@ -5,6 +5,7 @@ import { PlatformActionRequest } from '../../common/platform-actions/interfaces'
 import { cleanUndefined } from '../../common/utils/clean';
 import { nextIssueNumber } from '../../common/utils/counters';
 import { ISSUE_WRITABLE_FIELDS, pickWritableFields } from '../../common/utils/issue-fields';
+import { validateRepoForWorkspace } from '../../common/utils/repo-field';
 import {
   adjustParentCounters,
   doneWeight,
@@ -96,6 +97,13 @@ export class CreateIssueAction extends PlatformActionHandler {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
+
+    // Mismo trato que en `issues.update`: `repoFullName` llega a nivel raíz y
+    // se guarda anidado bajo `git`, porque la whitelist solo maneja campos planos.
+    if (data.repoFullName) {
+      await validateRepoForWorkspace(db, data.workspaceId, data.repoFullName);
+      (rawIssue as Record<string, any>).git = { repoFullName: data.repoFullName };
+    }
 
     const cleanIssue = cleanUndefined(rawIssue);
     await db.collection('issues').doc(issueId).set(cleanIssue);

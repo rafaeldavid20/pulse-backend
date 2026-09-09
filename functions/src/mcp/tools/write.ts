@@ -97,6 +97,8 @@ export function registerWriteTools(server: McpServer, principal: McpPrincipal) {
       projectId: z.string().optional(),
       estimate: z.number().optional(),
       dueDate: z.string().optional(),
+      repoFullName: z.string().optional()
+        .describe('"owner/repo". Pass an empty string to clear it and go back to inheriting from the epic.'),
     },
     async ({ identifier, ...updates }) => {
       const doc = await findIssue(principal.workspaceId, identifier);
@@ -135,6 +137,8 @@ export function registerWriteTools(server: McpServer, principal: McpPrincipal) {
         .describe('Parent issue identifier ("ENG-12") or doc id. Must be a valid parent for this type.'),
       estimate: z.number().optional(),
       dueDate: z.string().optional(),
+      repoFullName: z.string().optional()
+        .describe('"owner/repo". On an epic it becomes the default for every issue under it; on an issue it overrides that default.'),
     },
     async ({ teamKey, parent, ...rest }) => {
       const team = await findTeamByKey(principal.workspaceId, teamKey);

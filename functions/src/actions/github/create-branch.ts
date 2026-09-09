@@ -1,6 +1,7 @@
 import { getFirestore } from 'firebase-admin/firestore';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
+import { resolveIssueRepo } from '../../common/utils/repo-resolution';
 import { suggestedBranchName } from '../../common/utils/slug';
 import { createBranch as createGithubBranch } from '../../github/client';
 
@@ -47,19 +48,25 @@ export class CreateBranchAction extends PlatformActionHandler {
     const installation = installSnap.docs[0].data();
     const repos: Array<{ fullName: string }> = installation.repositories || [];
 
-    let repoFullName: string | undefined = data.repoFullName;
-    if (!repoFullName && this.caller.uid) {
-      const agentSnap = await db.collection('agents').doc(this.caller.uid).get();
-      repoFullName = agentSnap.exists ? agentSnap.data()!.defaultRepo : undefined;
-    }
-    if (!repoFullName && repos.length === 1) {
-      repoFullName = repos[0].fullName;
-    }
+    // Misma cascada que usa el trigger de dispatch: explícito -> issue ->
+    // épica -> agente -> instalación con un solo repo. Antes esto saltaba del
+    // parámetro directo al `defaultRepo` del agente, sin mirar nunca el repo
+    // del issue ni el de su épica.
+    const { repoFullName } = await resolveIssueRepo(
+      db,
+      { ...issue, id: data.issueId },
+      {
+        explicitRepo: data.repoFullName,
+        agentId: this.caller.uid,
+        installationRepos: repos.map((r) => r.fullName),
+      }
+    );
+
     if (!repoFullName) {
       throw new Error(
         `Especificá repoFullName — la instalación de GitHub tiene ${repos.length} repos (${repos
           .map((r) => r.fullName)
-          .join(', ')}) y no hay uno por defecto.`
+          .join(', ')}), y ni el issue, ni su épica, ni el agente tienen uno por defecto.`
       );
     }
     if (!repos.some((r) => r.fullName === repoFullName)) {
