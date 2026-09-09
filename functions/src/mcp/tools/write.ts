@@ -99,6 +99,8 @@ export function registerWriteTools(server: McpServer, principal: McpPrincipal) {
       dueDate: z.string().optional(),
       repoFullName: z.string().optional()
         .describe('"owner/repo". Pass an empty string to clear it and go back to inheriting from the epic.'),
+      assigneeId: z.string().nullable().optional()
+        .describe('Member or agent id to assign. Pass null to unassign. Assigning an agent that has autonomousMode on, on an issue already in "todo", does NOT start it — the dispatch fires on entering "todo", so move it out and back in.'),
     },
     async ({ identifier, ...updates }) => {
       const doc = await findIssue(principal.workspaceId, identifier);
