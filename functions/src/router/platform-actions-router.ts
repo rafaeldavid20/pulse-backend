@@ -2,6 +2,7 @@ import { PlatformActionRequest, PlatformActionResponse } from '../common/platfor
 import { CreateIssueAction } from '../actions/issues/create-issue';
 import { UpdateIssueAction } from '../actions/issues/update-issue';
 import { DeleteIssueAction } from '../actions/issues/delete-issue';
+import { ReparentIssueAction } from '../actions/issues/reparent-issue';
 import { CreateProjectAction } from '../actions/projects/create-project';
 import { UpdateProjectAction } from '../actions/projects/update-project';
 import { DeleteProjectAction } from '../actions/projects/delete-project';
@@ -43,6 +44,8 @@ export async function dispatchPlatformAction(
       return new UpdateIssueAction(request, callerUid, callerEmail).run();
     case 'issues.delete':
       return new DeleteIssueAction(request, callerUid, callerEmail).run();
+    case 'issues.reparent':
+      return new ReparentIssueAction(request, callerUid, callerEmail).run();
 
     case 'projects.create':
       return new CreateProjectAction(request, callerUid, callerEmail).run();

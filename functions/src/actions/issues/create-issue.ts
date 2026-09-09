@@ -5,6 +5,12 @@ import { PlatformActionRequest } from '../../common/platform-actions/interfaces'
 import { cleanUndefined } from '../../common/utils/clean';
 import { nextIssueNumber } from '../../common/utils/counters';
 import { ISSUE_WRITABLE_FIELDS, pickWritableFields } from '../../common/utils/issue-fields';
+import {
+  adjustParentCounters,
+  doneWeight,
+  normalizeIssueType,
+  resolvePlacement,
+} from '../../common/utils/hierarchy';
 
 export class CreateIssueAction extends PlatformActionHandler {
   private workspaceId?: string;
@@ -29,6 +35,15 @@ export class CreateIssueAction extends PlatformActionHandler {
 
     const issueId = `issue-${nanoid(8)}`;
     const teamKey = data.teamKey || 'ORD';
+
+    // Se resuelve la ubicación jerárquica *antes* de reservar el número de
+    // issue: si el padre es inválido, no queremos haber consumido un número
+    // del contador para un issue que no se va a crear.
+    const placement = await resolvePlacement(db, {
+      workspaceId: data.workspaceId,
+      type: normalizeIssueType(data.type),
+      parentId: data.parentId,
+    });
 
     // Atomically reserve the next sequential issue number for this
     // workspace/team via a Firestore transaction-backed counter — avoids the
@@ -65,6 +80,14 @@ export class CreateIssueAction extends PlatformActionHandler {
       title: data.title.trim(),
       description: (data.description || '').trim(),
       status: data.status || 'todo',
+      // Sobrescriben lo que haya venido del caller vía `pickWritableFields`:
+      // `type` y `parentId` ya pasaron por la validación de jerarquía, y
+      // `epicId` es derivado, nunca aceptado del payload.
+      type: placement.type,
+      parentId: placement.parentId,
+      epicId: placement.epicId,
+      subIssueCount: 0,
+      subIssueDoneCount: 0,
       priority: data.priority !== undefined ? data.priority : 3,
       projectId: data.projectId || null,
       assigneeId: data.assigneeId || null,
@@ -76,6 +99,8 @@ export class CreateIssueAction extends PlatformActionHandler {
 
     const cleanIssue = cleanUndefined(rawIssue);
     await db.collection('issues').doc(issueId).set(cleanIssue);
+
+    await adjustParentCounters(db, placement.parentId, 1, doneWeight(cleanIssue.status));
 
     return cleanIssue;
   }
