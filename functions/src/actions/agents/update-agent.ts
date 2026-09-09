@@ -2,6 +2,9 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { cleanUndefined } from '../../common/utils/clean';
+import { AgentRole } from '../../common/domain.generated';
+
+const AGENT_ROLES: AgentRole[] = ['dev', 'qa'];
 
 /** Fields a workspace member is allowed to change on an agent — notably
  * `autonomousMode`, the toggle that lets Fase 6's Firestore trigger dispatch
@@ -12,6 +15,9 @@ const AGENT_WRITABLE_FIELDS = [
   'maxConcurrentIssues',
   'defaultRepo',
   'defaultTeamId',
+  'role',
+  'reviewRepo',
+  'maxReviewAttempts',
 ] as const;
 
 export class UpdateAgentAction extends PlatformActionHandler {
@@ -38,6 +44,9 @@ export class UpdateAgentAction extends PlatformActionHandler {
     if (!data.agentId) {
       throw new Error('Parámetro requerido faltante: agentId.');
     }
+    if (data.role !== undefined && !AGENT_ROLES.includes(data.role)) {
+      throw new Error(`role inválido: '${data.role}'. Debe ser 'dev' o 'qa'.`);
+    }
 
     const agentRef = db.collection('agents').doc(data.agentId);
     const snap = await agentRef.get();
@@ -52,6 +61,11 @@ export class UpdateAgentAction extends PlatformActionHandler {
 
     await agentRef.update(cleanUndefined(updates));
     const updated = (await agentRef.get()).data();
+
+    if (updates.role !== undefined) {
+      const memberId = `${this.resolvedWorkspaceId}_${data.agentId}`;
+      await db.collection('members').doc(memberId).update({ agentRole: updates.role });
+    }
 
     return { agent: updated };
   }

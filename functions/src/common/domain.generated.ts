@@ -62,6 +62,9 @@ export type MemberRole = 'owner' | 'admin' | 'member';
 
 export type AgentKind = 'claude' | 'chatgpt';
 
+/** 'dev' abre PRs sobre issues; 'qa' los revisa contra criterios explícitos. */
+export type AgentRole = 'dev' | 'qa';
+
 export type AgentIssueState = 'idle' | 'claimed' | 'working' | 'pr_open' | 'blocked';
 
 // ---------------------------------------------------------------------------
@@ -118,16 +121,25 @@ export interface Member {
   joinedAt: string;
   isAgent?: boolean;
   agentKind?: AgentKind;
+  /** Denormalizado desde `Agent.role` para que el picker de asignado agrupe
+   * Humanos / Dev / QA sin leer `agents`, que es Admin-SDK-only. */
+  agentRole?: AgentRole;
 }
 
 export interface Agent {
   id: string;
   workspaceId: string;
   kind: AgentKind;
+  /** Default `'dev'`. Un agente `'qa'` revisa PRs en vez de abrirlos. */
+  role: AgentRole;
   displayName: string;
   defaultRepo?: string;
   defaultTeamId?: string;
+  /** Repo donde un agente `role: 'qa'` corre el workflow de revisión. */
+  reviewRepo?: string;
   maxConcurrentIssues?: number;
+  /** Default `2`. Intentos de revisión antes de pasar el issue a `needs_human`. */
+  maxReviewAttempts?: number;
   enabled: boolean;
   autonomousMode: boolean;
   createdAt: string;
