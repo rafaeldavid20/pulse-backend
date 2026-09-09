@@ -2,6 +2,7 @@ import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { getFirestore, FieldValue, Transaction } from 'firebase-admin/firestore';
 import { githubAppId, githubAppPrivateKeyB64 } from '../common/secrets';
 import { dispatchRepositoryEvent } from '../github/client';
+import { resolveIssueRepo } from '../common/utils/repo-resolution';
 
 const DAILY_DISPATCH_LIMIT = 5;
 
@@ -91,9 +92,27 @@ export const agentDispatchTrigger = onDocumentWritten(
       }
       const installation = installSnap.docs[0].data();
 
-      const repoFullName: string | undefined = agent.defaultRepo || after.git?.repoFullName;
+      // Cascada issue -> épica -> agente -> instalación. Antes era
+      // `agent.defaultRepo || after.git?.repoFullName`, que hacía ganar al
+      // default del agente sobre el repo puesto explícitamente en el issue —
+      // el override por issue era inalcanzable.
+      const { repoFullName, source } = await resolveIssueRepo(db, { ...after, id: event.params.issueId }, {
+        agentId,
+        installationRepos: installation.repositoryFullNames || [],
+      });
+
       if (!repoFullName) {
         console.log(`[AgentDispatch] no resolvable repo for agent '${agentId}' / issue '${event.params.issueId}', skipping dispatch.`);
+        return;
+      }
+
+      // Un repo fuera de la instalación no puede recibir el dispatch, y
+      // fallar acá con un mensaje claro es mejor que un 404 de GitHub.
+      const authorized: string[] = installation.repositoryFullNames || [];
+      if (authorized.length > 0 && !authorized.includes(repoFullName)) {
+        console.log(
+          `[AgentDispatch] '${repoFullName}' (via ${source}) is not in this workspace's GitHub installation, skipping dispatch.`
+        );
         return;
       }
 
@@ -102,10 +121,13 @@ export const agentDispatchTrigger = onDocumentWritten(
         issueIdentifier: after.identifier,
         workspaceId,
         agentId,
+        // Permite que varios runners escuchen el mismo tipo de evento y cada
+        // uno filtre por el suyo, en vez de inventar un tipo por proveedor.
+        agentKind: agent.kind || 'claude',
       });
 
       console.log(
-        `[AgentDispatch] dispatched 'pulse_task' for issue '${after.identifier}' (${event.params.issueId}) to '${repoFullName}'.`
+        `[AgentDispatch] dispatched 'pulse_task' (${agent.kind || 'claude'}) for issue '${after.identifier}' (${event.params.issueId}) to '${repoFullName}' (repo via ${source}).`
       );
     } catch (error) {
       console.error('[AgentDispatch] error handling issue write, will not retry:', error);

@@ -121,10 +121,16 @@ export function registerReadTools(server: McpServer, principal: McpPrincipal) {
       teamKey: z.string().optional(),
       projectId: z.string().optional(),
       labelIds: z.array(z.string()).optional(),
+      type: z.array(z.enum(['epic', 'story', 'task', 'bug', 'subtask'])).optional()
+        .describe('Filter by hierarchy level. Use ["epic"] to list only epics.'),
+      epicId: z.string().optional()
+        .describe('Only issues under this epic (identifier "ENG-12" or doc id). Does not include the epic itself.'),
+      parentId: z.string().optional()
+        .describe('Only direct children of this issue (identifier or doc id).'),
       search: z.string().optional(),
       limit: z.number().int().min(1).max(100).default(25),
     },
-    async ({ assignee, status, teamKey, projectId, labelIds, search, limit }) => {
+    async ({ assignee, status, teamKey, projectId, labelIds, type, epicId, parentId, search, limit }) => {
       let query = db.collection('issues').where('workspaceId', '==', principal.workspaceId) as FirebaseFirestore.Query;
 
       if (teamKey) {
@@ -138,6 +144,20 @@ export function registerReadTools(server: McpServer, principal: McpPrincipal) {
         query = query.where('teamId', '==', teamSnap.docs[0].id);
       }
       if (projectId) query = query.where('projectId', '==', projectId);
+
+      // `epicId`/`parentId` aceptan identificador legible ("ENG-12") además del
+      // doc id, igual que `pulse_get_issue` — un agente que leyó un issue tiene
+      // el identificador a mano, no el `issue-xxxx`.
+      if (epicId) {
+        const epicDoc = await findIssue(principal.workspaceId, epicId);
+        if (!epicDoc) return textResult({ issues: [], note: `No epic found for '${epicId}'.` });
+        query = query.where('epicId', '==', epicDoc.id);
+      }
+      if (parentId) {
+        const parentDoc = await findIssue(principal.workspaceId, parentId);
+        if (!parentDoc) return textResult({ issues: [], note: `No issue found for '${parentId}'.` });
+        query = query.where('parentId', '==', parentDoc.id);
+      }
 
       if (assignee === 'me') {
         if (!principal.agentId) {
@@ -157,6 +177,7 @@ export function registerReadTools(server: McpServer, principal: McpPrincipal) {
       // without a composite index we don't have yet — applied in memory
       // against the (already workspace/team/project-scoped) result set.
       if (status && status.length > 0) issues = issues.filter((i) => status.includes(i.status));
+      if (type && type.length > 0) issues = issues.filter((i) => type.includes(i.type ?? 'task'));
       if (labelIds && labelIds.length > 0) {
         issues = issues.filter((i) => Array.isArray(i.labelIds) && labelIds.some((l) => i.labelIds.includes(l)));
       }
@@ -169,6 +190,59 @@ export function registerReadTools(server: McpServer, principal: McpPrincipal) {
 
       issues.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
       return textResult(issues.slice(0, limit));
+    }
+  );
+
+  server.tool(
+    'pulse_get_epic',
+    'Fetches an epic with its full child tree and progress. One call instead of walking the hierarchy issue by issue.',
+    { identifier: z.string().describe('Epic identifier ("ENG-12") or doc id ("issue-xxxx").') },
+    async ({ identifier }) => {
+      const epicDoc = await findIssue(principal.workspaceId, identifier);
+      if (!epicDoc) return textResult({ found: false });
+
+      const epic = epicDoc.data()!;
+      if ((epic.type ?? 'task') !== 'epic') {
+        return textResult({
+          found: true,
+          isEpic: false,
+          note: `'${identifier}' is of type '${epic.type ?? 'task'}', not an epic. Use pulse_get_issue instead.`,
+          issue: epic,
+        });
+      }
+
+      // Un solo query por `epicId` trae el subárbol entero (el campo está
+      // denormalizado justamente para esto), y el árbol se arma en memoria.
+      const descendantsSnap = await db
+        .collection('issues')
+        .where('workspaceId', '==', principal.workspaceId)
+        .where('epicId', '==', epicDoc.id)
+        .get();
+      const descendants = descendantsSnap.docs.map((d) => d.data());
+
+      interface TreeNode extends FirebaseFirestore.DocumentData {
+        children: TreeNode[];
+      }
+      const childrenOf = (parentId: string): TreeNode[] =>
+        descendants
+          .filter((i) => i.parentId === parentId)
+          .map((i) => ({ ...i, children: childrenOf(i.id) }));
+
+      const closed = new Set(['done', 'canceled']);
+      return textResult({
+        found: true,
+        isEpic: true,
+        epic,
+        progress: {
+          total: descendants.length,
+          closed: descendants.filter((i) => closed.has(i.status)).length,
+          byStatus: descendants.reduce<Record<string, number>>((acc, i) => {
+            acc[i.status] = (acc[i.status] || 0) + 1;
+            return acc;
+          }, {}),
+        },
+        children: childrenOf(epicDoc.id),
+      });
     }
   );
 

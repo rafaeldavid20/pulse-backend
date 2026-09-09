@@ -1,16 +1,12 @@
 /**
- * Same rationale as `ISSUE_WRITABLE_FIELDS` (issue-fields.ts): a whitelist,
- * not a blind spread of the update payload — `update-project.ts` used to
- * spread `data` directly, which would let a caller overwrite `id`,
- * `workspaceId` or `teamId` on an existing project.
+ * Mismo razonamiento que `issue-fields.ts`: la whitelist vive ahora en
+ * `src/common/domain.generated.ts`, la copia generada de la fuente única
+ * `pulse-app/src/types/domain.ts`. Se mantiene el re-export para no tocar los
+ * imports existentes.
+ *
+ * Es una whitelist y no un spread ciego del payload: `update-project.ts`
+ * spreadeaba `data` directo, lo que dejaba a un caller sobrescribir `id`,
+ * `workspaceId` o `teamId` de un proyecto existente.
  */
-export const PROJECT_WRITABLE_FIELDS = [
-  'name',
-  'description',
-  'status',
-  'leadId',
-  'color',
-  'targetDate',
-] as const;
-
-export type ProjectWritableField = (typeof PROJECT_WRITABLE_FIELDS)[number];
+export { PROJECT_WRITABLE_FIELDS } from '../domain.generated';
+export type { ProjectWritableField } from '../domain.generated';

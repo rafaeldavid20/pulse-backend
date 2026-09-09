@@ -8,6 +8,7 @@ import { ClaimIssueAction } from '../../actions/issues/claim-issue';
 import { ReleaseIssueAction } from '../../actions/issues/release-issue';
 import { UpdateIssueAction } from '../../actions/issues/update-issue';
 import { CreateIssueAction } from '../../actions/issues/create-issue';
+import { ReparentIssueAction } from '../../actions/issues/reparent-issue';
 import { CreateProjectAction } from '../../actions/projects/create-project';
 import { CreateCommentAction } from '../../actions/comments/create-comment';
 import { CreateBranchAction } from '../../actions/github/create-branch';
@@ -19,6 +20,7 @@ type WritableActionCode =
   | 'issues.release'
   | 'issues.update'
   | 'issues.create'
+  | 'issues.reparent'
   | 'projects.create'
   | 'comments.create'
   | 'github.createBranch'
@@ -30,6 +32,7 @@ const ACTIONS: Record<WritableActionCode, new (request: any, callerUid?: string)
   'issues.release': ReleaseIssueAction,
   'issues.update': UpdateIssueAction,
   'issues.create': CreateIssueAction,
+  'issues.reparent': ReparentIssueAction,
   'projects.create': CreateProjectAction,
   'comments.create': CreateCommentAction,
   'github.createBranch': CreateBranchAction,
@@ -94,6 +97,8 @@ export function registerWriteTools(server: McpServer, principal: McpPrincipal) {
       projectId: z.string().optional(),
       estimate: z.number().optional(),
       dueDate: z.string().optional(),
+      repoFullName: z.string().optional()
+        .describe('"owner/repo". Pass an empty string to clear it and go back to inheriting from the epic.'),
     },
     async ({ identifier, ...updates }) => {
       const doc = await findIssue(principal.workspaceId, identifier);
@@ -118,7 +123,7 @@ export function registerWriteTools(server: McpServer, principal: McpPrincipal) {
 
   server.tool(
     'pulse_create_issue',
-    'Creates a new issue in the given team.',
+    'Creates a new issue in the given team. Set type "epic" to create an epic, and parent to hang a story under one.',
     {
       teamKey: z.string().describe('Team key, e.g. "ENG".'),
       title: z.string(),
@@ -126,15 +131,54 @@ export function registerWriteTools(server: McpServer, principal: McpPrincipal) {
       priority: z.number().int().min(0).max(4).optional(),
       labelIds: z.array(z.string()).optional(),
       projectId: z.string().optional(),
+      type: z.enum(['epic', 'story', 'task', 'bug', 'subtask']).optional()
+        .describe('Hierarchy level. Defaults to "task". Epics cannot have a parent; subtasks hang off a story/task/bug.'),
+      parent: z.string().optional()
+        .describe('Parent issue identifier ("ENG-12") or doc id. Must be a valid parent for this type.'),
+      estimate: z.number().optional(),
+      dueDate: z.string().optional(),
+      repoFullName: z.string().optional()
+        .describe('"owner/repo". On an epic it becomes the default for every issue under it; on an issue it overrides that default.'),
     },
-    async ({ teamKey, ...rest }) => {
+    async ({ teamKey, parent, ...rest }) => {
       const team = await findTeamByKey(principal.workspaceId, teamKey);
       if (!team) return textResult({ error: `No team found with key '${teamKey}'.` });
+
+      let parentId: string | undefined;
+      if (parent) {
+        const parentDoc = await findIssue(principal.workspaceId, parent);
+        if (!parentDoc) return textResult({ error: `No parent issue found for '${parent}'.` });
+        parentId = parentDoc.id;
+      }
+
       return runAction(
         'issues.create',
-        { workspaceId: principal.workspaceId, teamId: team.id, teamKey: team.data().key, ...rest },
+        { workspaceId: principal.workspaceId, teamId: team.id, teamKey: team.data().key, parentId, ...rest },
         actorUid
       );
+    }
+  );
+
+  server.tool(
+    'pulse_move_issue',
+    'Moves an issue under a different parent (or to the top level). Its own sub-issues move with it and inherit the new epic.',
+    {
+      identifier: z.string().describe('The issue to move ("ENG-45").'),
+      parent: z.string().nullable()
+        .describe('New parent identifier or doc id. Pass null to detach the issue from its current parent.'),
+    },
+    async ({ identifier, parent }) => {
+      const doc = await findIssue(principal.workspaceId, identifier);
+      if (!doc) return textResult({ error: `No issue found for '${identifier}'.` });
+
+      let parentId: string | null = null;
+      if (parent) {
+        const parentDoc = await findIssue(principal.workspaceId, parent);
+        if (!parentDoc) return textResult({ error: `No parent issue found for '${parent}'.` });
+        parentId = parentDoc.id;
+      }
+
+      return runAction('issues.reparent', { id: doc.id, parentId }, actorUid);
     }
   );
 

@@ -1,40 +1,22 @@
 /**
- * Single source of truth for which `Issue` fields a caller (client SDK
- * fallback, MCP tool, or Platform Action request) is allowed to set.
+ * La whitelist de campos escribibles de un issue se movió a
+ * `src/common/domain.generated.ts` — la copia generada de
+ * `pulse-app/src/types/domain.ts`, que es la fuente única del modelo de
+ * dominio para ambos repos. Antes esta lista estaba duplicada a mano a los dos
+ * lados del límite entre repos; `npm run sync:types` (desde `pulse-app`) y el
+ * check en su `npm run lint` son lo que ahora impide que deriven.
  *
- * Kept in sync with `pulse-app/src/lib/constants/issue.ts`'s
- * `ISSUE_WRITABLE_FIELDS` — both exist because the frontend and the
- * functions codebase are separate TypeScript projects and don't share
- * imports across the `pulse-app`/`pulse-backend` repo boundary.
- *
- * Deliberately a whitelist, not a blind spread: request data can come from
- * an MCP tool call driven by an LLM, and a spread would let it set
- * server-owned fields like `id`, `identifier`, `creatorId` or `workspaceId`.
- *
- * `id`, `identifier`, `number`, `workspaceId`, `teamId`, `creatorId`,
- * `createdAt`, `updatedAt` are deliberately excluded — those are always
- * server-assigned and set explicitly by each action, never taken from the
- * caller's payload.
+ * Este módulo se mantiene como re-export para no tocar los imports existentes,
+ * y conserva `pickWritableFields`, que es lógica de servidor y no parte del
+ * modelo compartido.
  */
-export const ISSUE_WRITABLE_FIELDS = [
-  'title',
-  'description',
-  'status',
-  'priority',
-  'projectId',
-  'assigneeId',
-  'labelIds',
-  'parentId',
-  'dueDate',
-  'estimate',
-] as const;
-
-export type IssueWritableField = (typeof ISSUE_WRITABLE_FIELDS)[number];
+export { ISSUE_WRITABLE_FIELDS } from '../domain.generated';
+export type { IssueWritableField } from '../domain.generated';
 
 /**
- * Returns a shallow copy of `source` containing only the keys listed in
- * `fields` that are actually present on `source` (so omitted fields don't
- * become explicit `undefined` keys that later need cleaning).
+ * Devuelve una copia superficial de `source` con solo las claves listadas en
+ * `fields` que estén realmente presentes (así los campos omitidos no se
+ * vuelven claves con `undefined` explícito que después haya que limpiar).
  */
 export function pickWritableFields<T extends Record<string, any>>(
   source: T,

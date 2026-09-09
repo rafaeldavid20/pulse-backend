@@ -2,6 +2,7 @@ import { PlatformActionRequest, PlatformActionResponse } from '../common/platfor
 import { CreateIssueAction } from '../actions/issues/create-issue';
 import { UpdateIssueAction } from '../actions/issues/update-issue';
 import { DeleteIssueAction } from '../actions/issues/delete-issue';
+import { ReparentIssueAction } from '../actions/issues/reparent-issue';
 import { CreateProjectAction } from '../actions/projects/create-project';
 import { UpdateProjectAction } from '../actions/projects/update-project';
 import { DeleteProjectAction } from '../actions/projects/delete-project';
@@ -13,6 +14,8 @@ import { ListApiKeysAction } from '../actions/apikeys/list-api-keys';
 import { CreateAgentAction } from '../actions/agents/create-agent';
 import { UpdateAgentAction } from '../actions/agents/update-agent';
 import { ListAgentsAction } from '../actions/agents/list-agents';
+import { ConnectRepoAction } from '../actions/agents/connect-repo';
+import { DisconnectRepoAction } from '../actions/agents/disconnect-repo';
 import { CreateCommentAction } from '../actions/comments/create-comment';
 import { ClaimIssueAction } from '../actions/issues/claim-issue';
 import { ClaimNextIssueAction } from '../actions/issues/claim-next-issue';
@@ -43,6 +46,8 @@ export async function dispatchPlatformAction(
       return new UpdateIssueAction(request, callerUid, callerEmail).run();
     case 'issues.delete':
       return new DeleteIssueAction(request, callerUid, callerEmail).run();
+    case 'issues.reparent':
+      return new ReparentIssueAction(request, callerUid, callerEmail).run();
 
     case 'projects.create':
       return new CreateProjectAction(request, callerUid, callerEmail).run();
@@ -69,6 +74,10 @@ export async function dispatchPlatformAction(
       return new UpdateAgentAction(request, callerUid, callerEmail).run();
     case 'agents.list':
       return new ListAgentsAction(request, callerUid, callerEmail).run();
+    case 'agents.connectRepo':
+      return new ConnectRepoAction(request, callerUid, callerEmail).run();
+    case 'agents.disconnectRepo':
+      return new DisconnectRepoAction(request, callerUid, callerEmail).run();
     case 'comments.create':
       return new CreateCommentAction(request, callerUid, callerEmail).run();
     case 'issues.claim':

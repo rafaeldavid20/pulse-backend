@@ -9,6 +9,10 @@ on:
 
 jobs:
   work-on-issue:
+    # Varios runners escuchan el mismo tipo de evento y cada uno filtra por el
+    # suyo, en vez de inventar un tipo de dispatch por proveedor. `== ''` cubre
+    # los dispatches viejos, anteriores a que el trigger mandara `agentKind`.
+    if: ${{ github.event.client_payload.agentKind == 'claude' || github.event.client_payload.agentKind == '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
