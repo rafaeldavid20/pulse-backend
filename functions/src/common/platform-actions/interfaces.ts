@@ -19,6 +19,8 @@ export type PlatformActionCode =
   | 'agents.create'
   | 'agents.update'
   | 'agents.list'
+  | 'agents.connectRepo'
+  | 'agents.disconnectRepo'
   | 'issues.claim'
   | 'issues.claimNext'
   | 'issues.release'

@@ -14,6 +14,8 @@ import { ListApiKeysAction } from '../actions/apikeys/list-api-keys';
 import { CreateAgentAction } from '../actions/agents/create-agent';
 import { UpdateAgentAction } from '../actions/agents/update-agent';
 import { ListAgentsAction } from '../actions/agents/list-agents';
+import { ConnectRepoAction } from '../actions/agents/connect-repo';
+import { DisconnectRepoAction } from '../actions/agents/disconnect-repo';
 import { CreateCommentAction } from '../actions/comments/create-comment';
 import { ClaimIssueAction } from '../actions/issues/claim-issue';
 import { ClaimNextIssueAction } from '../actions/issues/claim-next-issue';
@@ -72,6 +74,10 @@ export async function dispatchPlatformAction(
       return new UpdateAgentAction(request, callerUid, callerEmail).run();
     case 'agents.list':
       return new ListAgentsAction(request, callerUid, callerEmail).run();
+    case 'agents.connectRepo':
+      return new ConnectRepoAction(request, callerUid, callerEmail).run();
+    case 'agents.disconnectRepo':
+      return new DisconnectRepoAction(request, callerUid, callerEmail).run();
     case 'comments.create':
       return new CreateCommentAction(request, callerUid, callerEmail).run();
     case 'issues.claim':
