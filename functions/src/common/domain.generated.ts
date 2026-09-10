@@ -5,7 +5,7 @@
 // dominio de Pulse. Para cambiar algo de acá, editá ese archivo y corré
 // `npm run sync:types` desde `pulse-app`.
 //
-// SOURCE_HASH: c4f8d1c056c08a01
+// SOURCE_HASH: c02e38ebcd144621
 // ============================================================
 
 /**
@@ -128,8 +128,10 @@ export interface Member {
   joinedAt: string;
   isAgent?: boolean;
   agentKind?: AgentKind;
-  /** Denormalizado desde `Agent.role` para que el picker de asignado agrupe
-   * Humanos / Dev / QA sin leer `agents`, que es Admin-SDK-only. */
+  /**
+   * Denormalizado desde `Agent.role` para que el picker de asignado agrupe
+   * Humanos / Dev / QA sin leer `agents`, que es Admin-SDK-only.
+   */
   agentRole?: AgentRole;
 }
 
