@@ -4,6 +4,7 @@ import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { findIssue } from '../../mcp/tools/read';
 import { identifierFromBranch, identifierFromClosesKeyword } from '../../common/utils/issue-refs';
+import { upsertGitRef, statusFromGitRefs } from '../../common/utils/project-repos';
 
 interface WebhookSyncInput {
   event: 'create' | 'pull_request';
@@ -63,7 +64,32 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
     }
     const issue = issueDoc.data()!;
 
-    const desiredStatus = this.desiredStatus(input, issue.status);
+    // La entrada de ESTE repo se actualiza sin tocar las de los otros: un issue
+    // puede tener ramas en varios repos y el evento habla de uno solo.
+    const refEntry: Record<string, any> = {
+      repoFullName: input.repoFullName,
+      branch: input.branch,
+      lastSyncedAt: new Date().toISOString(),
+    };
+    if (input.prNumber !== undefined) refEntry.prNumber = input.prNumber;
+    if (input.prUrl !== undefined) refEntry.prUrl = input.prUrl;
+    if (input.event === 'pull_request') {
+      refEntry.prState = input.merged ? 'merged' : input.draft ? 'draft' : this.prStateFor(input.prAction);
+      refEntry.merged = !!input.merged;
+    }
+    const nextRefs = upsertGitRef(issue.gitRefs, refEntry);
+
+    // Con varias ramas, el estado sale del conjunto y no de este evento suelto:
+    // `in_review` cuando TODOS los PRs están abiertos, `done` cuando todos están
+    // mergeados. Un issue cuyo cambio de backend se mergeó pero cuyo cambio de
+    // modelo sigue abierto no está terminado.
+    //
+    // Con una sola rama, la regla del conjunto y la de siempre coinciden, así
+    // que los issues de un repo se comportan igual que antes.
+    const desiredStatus =
+      nextRefs.length > 1
+        ? statusFromGitRefs(nextRefs)
+        : this.desiredStatus(input, issue.status);
 
     // Manual-override guard: if a human moved the status away from the
     // status *we* last set via sync, a webhook event shouldn't silently
@@ -74,15 +100,24 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
 
     const now = new Date().toISOString();
     const updates: Record<string, any> = {
-      'git.repoFullName': input.repoFullName,
-      'git.branch': input.branch,
+      gitRefs: nextRefs,
       'git.lastSyncedAt': now,
       updatedAt: now,
     };
-    if (input.prNumber !== undefined) updates['git.prNumber'] = input.prNumber;
-    if (input.prUrl !== undefined) updates['git.prUrl'] = input.prUrl;
-    if (input.event === 'pull_request') {
-      updates['git.prState'] = input.merged ? 'merged' : input.draft ? 'draft' : this.prStateFor(input.prAction);
+
+    // `git` solo se mueve si el evento habla de la rama principal; si no, un
+    // push en el repo secundario reapuntaría el ruteo del dispatch.
+    const isPrimary = !issue.git?.branch || issue.git.repoFullName === input.repoFullName;
+    if (isPrimary) {
+      updates['git.repoFullName'] = input.repoFullName;
+      updates['git.branch'] = input.branch;
+    }
+    if (isPrimary) {
+      if (input.prNumber !== undefined) updates['git.prNumber'] = input.prNumber;
+      if (input.prUrl !== undefined) updates['git.prUrl'] = input.prUrl;
+      if (input.event === 'pull_request') {
+        updates['git.prState'] = refEntry.prState;
+      }
     }
 
     let statusChanged = false;

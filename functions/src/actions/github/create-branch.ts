@@ -2,6 +2,11 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { resolveIssueRepo } from '../../common/utils/repo-resolution';
+import {
+  allowedReposForIssue,
+  assertRepoAllowed,
+  upsertGitRef,
+} from '../../common/utils/project-repos';
 import { suggestedBranchName } from '../../common/utils/slug';
 import { createBranch as createGithubBranch } from '../../github/client';
 
@@ -69,23 +74,43 @@ export class CreateBranchAction extends PlatformActionHandler {
           .join(', ')}), y ni el issue, ni su épica, ni el agente tienen uno por defecto.`
       );
     }
-    if (!repos.some((r) => r.fullName === repoFullName)) {
-      throw new Error(`'${repoFullName}' no está entre los repos autorizados para esta instalación.`);
-    }
+    // Dos límites, no uno: la instalación dice a qué repos llega la App, y el
+    // proyecto dice en cuáles se puede trabajar este issue. El segundo es el que
+    // el usuario controla desde Pulse.
+    const allowed = await allowedReposForIssue(db, issue, repos.map((r) => r.fullName));
+    assertRepoAllowed(repoFullName, allowed, `el proyecto de ${issue.identifier}`);
 
     const branch = data.branch || suggestedBranchName(issue.identifier, issue.title);
     const result = await createGithubBranch(installation.installationId, repoFullName, branch, data.baseBranch);
 
     const now = new Date().toISOString();
-    await issueRef.update({
-      'git.repoFullName': result.repoFullName,
-      'git.branch': result.branch,
-      'git.branchUrl': result.branchUrl,
-      'git.baseBranch': result.baseBranch,
-      'git.lastSyncedAt': now,
-      updatedAt: now,
-    });
+    const ref = {
+      repoFullName: result.repoFullName,
+      branch: result.branch,
+      branchUrl: result.branchUrl,
+      baseBranch: result.baseBranch,
+      lastSyncedAt: now,
+    };
 
-    return { issueId: data.issueId, ...result };
+    const updates: Record<string, any> = {
+      gitRefs: upsertGitRef(issue.gitRefs, ref),
+      updatedAt: now,
+    };
+
+    // `git` sigue siendo la rama principal — la del repo donde corre el job del
+    // agente — y solo se escribe la primera vez. Sin esta guarda, crear una
+    // segunda rama en otro repo movería el ruteo del dispatch a ese repo, que es
+    // justo lo que este cambio viene a evitar.
+    if (!issue.git?.branch) {
+      updates['git.repoFullName'] = result.repoFullName;
+      updates['git.branch'] = result.branch;
+      updates['git.branchUrl'] = result.branchUrl;
+      updates['git.baseBranch'] = result.baseBranch;
+      updates['git.lastSyncedAt'] = now;
+    }
+
+    await issueRef.update(updates);
+
+    return { issueId: data.issueId, ...result, gitRefs: updates.gitRefs };
   }
 }
