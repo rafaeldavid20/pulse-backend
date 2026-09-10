@@ -12,7 +12,8 @@
     "start": "npm run shell",
     "deploy": "firebase deploy --only functions",
     "logs": "firebase functions:log",
-    "migrate:hierarchy": "node scripts/migrate-hierarchy.mjs"
+    "migrate:hierarchy": "node scripts/migrate-hierarchy.mjs",
+    "migrate:agent-roles": "node scripts/migrate-agent-roles.mjs"
   },
   "engines": {
     "node": "20"
