@@ -1,3 +1,4 @@
+import { getFirestore } from 'firebase-admin/firestore';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { McpPrincipal } from '../auth';
@@ -13,6 +14,7 @@ import { CreateProjectAction } from '../../actions/projects/create-project';
 import { CreateCommentAction } from '../../actions/comments/create-comment';
 import { CreateBranchAction } from '../../actions/github/create-branch';
 import { LinkPrAction } from '../../actions/github/link-pr';
+import { CreateLabelAction } from '../../actions/labels/create-label';
 
 type WritableActionCode =
   | 'issues.claimNext'
@@ -24,7 +26,8 @@ type WritableActionCode =
   | 'projects.create'
   | 'comments.create'
   | 'github.createBranch'
-  | 'github.linkPr';
+  | 'github.linkPr'
+  | 'labels.create';
 
 const ACTIONS: Record<WritableActionCode, new (request: any, callerUid?: string) => { run(): Promise<PlatformActionResponse> }> = {
   'issues.claimNext': ClaimNextIssueAction,
@@ -37,6 +40,7 @@ const ACTIONS: Record<WritableActionCode, new (request: any, callerUid?: string)
   'comments.create': CreateCommentAction,
   'github.createBranch': CreateBranchAction,
   'github.linkPr': LinkPrAction,
+  'labels.create': CreateLabelAction,
 };
 
 /**
@@ -47,10 +51,37 @@ const ACTIONS: Record<WritableActionCode, new (request: any, callerUid?: string)
  * created the key, for a personal key) is what `isWorkspaceMember()` checks
  * against in each action's `authorize()`.
  */
-async function runAction(actionCode: WritableActionCode, data: Record<string, any>, actorUid: string) {
+/** Corre una Platform Action y devuelve la respuesta cruda (para orquestar varias). */
+async function runRaw(actionCode: WritableActionCode, data: Record<string, any>, actorUid: string): Promise<PlatformActionResponse> {
   const ActionClass = ACTIONS[actionCode];
-  const res = await new ActionClass({ actionCode, data } satisfies { actionCode: PlatformActionCode; data: Record<string, any> }, actorUid).run();
+  return new ActionClass({ actionCode, data } satisfies { actionCode: PlatformActionCode; data: Record<string, any> }, actorUid).run();
+}
+
+async function runAction(actionCode: WritableActionCode, data: Record<string, any>, actorUid: string) {
+  const res = await runRaw(actionCode, data, actorUid);
   return textResult(res.success ? res.data : { error: res.error });
+}
+
+/**
+ * Etiqueta con la que el agente señala un issue que no puede implementar sin una
+ * decisión de producto. Se busca por nombre y se crea si falta, así funciona en
+ * cualquier workspace sin que el modelo tenga que conocer un id de etiqueta.
+ */
+const AMBIGUITY_LABEL = 'ambigua';
+const AMBIGUITY_COLOR = '#F09436';
+
+async function ensureAmbiguityLabel(workspaceId: string, teamId: string, actorUid: string): Promise<string | null> {
+  const found = await getFirestore()
+    .collection('labels')
+    .where('workspaceId', '==', workspaceId)
+    .where('name', '==', AMBIGUITY_LABEL)
+    .limit(1)
+    .get();
+  if (!found.empty) return found.docs[0].id;
+  const res = await runRaw('labels.create', { workspaceId, teamId, name: AMBIGUITY_LABEL, color: AMBIGUITY_COLOR }, actorUid);
+  if (!res.success) return null;
+  const d: any = res.data || {};
+  return d.id || d.label?.id || null;
 }
 
 export function registerWriteTools(server: McpServer, principal: McpPrincipal) {
@@ -181,6 +212,54 @@ export function registerWriteTools(server: McpServer, principal: McpPrincipal) {
       }
 
       return runAction('issues.reparent', { id: doc.id, parentId }, actorUid);
+    }
+  );
+
+  server.tool(
+    'pulse_flag_ambiguity',
+    'Flags an issue you cannot implement without a product decision: comments your concrete questions, adds the "ambigua" label and releases the issue, so the person managing it decides whether to clarify the description or authorize you to decide. Call it and then stop. Pass clear=true to remove the label once the comments answer the questions.',
+    {
+      identifier: z.string(),
+      questions: z.array(z.string()).optional()
+        .describe('Concrete questions the description, code and comments do not answer. Required unless clear is true.'),
+      clear: z.boolean().optional().describe('Remove the "ambigua" label instead of flagging.'),
+    },
+    async ({ identifier, questions, clear }) => {
+      const doc = await findIssue(principal.workspaceId, identifier);
+      if (!doc) return textResult({ error: `No issue found for '${identifier}'.` });
+      const issue = doc.data()!;
+      const labelId = await ensureAmbiguityLabel(principal.workspaceId, issue.teamId, actorUid);
+      if (!labelId) return textResult({ error: 'No se pudo obtener ni crear la etiqueta "ambigua".' });
+      const current: string[] = Array.isArray(issue.labelIds) ? issue.labelIds : [];
+
+      if (clear) {
+        const res = await runRaw('issues.update', { id: doc.id, labelIds: current.filter((l) => l !== labelId) }, actorUid);
+        return textResult(res.success ? { cleared: true } : { error: res.error });
+      }
+
+      if (!questions || questions.length === 0) {
+        return textResult({ error: 'Pasá al menos una pregunta concreta en "questions".' });
+      }
+
+      // Etiqueta, comentario y liberación del lado servidor y en este orden: si
+      // se lo pidiéramos al modelo como tres llamadas, podría quedar a medias.
+      const labeled = await runRaw('issues.update', { id: doc.id, labelIds: [...new Set([...current, labelId])] }, actorUid);
+      if (!labeled.success) return textResult({ error: labeled.error });
+
+      const body = [
+        '**El agente marcó este issue como ambiguo.** Antes de implementar necesita que se resuelva:',
+        '',
+        ...questions.map((q, i) => `${i + 1}. ${q}`),
+        '',
+        'Para seguir: completá la descripción, o respondé acá (por ejemplo "decidí vos"), y volvé a asignar el issue al agente. En el próximo run va a leer estos comentarios.',
+      ].join('\n');
+      await runRaw('comments.create', { issueId: doc.id, body, source: 'mcp' }, actorUid);
+
+      const released = await runRaw('issues.release', {
+        id: doc.id,
+        reason: 'Marcado como ambiguo por el agente: ver las preguntas en los comentarios.',
+      }, actorUid);
+      return textResult({ flagged: true, released: released.success, labelId });
     }
   );
 
