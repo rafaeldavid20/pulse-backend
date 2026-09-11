@@ -11,8 +11,9 @@ function today(): string {
 }
 
 /**
- * Fase 6's autonomous trigger: an issue moving *into* `todo` while assigned
- * to an agent with `autonomousMode` fires a `repository_dispatch` event so
+ * Fase 6's autonomous trigger: an issue becoming dispatchable — in `todo` and
+ * assigned to an agent with `autonomousMode`, in either order — fires a
+ * `repository_dispatch` event so
  * `.github/workflows/pulse-agent.yml` picks it up — no human has to open
  * Claude Code and say "take the next task."
  *
@@ -41,10 +42,27 @@ export const agentDispatchTrigger = onDocumentWritten(
       const after = event.data?.after.data();
       if (!after) return; // deleted
 
-      if (after.status !== 'todo' || before?.status === 'todo') return;
-
+      // Dispara cuando el issue *se vuelve* despachable: está en `todo` con un
+      // asignado, y en el estado anterior no lo estaba. Hay dos formas de
+      // llegar ahí y las dos son naturales:
+      //
+      //   - asignar primero y mover a `todo` después (la única que antes andaba)
+      //   - mover a `todo` y asignar después
+      //
+      // Antes solo se miraba la *entrada* a `todo`, así que el segundo orden
+      // fallaba en silencio: al mover no había asignado (return), y al asignar
+      // el issue ya estaba en `todo` (return). Pasó con TES-130: quedó en
+      // `todo` asignado a Claude y el agente nunca arrancó.
+      //
+      // Reasignar a otro agente estando en `todo` también dispara, para el nuevo.
+      // Cualquier otro update de un issue ya en `todo` con el mismo asignado no
+      // dispara, así que no hay doble dispatch por editar un título.
       const agentId = after.assigneeId;
-      if (!agentId) return;
+      if (after.status !== 'todo' || !agentId) return;
+
+      const enteredTodo = before?.status !== 'todo';
+      const assigneeChanged = before?.assigneeId !== agentId;
+      if (!enteredTodo && !assigneeChanged) return;
 
       const db = getFirestore();
       const agentSnap = await db.collection('agents').doc(agentId).get();
