@@ -9,7 +9,7 @@
  * que permite después detectar repos que quedaron con una versión vieja y
  * ofrecer actualizarlos, sin tener que diffear el YAML entero.
  */
-export const WORKFLOW_VERSION = 2;
+export const WORKFLOW_VERSION = 3;
 
 export const WORKFLOW_PATH = '.github/workflows/pulse-agent.yml';
 
@@ -105,6 +105,18 @@ jobs:
             motivo. Nunca termines la sesión sin dejar un comentario en el issue: es la única
             forma de que alguien sepa qué pasó, porque el detalle de esta sesión no se guarda
             en los logs.
+
+            Antes de implementar, evaluá si la descripción alcanza. Si hay decisiones de
+            producto o de diseño que ni la descripción, ni el código, ni los comentarios del
+            issue resuelven, NO las decidas vos: llamá a pulse_flag_ambiguity con la lista
+            concreta de preguntas y terminá. Eso comenta las preguntas, marca el issue con la
+            etiqueta ambigua y lo libera, para que quien maneja el issue decida si completa
+            la descripción o te autoriza a decidir.
+
+            Si el issue ya tiene la etiqueta ambigua y los comentarios responden esas
+            preguntas o te autorizan a decidir, seguí adelante: llamá a pulse_flag_ambiguity
+            con clear en true para sacar la etiqueta, y dejá escritas en el PR las
+            decisiones que tomaste.
 
             Si el repo no corresponde al trabajo descrito, no improvises: comentá el problema
             con pulse_comment_issue y terminá sin crear rama ni PR.
