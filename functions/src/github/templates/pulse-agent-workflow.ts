@@ -9,7 +9,7 @@
  * que permite después detectar repos que quedaron con una versión vieja y
  * ofrecer actualizarlos, sin tener que diffear el YAML entero.
  */
-export const WORKFLOW_VERSION = 3;
+export const WORKFLOW_VERSION = 4;
 
 export const WORKFLOW_PATH = '.github/workflows/pulse-agent.yml';
 
@@ -81,9 +81,13 @@ jobs:
           # GitHub App, no un humano — claude-code-action bloquea por default
           # los workflows iniciados por bots.
           allowed_bots: pulse-app-agent
+          # --disallowedTools: nada de subagentes en segundo plano ni despertadores. En un
+          # run headless, terminar el turno termina la sesión: TES-132 se perdió porque el
+          # agente lanzó subagentes y cerró su turno para esperarlos.
           claude_args: |
             --mcp-config \${{ runner.temp }}/pulse-mcp.json
             --allowedTools mcp__pulse,Bash,Read,Edit,Write,Glob,Grep
+            --disallowedTools Agent,Task,ScheduleWakeup,Monitor,CronCreate
           prompt: |
             Usá el MCP de Pulse para trabajar el issue con id
             "\${{ github.event.client_payload.issueId }}"
@@ -120,6 +124,11 @@ jobs:
 
             Si el repo no corresponde al trabajo descrito, no improvises: comentá el problema
             con pulse_comment_issue y terminá sin crear rama ni PR.
+
+            Esta sesión no es interactiva: cuando terminás tu turno, la sesión termina y
+            nadie la retoma. No lances trabajo en segundo plano ni esperes resultados;
+            explorá e implementá todo en esta misma sesión, y terminá solo cuando el PR
+            esté abierto o cuando hayas marcado el issue como ambiguo.
 
       - name: Reportar el run en Pulse
         # Corre siempre que el run no se haya cancelado a mano, termine como
