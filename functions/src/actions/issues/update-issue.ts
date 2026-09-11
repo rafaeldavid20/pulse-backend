@@ -5,6 +5,7 @@ import { cleanUndefined } from '../../common/utils/clean';
 import { ISSUE_WRITABLE_FIELDS, pickWritableFields } from '../../common/utils/issue-fields';
 import { canHaveChildren } from '../../common/domain.generated';
 import { validateRepoForWorkspace } from '../../common/utils/repo-field';
+import { upsertGitRef } from '../../common/utils/project-repos';
 import {
   adjustParentCounters,
   childIdsOf,
@@ -108,11 +109,38 @@ export class UpdateIssueAction extends PlatformActionHandler {
     // que es cómo la UI dice "volvé a heredar de la épica".
     if ('repoFullName' in data) {
       const repo = data.repoFullName || null;
+      const previousRepo: string | null = current.git?.repoFullName || null;
       if (repo) {
         await validateRepoForWorkspace(db, current.workspaceId, repo);
         updates['git.repoFullName'] = repo;
       } else {
         updates['git.repoFullName'] = FieldValue.delete();
+      }
+
+      // Cambiar el repo invalida la rama principal: esa rama vive en el repo
+      // *anterior*. Antes solo se pisaba `git.repoFullName` y quedaban `branch`
+      // y `branchUrl` del otro repo — TES-130 terminó diciendo "rama X en
+      // pulse-app" cuando X estaba en pulse-backend, y el agente que la tomó no
+      // encontró ninguna rama que trabajar.
+      //
+      // Si esa rama llegó a tener PR, es trabajo real y se conserva en
+      // `gitRefs`; una rama sin PR se descarta (el caso típico es un run mal
+      // ruteado que abandonó la rama).
+      if (repo !== previousRepo && current.git?.branch) {
+        if (current.git.prNumber !== undefined && previousRepo) {
+          updates.gitRefs = upsertGitRef(current.gitRefs, {
+            repoFullName: previousRepo,
+            branch: current.git.branch,
+            branchUrl: current.git.branchUrl,
+            baseBranch: current.git.baseBranch,
+            prNumber: current.git.prNumber,
+            prUrl: current.git.prUrl,
+            prState: current.git.prState,
+          });
+        }
+        for (const f of ['branch', 'branchUrl', 'baseBranch', 'prNumber', 'prUrl', 'prState', 'lastSyncedAt', 'lastSyncedStatus']) {
+          updates[`git.${f}`] = FieldValue.delete();
+        }
       }
       delete updates.repoFullName;
     }
