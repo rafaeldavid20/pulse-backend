@@ -97,11 +97,14 @@ export class CreateBranchAction extends PlatformActionHandler {
       updatedAt: now,
     };
 
-    // `git` sigue siendo la rama principal — la del repo donde corre el job del
-    // agente — y solo se escribe la primera vez. Sin esta guarda, crear una
-    // segunda rama en otro repo movería el ruteo del dispatch a ese repo, que es
-    // justo lo que este cambio viene a evitar.
-    if (!issue.git?.branch) {
+    // La rama del repo de ruteo ES la principal, así que se escribe en `git`
+    // aunque ya hubiera una registrada. Antes solo se escribía "la primera
+    // vez": si `git.branch` quedaba apuntando a una rama que ya no existe —como
+    // en TES-130—, crear la rama nueva no la reemplazaba nunca. Una rama en un
+    // repo *distinto* al de ruteo va solo a `gitRefs`, que es el caso para el
+    // que existe la guarda.
+    const isPrimaryRepo = !issue.git?.repoFullName || issue.git.repoFullName === result.repoFullName;
+    if (isPrimaryRepo) {
       updates['git.repoFullName'] = result.repoFullName;
       updates['git.branch'] = result.branch;
       updates['git.branchUrl'] = result.branchUrl;

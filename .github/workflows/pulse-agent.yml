@@ -69,3 +69,13 @@ jobs:
             y linkealo con pulse_link_pr, y comentá el progreso con pulse_comment_issue. No pases
             el issue a in_review vos mismo — eso lo hace el webhook de GitHub automáticamente
             cuando el PR se abre.
+
+            Aunque el issue ya tenga una rama registrada, verificá que exista en este repo
+            (git ls-remote origin <rama>); si no existe, creá una nueva con pulse_create_branch.
+
+            Si en algún momento no podés avanzar —la rama no existe, el cambio no corresponde
+            a este repo, falta información, falla el build—, comentá en el issue qué te
+            bloqueó con pulse_comment_issue y liberalo con pulse_release_issue indicando el
+            motivo. Nunca termines la sesión sin dejar un comentario en el issue: es la única
+            forma de que alguien sepa qué pasó, porque el detalle de esta sesión no se guarda
+            en los logs.
