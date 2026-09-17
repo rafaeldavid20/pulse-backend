@@ -1,5 +1,6 @@
 import { initializeApp } from 'firebase-admin/app';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
+import { z } from 'zod';
 import { PlatformActionRequest } from './common/platform-actions/interfaces';
 import { dispatchPlatformAction } from './router/platform-actions-router';
 import { mcpKeyPepper, githubAppId, githubAppPrivateKeyB64, githubAppSlug, pulseArgusDsn } from './common/secrets';
@@ -16,6 +17,38 @@ export { oauthToken } from './oauth/token';
 
 // Initialize Firebase Admin SDK once
 initializeApp();
+
+const clientTelemetryInput = z.object({
+  error: z.object({
+    name: z.string().trim().min(1).max(120),
+    message: z.string().trim().min(1).max(12_000),
+    stack: z.string().trim().max(12_000).optional(),
+  }).strict(),
+  route: z.string().trim().min(1).max(240),
+}).strict();
+
+/**
+ * Authenticated browser errors are relayed server-side so the Argus DSN never
+ * reaches the static Next.js bundle. This endpoint deliberately accepts only
+ * a bounded error shape and never treats browser input as an action request.
+ */
+export const pulseClientTelemetry = onCall(
+  { cors: true, region: 'us-east4', secrets: [pulseArgusDsn] },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError('unauthenticated', 'Iniciá sesión para enviar telemetría.');
+    }
+    const input = clientTelemetryInput.parse(request.data);
+    const error = new Error(input.error.message);
+    error.name = input.error.name;
+    if (input.error.stack) error.stack = input.error.stack;
+    const accepted = await capturePulseException(error, {
+      route: input.route,
+      tags: { runtime: 'web', source: 'pulse-app' },
+    });
+    return { accepted };
+  },
+);
 
 /**
  * Pulse Platform Action Cloud Function (v2 Callable)
