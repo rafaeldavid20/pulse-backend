@@ -2,6 +2,23 @@
 
 Firebase Cloud Functions y Security Rules para Pulse — Platform Actions Engine.
 
+## Observabilidad con Argus
+
+`pulsePlatformAction` y `pulseMcp` reportan fallos internos a Argus sin alterar
+la respuesta ni el comportamiento de Pulse. El DSN vive exclusivamente en
+Secret Manager como `PULSE_ARGUS_DSN`; no se agrega al frontend estático.
+
+1. En Argus, crear un proyecto **Pulse Backend** y generar su DSN desde
+   **Conexión e issues**.
+2. Cargarlo en el proyecto Firebase de Pulse:
+
+```bash
+firebase functions:secrets:set PULSE_ARGUS_DSN --project pulse-app-93
+```
+
+3. Desplegar Functions. Un fallo de una acción o del transporte MCP aparecerá
+   como issue en ese proyecto de Argus.
+
 ## Disparo autónomo de agentes (Fase 6)
 
 Cuando un issue asignado a un agente con `autonomousMode` pasa a `todo`,

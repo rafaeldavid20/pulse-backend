@@ -9,6 +9,12 @@ import { defineSecret } from 'firebase-functions/params';
 export const mcpKeyPepper = defineSecret('MCP_KEY_PEPPER');
 
 /**
+ * DSN issued by the Argus project dedicated to Pulse's backend. It is bound
+ * only to server Functions and is never available to the static web client.
+ */
+export const pulseArgusDsn = defineSecret('PULSE_ARGUS_DSN');
+
+/**
  * Firebase Web API key, used client-side by the OAuth `/authorize` page
  * (Fase 7) to init the Firebase Auth JS SDK for email/password + Google
  * sign-in — the same login the pulse-app frontend already uses. Not secret

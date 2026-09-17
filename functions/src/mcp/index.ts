@@ -2,7 +2,8 @@ import { Request as ExpressRequest, Response as ExpressResponse } from 'express'
 import { onRequest } from 'firebase-functions/v2/https';
 import { buildMcpTransport } from './server';
 import { authenticateRequest, McpAuthError, McpPrincipal } from './auth';
-import { mcpKeyPepper, githubAppId, githubAppPrivateKeyB64, githubAppSlug } from '../common/secrets';
+import { mcpKeyPepper, githubAppId, githubAppPrivateKeyB64, githubAppSlug, pulseArgusDsn } from '../common/secrets';
+import { capturePulseException } from '../common/observability/argus';
 import { OAUTH_PROTECTED_RESOURCE_METADATA_URL } from '../oauth/constants';
 
 const CORS_HEADERS = {
@@ -57,7 +58,7 @@ export const pulseMcp = onRequest(
     region: 'us-east4',
     memory: '512MiB',
     timeoutSeconds: 60,
-    secrets: [mcpKeyPepper, githubAppId, githubAppPrivateKeyB64, githubAppSlug],
+    secrets: [mcpKeyPepper, githubAppId, githubAppPrivateKeyB64, githubAppSlug, pulseArgusDsn],
   },
   async (req, res) => {
     for (const [key, value] of Object.entries(CORS_HEADERS)) res.setHeader(key, value);
@@ -94,6 +95,7 @@ export const pulseMcp = onRequest(
     try {
       await bridgeToWebFetch(req, res, principal);
     } catch (error) {
+      await capturePulseException(error, { route: 'pulseMcp' });
       console.error('[pulseMcp] Transport error:', error);
       res.status(500).json({ error: 'Internal MCP transport error' });
     }
