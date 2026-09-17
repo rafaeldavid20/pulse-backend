@@ -45,6 +45,11 @@ export class ReleaseIssueAction extends PlatformActionHandler {
       'agent.state': 'idle',
       'agent.claimedBy': FieldValue.delete(),
       'agent.blockedReason': data.reason ?? FieldValue.delete(),
+      // Limpia la marca de idempotencia del dispatch (agent-dispatch.ts) para
+      // que, si el issue vuelve a `todo` y se reasigna, el trigger no la
+      // confunda con un dispatch reciente todavía en curso.
+      'agent.dispatchedAt': FieldValue.delete(),
+      'agent.dispatchedTo': FieldValue.delete(),
       updatedAt: new Date().toISOString(),
     });
 

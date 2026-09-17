@@ -6,6 +6,13 @@ import { resolveIssueRepo } from '../common/utils/repo-resolution';
 
 const DAILY_DISPATCH_LIMIT = 5;
 
+// Un run tarda ~30s en arrancar y reclamar el issue (ver `agent.state ===
+// 'claimed'` en claim-issue.ts), así que ese guard solo no alcanza para
+// separar dos dispatches que ocurren antes de que cualquiera llegue a
+// reclamar (TES-130: dos dispatches en 4s, mismo issue, mismo agente, dos
+// runs en paralelo). Esta ventana cubre ese hueco.
+const DISPATCH_COOLDOWN_MS = 10 * 60 * 1000;
+
 function today(): string {
   return new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 }
@@ -58,17 +65,35 @@ export const agentDispatchTrigger = onDocumentWritten(
       // Cualquier otro update de un issue ya en `todo` con el mismo asignado no
       // dispara, así que no hay doble dispatch por editar un título.
       const agentId = after.assigneeId;
-      if (after.status !== 'todo' || !agentId) return;
+      if (after.status !== 'todo' || !agentId) {
+        console.log(
+          `[AgentDispatch] issue '${event.params.issueId}' not dispatchable (status '${after.status}', assignee '${agentId ?? 'none'}'), skipping dispatch.`
+        );
+        return;
+      }
 
       const enteredTodo = before?.status !== 'todo';
       const assigneeChanged = before?.assigneeId !== agentId;
-      if (!enteredTodo && !assigneeChanged) return;
+      if (!enteredTodo && !assigneeChanged) {
+        console.log(
+          `[AgentDispatch] issue '${event.params.issueId}' already in 'todo' for the same assignee, not a new dispatchable transition, skipping dispatch.`
+        );
+        return;
+      }
 
       const db = getFirestore();
       const agentSnap = await db.collection('agents').doc(agentId).get();
-      if (!agentSnap.exists) return;
+      if (!agentSnap.exists) {
+        console.log(`[AgentDispatch] agent '${agentId}' does not exist, skipping dispatch.`);
+        return;
+      }
       const agent = agentSnap.data()!;
-      if (!agent.enabled || !agent.autonomousMode) return;
+      if (!agent.enabled || !agent.autonomousMode) {
+        console.log(
+          `[AgentDispatch] agent '${agentId}' is not enabled/autonomous (enabled=${!!agent.enabled}, autonomousMode=${!!agent.autonomousMode}), skipping dispatch.`
+        );
+        return;
+      }
 
       const maxConcurrent = agent.maxConcurrentIssues ?? 1;
       const inProgressSnap = await db
@@ -84,18 +109,47 @@ export const agentDispatchTrigger = onDocumentWritten(
       }
 
       const workspaceId = after.workspaceId;
+      const issueRef = db.collection('issues').doc(event.params.issueId);
       const counterRef = db.collection('agent_dispatch_counters').doc(`${workspaceId}_${today()}`);
-      const allowed = await db.runTransaction(async (tx: Transaction) => {
-        const snap = await tx.get(counterRef);
-        const count = snap.exists ? snap.data()!.count || 0 : 0;
-        if (count >= DAILY_DISPATCH_LIMIT) return false;
+      const dispatchDecision = await db.runTransaction(async (tx: Transaction) => {
+        // Leer el propio issue dentro de la transacción, no el `after` del
+        // evento: dos triggers concurrentes parten del mismo `after` pero
+        // solo uno de ellos debe ganar la carrera a escribir la marca.
+        const issueSnap = await tx.get(issueRef);
+        const dispatchedAt: string | undefined = issueSnap.data()?.agent?.dispatchedAt;
+        const dispatchedTo: string | undefined = issueSnap.data()?.agent?.dispatchedTo;
+        if (dispatchedTo === agentId && dispatchedAt) {
+          const elapsedMs = Date.now() - new Date(dispatchedAt).getTime();
+          if (elapsedMs < DISPATCH_COOLDOWN_MS) {
+            return { allowed: false, reason: 'recent-dispatch', elapsedMs } as const;
+          }
+        }
+
+        const counterSnap = await tx.get(counterRef);
+        const count = counterSnap.exists ? counterSnap.data()!.count || 0 : 0;
+        if (count >= DAILY_DISPATCH_LIMIT) {
+          return { allowed: false, reason: 'circuit-breaker' } as const;
+        }
+
         tx.set(counterRef, { workspaceId, date: today(), count: FieldValue.increment(1) }, { merge: true });
-        return true;
+        tx.update(issueRef, {
+          'agent.dispatchedAt': new Date().toISOString(),
+          'agent.dispatchedTo': agentId,
+        });
+        return { allowed: true } as const;
       });
-      if (!allowed) {
-        console.log(
-          `[AgentDispatch] circuit breaker tripped for workspace '${workspaceId}' (limit ${DAILY_DISPATCH_LIMIT}/day), skipping dispatch.`
-        );
+      if (!dispatchDecision.allowed) {
+        if (dispatchDecision.reason === 'recent-dispatch') {
+          console.log(
+            `[AgentDispatch] issue '${event.params.issueId}' already dispatched to agent '${agentId}' ${Math.round(
+              dispatchDecision.elapsedMs / 1000
+            )}s ago (cooldown ${DISPATCH_COOLDOWN_MS / 1000}s) and not released since, skipping dispatch.`
+          );
+        } else {
+          console.log(
+            `[AgentDispatch] circuit breaker tripped for workspace '${workspaceId}' (limit ${DAILY_DISPATCH_LIMIT}/day), skipping dispatch.`
+          );
+        }
         return;
       }
 
