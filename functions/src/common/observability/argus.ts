@@ -17,9 +17,9 @@ function loadArgusSdk(): Promise<ArgusSdk> {
 export async function capturePulseException(
   error: unknown,
   context: CaptureContext,
-): Promise<void> {
+): Promise<boolean> {
   const dsn = pulseArgusDsn.value();
-  if (!dsn) return;
+  if (!dsn) return false;
 
   try {
     const { createArgusClient } = await loadArgusSdk();
@@ -28,8 +28,10 @@ export async function capturePulseException(
       environment: process.env.GCLOUD_PROJECT ? 'production' : 'development',
       release: process.env.K_REVISION,
     }).captureException(error, context);
+    return true;
   } catch {
     // Do not log the reporting failure: it can contain transport details and
     // monitoring must stay invisible to Pulse's own callers.
+    return false;
   }
 }
