@@ -2,7 +2,8 @@ import { initializeApp } from 'firebase-admin/app';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { PlatformActionRequest } from './common/platform-actions/interfaces';
 import { dispatchPlatformAction } from './router/platform-actions-router';
-import { mcpKeyPepper, githubAppId, githubAppPrivateKeyB64, githubAppSlug } from './common/secrets';
+import { mcpKeyPepper, githubAppId, githubAppPrivateKeyB64, githubAppSlug, pulseArgusDsn } from './common/secrets';
+import { capturePulseException } from './common/observability/argus';
 export { pulseMcp } from './mcp';
 export { githubSetup, githubCallback } from './github/install-flow';
 export { githubWebhook } from './github/webhook';
@@ -25,7 +26,7 @@ export const pulsePlatformAction = onCall(
   {
     cors: true,
     region: 'us-east4',
-    secrets: [mcpKeyPepper, githubAppId, githubAppPrivateKeyB64, githubAppSlug],
+    secrets: [mcpKeyPepper, githubAppId, githubAppPrivateKeyB64, githubAppSlug, pulseArgusDsn],
   },
   async (request) => {
     const callerUid = request.auth?.uid;
@@ -41,12 +42,21 @@ export const pulsePlatformAction = onCall(
       `[PulsePlatformAction] Request received: ${actionRequest.actionCode} from user: ${callerUid || 'anonymous'}`
     );
 
-    const result = await dispatchPlatformAction(actionRequest, callerUid, callerEmail);
+    try {
+      const result = await dispatchPlatformAction(actionRequest, callerUid, callerEmail);
 
-    if (!result.success) {
-      throw new HttpsError('internal', result.error || 'Falló la ejecución de la acción de plataforma.');
+      if (!result.success) {
+        const error = new Error(result.error || 'Falló la ejecución de la acción de plataforma.');
+        throw new HttpsError('internal', error.message);
+      }
+
+      return result;
+    } catch (error) {
+      await capturePulseException(error, {
+        route: 'pulsePlatformAction',
+        tags: { actionCode: actionRequest.actionCode },
+      });
+      throw error;
     }
-
-    return result;
   }
 );
