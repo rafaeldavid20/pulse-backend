@@ -5,6 +5,7 @@ import { PlatformActionRequest } from './common/platform-actions/interfaces';
 import { dispatchPlatformAction } from './router/platform-actions-router';
 import { mcpKeyPepper, githubAppId, githubAppPrivateKeyB64, githubAppSlug, pulseArgusDsn } from './common/secrets';
 import { capturePulseException } from './common/observability/argus';
+import { checkClientTelemetryRateLimit } from './common/observability/client-telemetry-rate-limit';
 export { pulseMcp } from './mcp';
 export { githubSetup, githubCallback } from './github/install-flow';
 export { githubWebhook } from './github/webhook';
@@ -39,6 +40,22 @@ export const pulseClientTelemetry = onCall(
       throw new HttpsError('unauthenticated', 'Iniciá sesión para enviar telemetría.');
     }
     const input = clientTelemetryInput.parse(request.data);
+
+    // The incident this guards against (TES-192) arrived as authenticated,
+    // legitimately-shaped invocations, so the cap has to live server-side
+    // keyed by the caller's uid — nothing client-side can be trusted to
+    // enforce it. Scoped to this relay, not to `capturePulseException`
+    // itself: the other callers of that helper (pulseMcp, pulsePlatformAction)
+    // aren't driven by a browser tab that can get stuck in a retry loop, and
+    // don't always have a caller uid to key a per-user counter on.
+    const rateLimit = await checkClientTelemetryRateLimit(request.auth.uid, input.error);
+    if (!rateLimit.forward) {
+      if (rateLimit.justLimited) {
+        console.log(`[pulseClientTelemetry] rate limit reached for user '${request.auth.uid}', dropping further reports for this hour.`);
+      }
+      return { accepted: false };
+    }
+
     const error = new Error(input.error.message);
     error.name = input.error.name;
     if (input.error.stack) error.stack = input.error.stack;

@@ -129,6 +129,12 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Hourly per-user counter capping client-reported errors relayed to
+    // Argus by pulseClientTelemetry (TES-192). Admin SDK only.
+    match /client_telemetry_counters/{counterId} {
+      allow read, write: if false;
+    }
+
     // OAuth 2.1 + DCR (Fase 7): self-registered MCP clients, single-use
     // authorization codes, and issued access tokens (contain a secret hash,
     // same as api_keys). Admin SDK only — the oauthRegister/oauthAuthorize/
