@@ -101,6 +101,9 @@ export class CreateIssueAction extends PlatformActionHandler {
       labelIds: data.labelIds || ['feature'],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
+      // Igual que en `issues.update`: para que `issueNotificationsTrigger`
+      // (TES-156) no notifique una auto-asignación al crear.
+      updatedBy: this.caller.uid || data.creatorId || 'system',
     };
 
     // Mismo trato que en `issues.update`: `repoFullName` llega a nivel raíz y

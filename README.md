@@ -56,3 +56,25 @@ quemar créditos indefinidamente:
 - **Circuit breaker diario por workspace** (`agent_dispatch_counters`,
   `DAILY_DISPATCH_LIMIT = 5` en `agent-dispatch.ts`): tope de dispatches por
   workspace por día, sin importar cuántos agentes autónomos tenga.
+
+## Notificaciones (F1)
+
+`issueNotificationsTrigger` (`functions/src/triggers/notify-on-issue-write.ts`,
+un `onDocumentWritten` sobre `issues/{issueId}`) genera notificaciones
+`assigned` y `status_change`; `comments.create`
+(`functions/src/actions/comments/create-comment.ts`) genera `comment`,
+`review_result` (cuando el autor es un agente `role: 'qa'`) y `mentioned`
+(parseo best-effort de `@algo` contra `userId`/`displayName`/email de los
+miembros del workspace — no hay todavía un picker de menciones en el
+frontend). `due_soon` es del modelo pero su generación es de F5.
+
+El modelo `Notification` vive en
+`functions/src/common/utils/notifications.ts` hasta que se agregue a
+`pulse-app/src/types/domain.ts` (la fuente única del resto del dominio) y se
+sincronice a `domain.generated.ts` como todo lo demás.
+
+Las acciones que pueden cambiar `status`/`assigneeId` de un issue
+(`issues.update`, `.claim`, `.claimNext`, `.release`, `.requestRepoWork`, y el
+sync de GitHub) estampan `updatedBy` junto con `updatedAt` — es lo único que le
+permite al trigger saber quién hizo el cambio y no notificarle a alguien su
+propia acción.

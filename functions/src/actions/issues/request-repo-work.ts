@@ -90,7 +90,7 @@ export class RequestRepoWorkAction extends PlatformActionHandler {
     const pending = (issue.pendingRepoWork || []).filter((e: any) => e.repoFullName !== repoFullName);
     pending.push(entry);
 
-    const updates: Record<string, any> = { pendingRepoWork: pending, updatedAt: now };
+    const updates: Record<string, any> = { pendingRepoWork: pending, updatedAt: now, updatedBy: this.caller.uid || 'system' };
     // Si el PR de este repo ya se abrió y el webhook lo pasó a `in_review`, con
     // trabajo pendiente en otro repo ya no lo está. Se registra como el estado
     // del último sync para que el guard de override manual del webhook no lo

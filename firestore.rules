@@ -156,5 +156,14 @@ service cloud.firestore {
     match /oauth_tokens/{tokenId} {
       allow read, write: if false;
     }
+
+    // Notificaciones (TES-156). Escritura solo por Admin SDK (el trigger
+    // sobre `issues` y `comments.create`, nunca el cliente). Lectura acotada a
+    // su propio dueño — no alcanza con `isMember`, porque la notificación de
+    // otro miembro del mismo workspace no es asunto de nadie más.
+    match /notifications/{notificationId} {
+      allow read: if isMember(resource.data.workspaceId) && isUser(resource.data.userId);
+      allow write: if false;
+    }
   }
 }

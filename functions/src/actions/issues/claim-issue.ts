@@ -46,6 +46,7 @@ export class ClaimIssueAction extends PlatformActionHandler {
       'agent.claimedBy': this.caller.uid,
       'agent.claimedAt': now,
       updatedAt: now,
+      updatedBy: this.caller.uid,
     });
 
     return { id: data.id, assigneeId: this.caller.uid, status: 'in_progress' };

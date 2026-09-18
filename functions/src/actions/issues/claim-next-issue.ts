@@ -85,6 +85,7 @@ export class ClaimNextIssueAction extends PlatformActionHandler {
           'agent.claimedBy': actorUid,
           'agent.claimedAt': now,
           updatedAt: now,
+          updatedBy: actorUid,
         });
       }
 

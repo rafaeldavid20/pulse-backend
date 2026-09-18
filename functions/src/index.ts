@@ -10,6 +10,7 @@ export { pulseMcp } from './mcp';
 export { githubSetup, githubCallback } from './github/install-flow';
 export { githubWebhook } from './github/webhook';
 export { agentDispatchTrigger } from './triggers/agent-dispatch';
+export { issueNotificationsTrigger } from './triggers/notify-on-issue-write';
 export { autoCreateCyclesScheduled } from './scheduled/auto-create-cycles';
 export { syncMemberClaimsTrigger } from './triggers/sync-member-claims';
 export { oauthProtectedResourceMetadata, oauthAuthorizationServerMetadata } from './oauth/well-known';
