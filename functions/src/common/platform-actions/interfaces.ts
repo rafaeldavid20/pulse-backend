@@ -29,7 +29,10 @@ export type PlatformActionCode =
   | 'github.createBranch'
   | 'github.linkPr'
   | 'github.syncFromWebhook'
-  | 'labels.create';
+  | 'labels.create'
+  | 'cycles.create'
+  | 'cycles.update'
+  | 'cycles.close';
 
 export interface PlatformActionCaller {
   readonly uid?: string;

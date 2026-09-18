@@ -45,3 +45,35 @@ export async function nextIssueNumber(
     return next;
   });
 }
+
+/**
+ * Same atomic-reservation scheme as `nextIssueNumber`, for `Cycle.number`.
+ * Separate counter doc (`cycle_{workspaceId}_{teamId}`) so cycle and issue
+ * numbering don't share — and don't collide on — the same sequence. Cycles
+ * have no legacy pre-counter data to backfill from, so this always starts
+ * at 1.
+ */
+export async function nextCycleNumber(db: Firestore, workspaceId: string, teamId: string): Promise<number> {
+  const counterRef = db.collection('counters').doc(`cycle_${workspaceId}_${teamId}`);
+
+  return db.runTransaction(async (tx: Transaction) => {
+    const snap = await tx.get(counterRef);
+
+    if (!snap.exists) {
+      tx.set(counterRef, {
+        workspaceId,
+        teamId,
+        value: 1,
+        updatedAt: new Date().toISOString(),
+      });
+      return 1;
+    }
+
+    const next = (snap.data()?.value ?? 0) + 1;
+    tx.update(counterRef, {
+      value: FieldValue.increment(1),
+      updatedAt: new Date().toISOString(),
+    });
+    return next;
+  });
+}
