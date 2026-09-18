@@ -26,6 +26,9 @@ import { CreateBranchAction } from '../actions/github/create-branch';
 import { LinkPrAction } from '../actions/github/link-pr';
 import { SyncFromWebhookAction } from '../actions/github/sync-from-webhook';
 import { CreateLabelAction } from '../actions/labels/create-label';
+import { CreateCycleAction } from '../actions/cycles/create-cycle';
+import { UpdateCycleAction } from '../actions/cycles/update-cycle';
+import { CloseCycleAction } from '../actions/cycles/close-cycle';
 
 export async function dispatchPlatformAction(
   request: PlatformActionRequest,
@@ -100,6 +103,13 @@ export async function dispatchPlatformAction(
 
     case 'labels.create':
       return new CreateLabelAction(request, callerUid, callerEmail).run();
+
+    case 'cycles.create':
+      return new CreateCycleAction(request, callerUid, callerEmail).run();
+    case 'cycles.update':
+      return new UpdateCycleAction(request, callerUid, callerEmail).run();
+    case 'cycles.close':
+      return new CloseCycleAction(request, callerUid, callerEmail).run();
 
     default:
       return {

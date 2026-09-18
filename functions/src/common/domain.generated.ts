@@ -60,6 +60,8 @@ export type ProjectStatus =
 
 export type MemberRole = 'owner' | 'admin' | 'member';
 
+export type CycleStatus = 'upcoming' | 'active' | 'completed';
+
 export type AgentKind = 'claude' | 'chatgpt';
 
 /** 'dev' abre PRs sobre issues; 'qa' los revisa contra criterios explícitos. */
@@ -113,6 +115,36 @@ export interface Project {
   leadId?: string;
   color?: string;
   targetDate?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Métricas tomadas al cerrar un ciclo (`cycles.close`), congeladas en ese
+ * momento — el ciclo ya cerrado no vuelve a recalcularlas aunque sus issues
+ * cambien después. `scope`/`completed` son puntos de estimate; `velocity` es
+ * lo que E2 promedia sobre los últimos 3 ciclos para sugerir cuánto meter en
+ * el próximo. En E1 `velocity` coincide con `completed` — E5 es el que la
+ * separa (scope creep agregado a mitad de ciclo no cuenta para la velocidad).
+ */
+export interface CycleSnapshot {
+  scope: number;
+  completed: number;
+  velocity: number;
+}
+
+export interface Cycle {
+  id: string;
+  workspaceId: string;
+  teamId: string;
+  /** Secuencial por equipo, como `Issue.number`. */
+  number: number;
+  name: string;
+  startsAt: string;
+  endsAt: string;
+  status: CycleStatus;
+  /** Solo presente una vez que el ciclo pasó por `cycles.close`. */
+  snapshot?: CycleSnapshot;
   createdAt: string;
   updatedAt: string;
 }
@@ -231,6 +263,8 @@ export interface Issue {
   subIssueDoneCount?: number;
   dueDate?: string;
   estimate?: number;
+  /** Ciclo al que pertenece. Ausente significa backlog/sin planear. */
+  cycleId?: string;
   /**
    * Solo significativo en épicas: preselecciona el asignado al crear un issue
    * hijo. Es preselección al crear, no herencia en runtime — si el dispatch
@@ -436,6 +470,7 @@ export const ISSUE_WRITABLE_FIELDS = [
   'dueDate',
   'estimate',
   'defaultAssigneeId',
+  'cycleId',
 ] as const;
 
 export type IssueWritableField = (typeof ISSUE_WRITABLE_FIELDS)[number];
@@ -451,3 +486,15 @@ export const PROJECT_WRITABLE_FIELDS = [
 ] as const;
 
 export type ProjectWritableField = (typeof PROJECT_WRITABLE_FIELDS)[number];
+
+/**
+ * `status` está incluido porque `cycles.update` lo necesita para el pasaje
+ * manual `upcoming` -> `active` (hasta que exista el auto-scheduler de E4).
+ * La transición a `completed` no pasa por acá: `cycles.update` la rechaza
+ * explícitamente porque `completed` solo puede salir de `cycles.close`, que
+ * además hace el rollover y el snapshot — dejarla pasar por un update común
+ * dejaría un ciclo "cerrado" sin ninguna de las dos cosas.
+ */
+export const CYCLE_WRITABLE_FIELDS = ['name', 'startsAt', 'endsAt', 'status'] as const;
+
+export type CycleWritableField = (typeof CYCLE_WRITABLE_FIELDS)[number];

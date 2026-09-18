@@ -69,6 +69,13 @@ service cloud.firestore {
       allow read: if isMember(resource.data.workspaceId);
       allow write: if false;
     }
+
+    // Cycles collection — same as issues, Admin SDK only (via
+    // cycles.create/update/close).
+    match /cycles/{cycleId} {
+      allow read: if isMember(resource.data.workspaceId);
+      allow write: if false;
+    }
     
     // Invitations collection
     match /invitations/{invitationId} {
