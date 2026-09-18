@@ -1,8 +1,8 @@
-import { getFirestore } from 'firebase-admin/firestore';
+import { getFirestore, Firestore } from 'firebase-admin/firestore';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { cleanUndefined } from '../../common/utils/clean';
-import { CYCLE_WRITABLE_FIELDS } from '../../common/domain.generated';
+import { CYCLE_WRITABLE_FIELDS, CycleInitialScope } from '../../common/domain.generated';
 import { pickWritableFields } from '../../common/utils/issue-fields';
 
 export class UpdateCycleAction extends PlatformActionHandler {
@@ -60,8 +60,30 @@ export class UpdateCycleAction extends PlatformActionHandler {
       throw new Error('startsAt debe ser anterior a endsAt.');
     }
 
+    // E5: al arrancar el ciclo (upcoming -> active) se congela el scope
+    // inicial una sola vez — si por lo que sea ya tiene `initialScope` (doble
+    // click, reintento) no se vuelve a pisar, porque ahí deja de servir como
+    // base fija para el burndown y el cálculo de `velocity` al cerrar.
+    if (current.status === 'upcoming' && updates.status === 'active' && !current.initialScope) {
+      updates.initialScope = await this.buildInitialScope(db, cycleId);
+    }
+
     await cycleRef.update(updates);
 
     return { id: cycleId, ...updates };
+  }
+
+  private async buildInitialScope(db: Firestore, cycleId: string): Promise<CycleInitialScope> {
+    const issuesSnap = await db.collection('issues').where('cycleId', '==', cycleId).get();
+    const issueIds: string[] = [];
+    const estimates: Record<string, number> = {};
+
+    issuesSnap.forEach((doc) => {
+      const estimate = doc.data().estimate;
+      issueIds.push(doc.id);
+      estimates[doc.id] = typeof estimate === 'number' ? estimate : 0;
+    });
+
+    return { issueIds, estimates };
   }
 }
