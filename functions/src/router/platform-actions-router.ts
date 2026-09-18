@@ -20,6 +20,7 @@ import { CreateCommentAction } from '../actions/comments/create-comment';
 import { ClaimIssueAction } from '../actions/issues/claim-issue';
 import { ClaimNextIssueAction } from '../actions/issues/claim-next-issue';
 import { ReleaseIssueAction } from '../actions/issues/release-issue';
+import { RequestRepoWorkAction } from '../actions/issues/request-repo-work';
 import { CreateInstallUrlAction } from '../actions/github/create-install-url';
 import { GithubStatusAction } from '../actions/github/github-status';
 import { CreateBranchAction } from '../actions/github/create-branch';
@@ -90,6 +91,8 @@ export async function dispatchPlatformAction(
       return new ClaimNextIssueAction(request, callerUid, callerEmail).run();
     case 'issues.release':
       return new ReleaseIssueAction(request, callerUid, callerEmail).run();
+    case 'issues.requestRepoWork':
+      return new RequestRepoWorkAction(request, callerUid, callerEmail).run();
 
     case 'github.createInstallUrl':
       return new CreateInstallUrlAction(request, callerUid, callerEmail).run();

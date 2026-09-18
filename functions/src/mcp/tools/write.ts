@@ -7,6 +7,7 @@ import { PlatformActionCode, PlatformActionResponse } from '../../common/platfor
 import { ClaimNextIssueAction } from '../../actions/issues/claim-next-issue';
 import { ClaimIssueAction } from '../../actions/issues/claim-issue';
 import { ReleaseIssueAction } from '../../actions/issues/release-issue';
+import { RequestRepoWorkAction } from '../../actions/issues/request-repo-work';
 import { UpdateIssueAction } from '../../actions/issues/update-issue';
 import { CreateIssueAction } from '../../actions/issues/create-issue';
 import { ReparentIssueAction } from '../../actions/issues/reparent-issue';
@@ -20,6 +21,7 @@ type WritableActionCode =
   | 'issues.claimNext'
   | 'issues.claim'
   | 'issues.release'
+  | 'issues.requestRepoWork'
   | 'issues.update'
   | 'issues.create'
   | 'issues.reparent'
@@ -33,6 +35,7 @@ const ACTIONS: Record<WritableActionCode, new (request: any, callerUid?: string)
   'issues.claimNext': ClaimNextIssueAction,
   'issues.claim': ClaimIssueAction,
   'issues.release': ReleaseIssueAction,
+  'issues.requestRepoWork': RequestRepoWorkAction,
   'issues.update': UpdateIssueAction,
   'issues.create': CreateIssueAction,
   'issues.reparent': ReparentIssueAction,
@@ -321,6 +324,25 @@ export function registerWriteTools(server: McpServer, principal: McpPrincipal) {
       const doc = await findIssue(principal.workspaceId, identifier);
       if (!doc) return textResult({ error: `No issue found for '${identifier}'.` });
       return runAction('github.linkPr', { issueId: doc.id, ...rest }, actorUid);
+    }
+  );
+
+  server.tool(
+    'pulse_request_repo_work',
+    'Registers work still missing in ANOTHER repo of the workspace, so a new run picks it up there. Use it when your change needs a counterpart in a different repo: this session can only push to its own, so do NOT create branches or PRs elsewhere. Records a structured handoff on the issue (plus a comment) and, when your run ends, a new run is dispatched to the target repo. Fails if the repo is not allowed for the issue or has no agent workflow connected.',
+    {
+      identifier: z.string(),
+      repoFullName: z.string().describe('"owner/repo" where the work is missing.'),
+      summary: z.string().describe('What still has to be done in that repo.'),
+      done: z.string().optional().describe('What is already done here, as context for whoever continues.'),
+      sourceRepoFullName: z.string().optional(),
+      sourceBranch: z.string().optional(),
+      sourcePrNumber: z.number().int().optional(),
+    },
+    async ({ identifier, ...rest }) => {
+      const doc = await findIssue(principal.workspaceId, identifier);
+      if (!doc) return textResult({ error: `No issue found for '${identifier}'.` });
+      return runAction('issues.requestRepoWork', { issueId: doc.id, ...rest }, actorUid);
     }
   );
 
