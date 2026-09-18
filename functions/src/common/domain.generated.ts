@@ -5,7 +5,7 @@
 // dominio de Pulse. Para cambiar algo de acá, editá ese archivo y corré
 // `npm run sync:types` desde `pulse-app`.
 //
-// SOURCE_HASH: c02e38ebcd144621
+// SOURCE_HASH: c51df1d654a1ebd4
 // ============================================================
 
 /**
@@ -90,6 +90,24 @@ export interface Team {
   icon?: string;
   issueCount: number;
   createdAt: string;
+  /** Ausente equivale a `{ enabled: false, autoCreate: false, ... }`: sin ciclos ni auto-creación. */
+  cycleSettings?: CycleSettings;
+}
+
+/**
+ * Configuración de ciclos por equipo (E4). `enabled` es el flag maestro — en
+ * `false` el equipo no usa ciclos, y el resto de los campos no importa.
+ * `autoCreate`, aparte y no implícito en `enabled`, es lo que habilita el
+ * scheduler que crea el siguiente ciclo solo: un equipo puede querer ciclos
+ * sin que nadie tenga que planificarlos automáticamente.
+ */
+export interface CycleSettings {
+  enabled: boolean;
+  /** Duración de cada ciclo, en semanas. */
+  lengthWeeks: 1 | 2 | 3 | 4;
+  /** Día en que arranca cada ciclo — `Date.getUTCDay()`: 0 domingo .. 6 sábado. */
+  startDayOfWeek: 0 | 1 | 2 | 3 | 4 | 5 | 6;
+  autoCreate: boolean;
 }
 
 export interface Label {
@@ -488,13 +506,24 @@ export const PROJECT_WRITABLE_FIELDS = [
 export type ProjectWritableField = (typeof PROJECT_WRITABLE_FIELDS)[number];
 
 /**
- * `status` está incluido porque `cycles.update` lo necesita para el pasaje
- * manual `upcoming` -> `active` (hasta que exista el auto-scheduler de E4).
- * La transición a `completed` no pasa por acá: `cycles.update` la rechaza
- * explícitamente porque `completed` solo puede salir de `cycles.close`, que
- * además hace el rollover y el snapshot — dejarla pasar por un update común
- * dejaría un ciclo "cerrado" sin ninguna de las dos cosas.
+ * `status` está incluido porque `cycles.update` lo sigue permitiendo como
+ * pasaje manual `upcoming` -> `active`, en paralelo al scheduler automático
+ * de E4 (`cycles.updateSettings` + el trigger programado). La transición a
+ * `completed` no pasa por acá: `cycles.update` la rechaza explícitamente
+ * porque `completed` solo puede salir de `cycles.close`, que además hace el
+ * rollover y el snapshot — dejarla pasar por un update común dejaría un
+ * ciclo "cerrado" sin ninguna de las dos cosas.
  */
 export const CYCLE_WRITABLE_FIELDS = ['name', 'startsAt', 'endsAt', 'status'] as const;
 
 export type CycleWritableField = (typeof CYCLE_WRITABLE_FIELDS)[number];
+
+/** Campos que `cycles.updateSettings` puede tocar de `Team.cycleSettings`. */
+export const CYCLE_SETTINGS_WRITABLE_FIELDS = [
+  'enabled',
+  'lengthWeeks',
+  'startDayOfWeek',
+  'autoCreate',
+] as const;
+
+export type CycleSettingsWritableField = (typeof CYCLE_SETTINGS_WRITABLE_FIELDS)[number];

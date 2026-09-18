@@ -29,6 +29,7 @@ import { CreateLabelAction } from '../actions/labels/create-label';
 import { CreateCycleAction } from '../actions/cycles/create-cycle';
 import { UpdateCycleAction } from '../actions/cycles/update-cycle';
 import { CloseCycleAction } from '../actions/cycles/close-cycle';
+import { UpdateCycleSettingsAction } from '../actions/cycles/update-cycle-settings';
 
 export async function dispatchPlatformAction(
   request: PlatformActionRequest,
@@ -110,6 +111,8 @@ export async function dispatchPlatformAction(
       return new UpdateCycleAction(request, callerUid, callerEmail).run();
     case 'cycles.close':
       return new CloseCycleAction(request, callerUid, callerEmail).run();
+    case 'cycles.updateSettings':
+      return new UpdateCycleSettingsAction(request, callerUid, callerEmail).run();
 
     default:
       return {
