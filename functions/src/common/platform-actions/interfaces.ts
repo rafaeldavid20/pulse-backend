@@ -32,7 +32,8 @@ export type PlatformActionCode =
   | 'labels.create'
   | 'cycles.create'
   | 'cycles.update'
-  | 'cycles.close';
+  | 'cycles.close'
+  | 'cycles.updateSettings';
 
 export interface PlatformActionCaller {
   readonly uid?: string;
