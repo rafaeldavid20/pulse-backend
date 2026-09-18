@@ -58,6 +58,7 @@ export class ReleaseIssueAction extends PlatformActionHandler {
       'agent.dispatchedAt': FieldValue.delete(),
       'agent.dispatchedTo': FieldValue.delete(),
       updatedAt: new Date().toISOString(),
+      updatedBy: this.caller.uid || 'system',
     });
 
     return { id: data.id, status: nextStatus };

@@ -58,6 +58,9 @@ export class UpdateIssueAction extends PlatformActionHandler {
     const updates: Record<string, any> = {
       ...pickWritableFields(data, ISSUE_WRITABLE_FIELDS),
       updatedAt: new Date().toISOString(),
+      // Le permite a `issueNotificationsTrigger` (TES-156) saber quién hizo el
+      // cambio, para no notificarle a alguien su propia acción.
+      updatedBy: this.caller.uid || 'system',
     };
 
     // --- Jerarquía --------------------------------------------------------

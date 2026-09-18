@@ -137,6 +137,10 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
     if (desiredStatus && !overriddenManually && desiredStatus !== issue.status) {
       updates.status = desiredStatus;
       updates['git.lastSyncedStatus'] = desiredStatus;
+      // Sentinel de sistema, no un uid — mismo criterio que `authorId: 'github'`
+      // en `postComment`. Le dice a `issueNotificationsTrigger` (TES-156) que
+      // este cambio no lo hizo el propio asignado.
+      updates.updatedBy = 'github';
       if (desiredStatus === 'done') {
         updates['agent.state'] = 'idle';
       }
