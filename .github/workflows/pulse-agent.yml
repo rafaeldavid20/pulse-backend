@@ -1,6 +1,6 @@
 name: Pulse Agent
 
-# GENERADO POR PULSE — pulse-agent-workflow-version: 4
+# GENERADO POR PULSE — pulse-agent-workflow-version: 5
 #
 # Lo escribe la acción `agents.connectRepo` al conectar un agente a este repo.
 # Editalo desde Pulse, no a mano: una reconexión o una actualización de versión
@@ -105,6 +105,16 @@ jobs:
             preguntas o te autorizan a decidir, seguí adelante: llamá a pulse_flag_ambiguity
             con clear en true para sacar la etiqueta, y dejá escritas en el PR las
             decisiones que tomaste.
+
+            Esta sesión solo puede pushear a ESTE repo. Si el issue también necesita cambios en
+            otro repo, NO crees ramas ni PRs allá: implementá lo de este repo y, antes de
+            terminar, registrá lo que falta con pulse_request_repo_work (repo destino, qué
+            falta, qué ya hiciste, tu rama y tu PR como origen). Al terminar esta sesión Pulse
+            despacha un run nuevo al repo destino, que lo retoma desde ese registro.
+
+            ${{ github.event.client_payload.handoffRepo && format('Este run es la CONTINUACIÓN de un traspaso hacia {0}: el trabajo pendiente para este repo está en pendingRepoWork del issue (pulse_get_issue). Leé qué falta y qué ya se hizo, y hacé solo eso. El repo de origen ya tiene su rama y su PR: no los toques. Después de pulse_claim_issue seguí el flujo normal (rama, commit, push, PR, pulse_link_pr).', github.event.client_payload.handoffRepo) || '' }}
+
+            En tu mensaje final listá explícitamente lo que quedó sin hacer, si algo quedó.
 
             Si el repo no corresponde al trabajo descrito, no improvises: comentá el problema
             con pulse_comment_issue y terminá sin crear rama ni PR.
@@ -223,12 +233,29 @@ jobs:
           issue = ((call('pulse_get_issue', {'identifier': IDENT}) or {}).get('issue')) or {}
           refs = issue.get('gitRefs') or []
           has_pr = bool((issue.get('git') or {}).get('prNumber')) or any(r.get('prNumber') for r in refs)
+          # Traspasos a otros repos (TES-202). Un run con PR abierto sigue
+          # "reclamado" hasta que alguien lo suelte, y sin soltarlo el trigger no
+          # despacha el run del repo destino: por eso acá se libera aunque haya PR.
+          pending = issue.get('pendingRepoWork') or []
+          here = os.environ.get('GITHUB_REPOSITORY', '')
+          waiting = [e for e in pending if not e.get('dispatchedAt')]
+          unfinished_here = [e for e in pending if e.get('dispatchedAt') and e.get('repoFullName') == here]
           released = False
-          if not has_pr and issue.get('status') in ('todo', 'in_progress'):
+          reason = ''
+          if waiting:
+              lines += ['', 'Quedó trabajo pendiente en otro repo (' + ', '.join(e.get('repoFullName', '?') for e in waiting) + '): se despacha un run nuevo allá. El issue no está terminado.']
+              released = True
+              reason = 'Traspaso a otro repo pendiente.'
+          elif unfinished_here:
+              lines += ['', 'Este run era la continuación de un traspaso hacia este repo y terminó sin abrir el PR, así que el trabajo pendiente sigue sin hacerse y el issue se liberó. Para reintentar, pedí el traspaso de nuevo con pulse_request_repo_work y asigná al agente.']
+              released = True
+              reason = 'El run de traspaso terminó sin abrir el PR de este repo. Ver el reporte automático en los comentarios.'
+          elif not has_pr and issue.get('status') in ('todo', 'in_progress'):
               lines += ['', 'El run terminó sin abrir un PR, así que el issue se liberó y quedó sin asignar. Para reintentar, asigná de nuevo al agente.']
               released = True
+              reason = 'El run terminó sin abrir un PR. Ver el reporte automático en los comentarios.'
           ok = call('pulse_comment_issue', {'identifier': IDENT, 'body': NL.join(lines)}) is not None
           if released:
-              call('pulse_release_issue', {'identifier': IDENT, 'reason': 'El run terminó sin abrir un PR. Ver el reporte automático en los comentarios.'})
+              call('pulse_release_issue', {'identifier': IDENT, 'reason': reason})
           print('Reporte enviado a Pulse.' if ok else 'No se pudo enviar el reporte a Pulse.')
           PY

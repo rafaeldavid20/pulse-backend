@@ -38,13 +38,20 @@ export class ReleaseIssueAction extends PlatformActionHandler {
       throw new Error(`El issue está reclamado por '${issue.agent.claimedBy}', no por vos.`);
     }
 
-    const nextStatus = issue.status === 'in_progress' ? 'todo' : issue.status;
+    // Con un traspaso a otro repo todavía sin despachar (TES-202), soltar el
+    // issue no puede desasignarlo ni devolverlo a `todo`: `agentDispatchTrigger`
+    // necesita al agente asignado para despachar el run del repo destino, y el
+    // issue sigue en curso. Sin traspaso pendiente, el comportamiento de
+    // siempre.
+    const hasPendingHandoff = (issue.pendingRepoWork || []).some((e: any) => !e.dispatchedAt);
+    const nextStatus = hasPendingHandoff ? issue.status : issue.status === 'in_progress' ? 'todo' : issue.status;
     await issueRef.update({
-      assigneeId: null,
+      assigneeId: hasPendingHandoff ? issue.assigneeId ?? null : null,
       status: nextStatus,
       'agent.state': 'idle',
       'agent.claimedBy': FieldValue.delete(),
-      'agent.blockedReason': data.reason ?? FieldValue.delete(),
+      // Un traspaso no es un bloqueo: no se marca `blockedReason` para no mostrarlo como tal.
+      'agent.blockedReason': hasPendingHandoff ? FieldValue.delete() : data.reason ?? FieldValue.delete(),
       // Limpia la marca de idempotencia del dispatch (agent-dispatch.ts) para
       // que, si el issue vuelve a `todo` y se reasigna, el trigger no la
       // confunda con un dispatch reciente todavía en curso.

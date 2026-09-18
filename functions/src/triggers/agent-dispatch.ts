@@ -18,6 +18,94 @@ function today(): string {
 }
 
 /**
+ * Despacha el run del repo destino de un traspaso (`issue.pendingRepoWork`).
+ *
+ * Reglas propias respecto al dispatch normal: no aplica el cooldown (la marca
+ * `dispatchedAt` de la entrada ya impide despachar el mismo traspaso dos veces) y
+ * no cuenta al propio issue contra `maxConcurrentIssues`, que sigue `in_progress`
+ * mientras espera este run. Sí cuenta contra el tope diario: el circuit breaker
+ * tiene que cubrir también los bucles que pasen por traspasos.
+ */
+async function dispatchHandoff(
+  issueId: string,
+  after: FirebaseFirestore.DocumentData,
+  agentId: string,
+  targetRepo: string
+): Promise<void> {
+  const db = getFirestore();
+  const agentSnap = await db.collection('agents').doc(agentId).get();
+  const agent = agentSnap.exists ? agentSnap.data()! : null;
+  if (!agent || !agent.enabled || !agent.autonomousMode) {
+    console.log(`[AgentDispatch] handoff for '${issueId}': agent '${agentId}' missing or not enabled/autonomous, skipping.`);
+    return;
+  }
+
+  const maxConcurrent = agent.maxConcurrentIssues ?? 1;
+  const inProgressSnap = await db
+    .collection('issues')
+    .where('assigneeId', '==', agentId)
+    .where('status', '==', 'in_progress')
+    .get();
+  const others = inProgressSnap.docs.filter((d) => d.id !== issueId).length;
+  if (others >= maxConcurrent) {
+    console.log(`[AgentDispatch] handoff for '${issueId}': max concurrent reached for agent '${agentId}' (${others}/${maxConcurrent}), skipping.`);
+    return;
+  }
+
+  const workspaceId = after.workspaceId;
+  const installSnap = await db.collection('github_installations').where('workspaceId', '==', workspaceId).limit(1).get();
+  if (installSnap.empty) {
+    console.log(`[AgentDispatch] handoff for '${issueId}': workspace '${workspaceId}' has no GitHub installation, skipping.`);
+    return;
+  }
+  const installation = installSnap.docs[0].data();
+  const authorized: string[] = installation.repositoryFullNames || [];
+  if (authorized.length > 0 && !authorized.includes(targetRepo)) {
+    console.log(`[AgentDispatch] handoff for '${issueId}': '${targetRepo}' is not in this workspace's GitHub installation, skipping.`);
+    return;
+  }
+
+  const issueRef = db.collection('issues').doc(issueId);
+  const counterRef = db.collection('agent_dispatch_counters').doc(`${workspaceId}_${today()}`);
+  const decision = await db.runTransaction(async (tx: Transaction) => {
+    const issueSnap = await tx.get(issueRef);
+    const pending: any[] = issueSnap.data()?.pendingRepoWork || [];
+    const entry = pending.find((e) => e.repoFullName === targetRepo);
+    // Otro trigger concurrente ya lo despachó, o el traspaso se cerró.
+    if (!entry || entry.dispatchedAt) return { allowed: false, reason: 'already-dispatched' } as const;
+
+    const counterSnap = await tx.get(counterRef);
+    const count = counterSnap.exists ? counterSnap.data()!.count || 0 : 0;
+    if (count >= DAILY_DISPATCH_LIMIT) return { allowed: false, reason: 'circuit-breaker' } as const;
+
+    const now = new Date().toISOString();
+    tx.set(counterRef, { workspaceId, date: today(), count: FieldValue.increment(1) }, { merge: true });
+    tx.update(issueRef, {
+      pendingRepoWork: pending.map((e) => (e.repoFullName === targetRepo ? { ...e, dispatchedAt: now } : e)),
+      'agent.dispatchedAt': now,
+      'agent.dispatchedTo': agentId,
+    });
+    return { allowed: true } as const;
+  });
+  if (!decision.allowed) {
+    console.log(`[AgentDispatch] handoff for '${issueId}' to '${targetRepo}' not dispatched (${decision.reason}).`);
+    return;
+  }
+
+  await dispatchRepositoryEvent(installation.installationId, targetRepo, 'pulse_task', {
+    issueId,
+    issueIdentifier: after.identifier,
+    workspaceId,
+    agentId,
+    agentKind: agent.kind || 'claude',
+    // El workflow usa esto para decirle al agente que es la continuación de un
+    // traspaso y que el detalle está en `pendingRepoWork` del issue.
+    handoffRepo: targetRepo,
+  });
+  console.log(`[AgentDispatch] dispatched handoff 'pulse_task' for issue '${after.identifier}' (${issueId}) to '${targetRepo}'.`);
+}
+
+/**
  * Fase 6's autonomous trigger: an issue becoming dispatchable — in `todo` and
  * assigned to an agent with `autonomousMode`, in either order — fires a
  * `repository_dispatch` event so
@@ -65,6 +153,23 @@ export const agentDispatchTrigger = onDocumentWritten(
       // Cualquier otro update de un issue ya en `todo` con el mismo asignado no
       // dispara, así que no hay doble dispatch por editar un título.
       const agentId = after.assigneeId;
+
+      // Traspaso a otro repo (TES-202): el run anterior registró trabajo
+      // pendiente en otro repo y ya soltó el issue (`agent.state` deja de ser
+      // 'claimed'). Se despacha aunque el issue no esté en `todo`, porque sigue
+      // en curso; va por su propio camino para no tocar las reglas del de arriba.
+      const pendingHandoff = (after.pendingRepoWork || []).find((e: any) => !e.dispatchedAt);
+      if (
+        pendingHandoff &&
+        agentId &&
+        after.agent?.state !== 'claimed' &&
+        after.status !== 'done' &&
+        after.status !== 'canceled'
+      ) {
+        await dispatchHandoff(event.params.issueId, after, agentId, pendingHandoff.repoFullName);
+        return;
+      }
+
       if (after.status !== 'todo' || !agentId) {
         console.log(
           `[AgentDispatch] issue '${event.params.issueId}' not dispatchable (status '${after.status}', assignee '${agentId ?? 'none'}'), skipping dispatch.`

@@ -86,10 +86,22 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
     //
     // Con una sola rama, la regla del conjunto y la de siempre coinciden, así
     // que los issues de un repo se comportan igual que antes.
-    const desiredStatus =
+    // El PR de este repo cierra su traspaso (TES-202). Los que quedan son trabajo
+    // que otro repo todavía no hizo: mientras haya alguno, el issue no puede
+    // pasar a `in_review` ni a `done` — se queda en `in_progress` a la vista,
+    // en vez de dar por terminado un issue a medias.
+    const hasPr = input.event === 'pull_request' && input.prNumber !== undefined;
+    const nextPending = (issue.pendingRepoWork || []).filter(
+      (e: any) => !(hasPr && e.repoFullName === input.repoFullName)
+    );
+    const pendingClosed = nextPending.length !== (issue.pendingRepoWork || []).length;
+
+    const computed =
       nextRefs.length > 1
         ? statusFromGitRefs(nextRefs)
         : this.desiredStatus(input, issue.status);
+    const desiredStatus =
+      nextPending.length > 0 && (computed === 'in_review' || computed === 'done') ? 'in_progress' : computed;
 
     // Manual-override guard: if a human moved the status away from the
     // status *we* last set via sync, a webhook event shouldn't silently
@@ -101,6 +113,7 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
     const now = new Date().toISOString();
     const updates: Record<string, any> = {
       gitRefs: nextRefs,
+      ...(pendingClosed ? { pendingRepoWork: nextPending } : {}),
       'git.lastSyncedAt': now,
       updatedAt: now,
     };
