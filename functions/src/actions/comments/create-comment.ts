@@ -76,6 +76,9 @@ export class CreateCommentAction extends PlatformActionHandler {
           userId: issue.assigneeId,
           actorId: comment.authorId,
           issueId: comment.issueId,
+          // Solo en `comment`, no en `review_result`: el veredicto de QA no es
+          // "un comentario puntual" que tenga sentido resaltar en el panel.
+          commentId: isQaVerdict ? undefined : comment.id,
           type: isQaVerdict ? 'review_result' : 'comment',
           title: isQaVerdict
             ? `Resultado de revisión en ${issue.identifier}`
@@ -91,6 +94,7 @@ export class CreateCommentAction extends PlatformActionHandler {
           userId,
           actorId: comment.authorId,
           issueId: comment.issueId,
+          commentId: comment.id,
           type: 'mentioned',
           title: `Te mencionaron en ${issue.identifier}`,
           body: comment.body,

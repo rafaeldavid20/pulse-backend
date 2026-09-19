@@ -32,6 +32,9 @@ import { CreateCycleAction } from '../actions/cycles/create-cycle';
 import { UpdateCycleAction } from '../actions/cycles/update-cycle';
 import { CloseCycleAction } from '../actions/cycles/close-cycle';
 import { UpdateCycleSettingsAction } from '../actions/cycles/update-cycle-settings';
+import { MarkNotificationReadAction } from '../actions/notifications/mark-read';
+import { MarkAllNotificationsReadAction } from '../actions/notifications/mark-all-read';
+import { MuteIssueAction } from '../actions/notifications/mute-issue';
 
 export async function dispatchPlatformAction(
   request: PlatformActionRequest,
@@ -119,6 +122,13 @@ export async function dispatchPlatformAction(
       return new CloseCycleAction(request, callerUid, callerEmail).run();
     case 'cycles.updateSettings':
       return new UpdateCycleSettingsAction(request, callerUid, callerEmail).run();
+
+    case 'notifications.markRead':
+      return new MarkNotificationReadAction(request, callerUid, callerEmail).run();
+    case 'notifications.markAllRead':
+      return new MarkAllNotificationsReadAction(request, callerUid, callerEmail).run();
+    case 'notifications.muteIssue':
+      return new MuteIssueAction(request, callerUid, callerEmail).run();
 
     default:
       return {
