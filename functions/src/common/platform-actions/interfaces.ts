@@ -7,6 +7,7 @@ export type PlatformActionCode =
   | 'issues.update'
   | 'issues.delete'
   | 'issues.reparent'
+  | 'issues.duplicate'
   | 'projects.create'
   | 'projects.update'
   | 'projects.delete'
