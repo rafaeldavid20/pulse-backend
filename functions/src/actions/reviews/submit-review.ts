@@ -1,9 +1,9 @@
 import { getFirestore } from 'firebase-admin/firestore';
-import { nanoid } from 'nanoid';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { cleanUndefined } from '../../common/utils/clean';
 import { normalizeFindings, normalizeCriteriaResults } from '../../common/utils/review-findings';
+import { resolveReviewLead, ensureNeedsHumanLabel } from '../../common/utils/review-escalation';
 import { CreateCommentAction } from '../comments/create-comment';
 import { getPullRequestHeadSha, createPullRequestReview, PullRequestReviewComment } from '../../github/client';
 import {
@@ -16,8 +16,6 @@ import {
 } from '../../common/domain.generated';
 
 const DEFAULT_MAX_REVIEW_ATTEMPTS = 2;
-const NEEDS_HUMAN_LABEL = 'needs-human';
-const NEEDS_HUMAN_LABEL_COLOR = '#E5484D';
 
 type Outcome = 'approved' | 'changes_requested' | 'needs_human';
 
@@ -34,20 +32,6 @@ function reviewablePrs(issue: FirebaseFirestore.DocumentData): ReviewablePr[] {
         ? [issue.git]
         : [];
   return refs.filter((r) => r?.prNumber !== undefined).map((r) => ({ repoFullName: r.repoFullName, prNumber: r.prNumber }));
-}
-
-async function ensureLabel(
-  db: FirebaseFirestore.Firestore,
-  workspaceId: string,
-  teamId: string,
-  name: string,
-  color: string
-): Promise<string> {
-  const found = await db.collection('labels').where('workspaceId', '==', workspaceId).where('name', '==', name).limit(1).get();
-  if (!found.empty) return found.docs[0].id;
-  const labelId = `lbl-${nanoid(8)}`;
-  await db.collection('labels').doc(labelId).set({ id: labelId, workspaceId, teamId, name, color });
-  return labelId;
 }
 
 /**
@@ -184,7 +168,7 @@ export class ReviewsSubmitAction extends PlatformActionHandler {
       // dejarlo al día, o el webhook deja de sincronizar este issue (D10).
       updates['git.lastSyncedStatus'] = 'in_progress';
     } else if (outcome === 'needs_human') {
-      const leadId = await this.resolveLead(db, issue);
+      const leadId = await resolveReviewLead(db, issue);
       nextReview.previousAssigneeId = issue.assigneeId || undefined;
       updates.assigneeId = leadId || null;
       if (capped) {
@@ -196,7 +180,7 @@ export class ReviewsSubmitAction extends PlatformActionHandler {
       // `unverifiable`-only no es un rechazo (D3): el status del flujo no se
       // toca, solo se escala la asignación.
       const currentLabels: string[] = Array.isArray(issue.labelIds) ? issue.labelIds : [];
-      const labelId = await ensureLabel(db, issue.workspaceId, issue.teamId, NEEDS_HUMAN_LABEL, NEEDS_HUMAN_LABEL_COLOR);
+      const labelId = await ensureNeedsHumanLabel(db, issue.workspaceId, issue.teamId);
       if (!currentLabels.includes(labelId)) {
         updates.labelIds = [...currentLabels, labelId];
       }
@@ -214,15 +198,6 @@ export class ReviewsSubmitAction extends PlatformActionHandler {
     }
 
     return { issueId: data.issueId, outcome, attempt: review.attempt, status: updates.status || issue.status };
-  }
-
-  private async resolveLead(db: FirebaseFirestore.Firestore, issue: FirebaseFirestore.DocumentData): Promise<string | undefined> {
-    if (issue.projectId) {
-      const projectSnap = await db.collection('projects').doc(issue.projectId).get();
-      const leadId = projectSnap.exists ? projectSnap.data()!.leadId : undefined;
-      if (leadId) return leadId;
-    }
-    return issue.creatorId;
   }
 
   private buildCommentBody(

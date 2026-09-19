@@ -189,6 +189,10 @@ export const qaDispatchTrigger = onDocumentWritten(
       }
 
       const nextAttempt = attempt + 1;
+      // El job `verify` de pulse-qa.yml (D6) necesita saber qué PR pushear con
+      // `gh pr checkout` — el de este mismo repo, no necesariamente el único
+      // si el issue es multi-repo (K9/TES-202).
+      const prNumber = prs.find((pr) => pr.repoFullName === repoFullName)?.prNumber;
       await dispatchRepositoryEvent(installation.installationId, repoFullName, 'pulse_review', {
         issueId,
         issueIdentifier: after.identifier,
@@ -196,6 +200,7 @@ export const qaDispatchTrigger = onDocumentWritten(
         agentId: qaAgentId,
         agentKind: qaAgent.kind || 'claude',
         reviewAttempt: nextAttempt,
+        prNumber,
       });
 
       // D15/TES-211: registro de runs y costo. El paso de reporte del

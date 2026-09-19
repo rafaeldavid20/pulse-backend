@@ -20,6 +20,7 @@ import { ReviewsStartAction } from '../../actions/reviews/start-review';
 import { ReviewsSubmitAction } from '../../actions/reviews/submit-review';
 import { ResolveFindingAction } from '../../actions/reviews/resolve-finding';
 import { ReportCriteriaAction } from '../../actions/reviews/report-criteria';
+import { ReportReviewIncompleteAction } from '../../actions/reviews/report-review-incomplete';
 
 const acceptanceCriterionSchema = z.object({
   id: z.string().optional().describe('Omitilo para que el servidor le asigne un id estable nuevo.'),
@@ -42,7 +43,8 @@ type WritableActionCode =
   | 'reviews.start'
   | 'reviews.submit'
   | 'reviews.resolveFinding'
-  | 'reviews.reportCriteria';
+  | 'reviews.reportCriteria'
+  | 'reviews.reportIncomplete';
 
 const ACTIONS: Record<WritableActionCode, new (request: any, callerUid?: string) => { run(): Promise<PlatformActionResponse> }> = {
   'issues.claimNext': ClaimNextIssueAction,
@@ -61,6 +63,7 @@ const ACTIONS: Record<WritableActionCode, new (request: any, callerUid?: string)
   'reviews.submit': ReviewsSubmitAction,
   'reviews.resolveFinding': ResolveFindingAction,
   'reviews.reportCriteria': ReportCriteriaAction,
+  'reviews.reportIncomplete': ReportReviewIncompleteAction,
 };
 
 /**
@@ -432,6 +435,20 @@ export function registerWriteTools(server: McpServer, principal: McpPrincipal) {
       const doc = await findIssue(principal.workspaceId, identifier);
       if (!doc) return textResult({ error: `No issue found for '${identifier}'.` });
       return runAction('reviews.reportCriteria', { issueId: doc.id, checks }, actorUid);
+    }
+  );
+
+  server.tool(
+    'pulse_report_review_incomplete',
+    'For QA agents. Call this at the very end of a QA run regardless of outcome (the pulse-qa.yml report step does this, not the model directly in normal use). If the review was already closed by pulse_submit_review, this is a no-op. If it is still "running" (the session crashed, hit --max-turns, or otherwise ended without a verdict), it escalates the review to needs_human immediately instead of waiting for the review sweeper. Never releases or reassigns back to the dev — only a human or a fresh QA attempt moves it from here.',
+    {
+      identifier: z.string(),
+      reason: z.string().optional().describe('Diagnostic for humans: what happened (errors, last tool calls, etc.).'),
+    },
+    async ({ identifier, reason }) => {
+      const doc = await findIssue(principal.workspaceId, identifier);
+      if (!doc) return textResult({ error: `No issue found for '${identifier}'.` });
+      return runAction('reviews.reportIncomplete', { issueId: doc.id, reason }, actorUid);
     }
   );
 

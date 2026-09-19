@@ -14,6 +14,7 @@ export { qaDispatchTrigger } from './triggers/qa-dispatch';
 export { issueNotificationsTrigger } from './triggers/notify-on-issue-write';
 export { autoCreateCyclesScheduled } from './scheduled/auto-create-cycles';
 export { dueSoonRemindersScheduled } from './scheduled/notify-due-soon';
+export { reviewSweeperScheduled } from './scheduled/review-sweeper';
 export { syncMemberClaimsTrigger } from './triggers/sync-member-claims';
 export { oauthProtectedResourceMetadata, oauthAuthorizationServerMetadata } from './oauth/well-known';
 export { oauthRegister } from './oauth/register';
