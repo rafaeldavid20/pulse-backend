@@ -13,6 +13,8 @@ export type PlatformActionCode =
   | 'projects.delete'
   | 'workspaces.create'
   | 'workspaces.inviteMember'
+  | 'workspaces.update'
+  | 'workspaces.getAgentBudget'
   | 'apikeys.create'
   | 'apikeys.revoke'
   | 'apikeys.list'

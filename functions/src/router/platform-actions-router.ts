@@ -9,6 +9,8 @@ import { UpdateProjectAction } from '../actions/projects/update-project';
 import { DeleteProjectAction } from '../actions/projects/delete-project';
 import { CreateWorkspaceAction } from '../actions/workspaces/create-workspace';
 import { InviteMemberAction } from '../actions/workspaces/invite-member';
+import { UpdateWorkspaceAction } from '../actions/workspaces/update-workspace';
+import { GetAgentBudgetAction } from '../actions/workspaces/get-agent-budget';
 import { CreateApiKeyAction } from '../actions/apikeys/create-api-key';
 import { RevokeApiKeyAction } from '../actions/apikeys/revoke-api-key';
 import { ListApiKeysAction } from '../actions/apikeys/list-api-keys';
@@ -81,6 +83,10 @@ export async function dispatchPlatformAction(
       return new CreateWorkspaceAction(request, callerUid, callerEmail).run();
     case 'workspaces.inviteMember':
       return new InviteMemberAction(request, callerUid, callerEmail).run();
+    case 'workspaces.update':
+      return new UpdateWorkspaceAction(request, callerUid, callerEmail).run();
+    case 'workspaces.getAgentBudget':
+      return new GetAgentBudgetAction(request, callerUid, callerEmail).run();
 
     case 'apikeys.create':
       return new CreateApiKeyAction(request, callerUid, callerEmail).run();

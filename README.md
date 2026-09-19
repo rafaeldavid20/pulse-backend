@@ -54,8 +54,39 @@ quemar créditos indefinidamente:
 - **`maxConcurrentIssues` por agente** (`agents/{agentId}`, default `1`):
   tope de issues `in_progress` simultáneos antes de saltear el dispatch.
 - **Circuit breaker diario por workspace** (`agent_dispatch_counters`,
-  `DAILY_DISPATCH_LIMIT = 5` en `agent-dispatch.ts`): tope de dispatches por
-  workspace por día, sin importar cuántos agentes autónomos tenga.
+  `Workspace.dailyDispatchLimit` o `DAILY_DISPATCH_LIMIT = 5` en
+  `dispatch-counter.ts` si no está seteado): tope de dispatches por workspace
+  por día, sin importar cuántos agentes autónomos tenga.
+- **`Workspace.agentsPaused`** (D8/TES-153): kill switch global — en `true`
+  corta el dispatch sin tocar `enabled`/`autonomousMode` de cada agente. Se
+  chequea en `checkWorkspaceDispatchBudget` (`common/utils/dispatch-counter.ts`),
+  compartido por los caminos de dispatch de esta implementación: task y
+  traspaso (`agent-dispatch.ts`), revisión automática (`qa-dispatch.ts`) y
+  revisión manual (`reviews.rerun`). El re-trabajo automático del dev tras un
+  `changes_requested` (D9/TES-205) todavía no despacha — hoy el issue queda en
+  `in_progress` esperando intervención manual (ver la sección de D5 más
+  abajo) — así que cuando D9 se construya, tiene que respetar este mismo kill
+  switch.
+- **Techo de USD por día y por issue** (D8/TES-153,
+  `Workspace.dailyCostCapUsd`/`issueCostCapUsd`, sin tope si no están
+  seteados): suman `agent_runs.costUsd` de hoy (o del issue) y bloquean el
+  dispatch al llegar al techo. Inertes hasta que D15/TES-211 popule
+  `costUsd` — hoy `agent_runs` solo registra `startedAt`.
+- **Tope de runs por issue** (`Workspace.maxRunsPerIssue`, default
+  `DEFAULT_MAX_RUNS_PER_ISSUE = 6` en `common/utils/issue-run-budget.ts`):
+  cuenta TODOS los `agent_runs` de un issue (task + traspasos + QA), no solo
+  los intentos de revisión — cubre bucles que nunca llegan a QA, como un
+  traspaso que se re-pide. Al agotarse, escala a `needs_human` (reasigna al
+  lead del proyecto o al creador, etiqueta `needs-human`) en vez de solo
+  saltear el dispatch, porque a diferencia del resto de los guardarraíles acá
+  arriba, un loop atascado en un solo issue nunca dispara el circuit breaker
+  diario del workspace.
+- **`workspaces.update`** (Platform Action, `minRole: 'admin'`): setea los
+  cinco campos de arriba. **`workspaces.getAgentBudget`**: resumen de hoy
+  ("3/5 dispatches · USD 4,20/10", desglosado por rol dev/qa) para el botón
+  "Pausar agentes" y la sección de guardarraíles en Settings — necesario
+  porque `agent_dispatch_counters`/`agent_runs` son Admin-SDK-only. Ninguna de
+  las dos vive todavía en `pulse-app`; ver traspaso registrado en TES-153.
 
 ## Notificaciones (F1)
 

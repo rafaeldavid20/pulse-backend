@@ -1,9 +1,12 @@
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { getFirestore, Transaction } from 'firebase-admin/firestore';
+import { nanoid } from 'nanoid';
 import { githubAppId, githubAppPrivateKeyB64 } from '../common/secrets';
 import { dispatchRepositoryEvent } from '../github/client';
 import { resolveIssueRepo } from '../common/utils/repo-resolution';
-import { DAILY_DISPATCH_LIMIT, tryConsumeDailyDispatch } from '../common/utils/dispatch-counter';
+import { checkWorkspaceDispatchBudget, todayKey } from '../common/utils/dispatch-counter';
+import { checkIssueRunBudget } from '../common/utils/issue-run-budget';
+import { buildNeedsHumanEscalation } from '../common/utils/review-escalation';
 
 // Un run tarda ~30s en arrancar y reclamar el issue (ver `agent.state ===
 // 'claimed'` en claim-issue.ts), así que ese guard solo no alcanza para
@@ -48,6 +51,39 @@ async function dispatchHandoff(
   }
 
   const workspaceId = after.workspaceId;
+
+  // Tope de runs por issue (D8/TES-153), chequeado ANTES de tocar GitHub: un
+  // traspaso que se re-pide una y otra vez es justo el bucle que este tope
+  // cubre y que `maxReviewAttempts` no ve (nunca pasa por QA).
+  const runBudget = await checkIssueRunBudget(db, workspaceId, issueId);
+  if (!runBudget.withinBudget) {
+    if (runBudget.reason === 'issue-run-limit') {
+      console.log(
+        `[AgentDispatch] handoff for '${issueId}' alcanzó el tope de runs por issue (${runBudget.limit}), needs_human, no se despacha.`
+      );
+      const escalation = await buildNeedsHumanEscalation(db, after);
+      const now = new Date().toISOString();
+      await db
+        .collection('issues')
+        .doc(issueId)
+        .update({
+          ...escalation,
+          // Estampar `dispatchedAt` en la entrada, aunque no se haya
+          // despachado de verdad: si no, cualquier otro write al issue (el
+          // de esta misma escalación incluido) vuelve a encontrar la
+          // entrada sin `dispatchedAt` y reintenta el traspaso en loop.
+          pendingRepoWork: (after.pendingRepoWork || []).map((e: any) =>
+            e.repoFullName === targetRepo ? { ...e, dispatchedAt: now } : e
+          ),
+        });
+    } else {
+      console.log(
+        `[AgentDispatch] handoff for '${issueId}' alcanzó el techo de costo por issue (USD ${runBudget.capUsd}), skipping.`
+      );
+    }
+    return;
+  }
+
   const installSnap = await db.collection('github_installations').where('workspaceId', '==', workspaceId).limit(1).get();
   if (installSnap.empty) {
     console.log(`[AgentDispatch] handoff for '${issueId}': workspace '${workspaceId}' has no GitHub installation, skipping.`);
@@ -68,9 +104,8 @@ async function dispatchHandoff(
     // Otro trigger concurrente ya lo despachó, o el traspaso se cerró.
     if (!entry || entry.dispatchedAt) return { allowed: false, reason: 'already-dispatched' } as const;
 
-    if (!(await tryConsumeDailyDispatch(tx, db, workspaceId))) {
-      return { allowed: false, reason: 'circuit-breaker' } as const;
-    }
+    const budget = await checkWorkspaceDispatchBudget(tx, db, workspaceId);
+    if (!budget.allowed) return { allowed: false, reason: budget.reason } as const;
 
     const now = new Date().toISOString();
     tx.update(issueRef, {
@@ -95,6 +130,26 @@ async function dispatchHandoff(
     // traspaso y que el detalle está en `pendingRepoWork` del issue.
     handoffRepo: targetRepo,
   });
+
+  // D15/TES-211: registro de runs y costo, ahora también del lado dev (antes
+  // solo `qa-dispatch.ts` creaba `agent_runs`) — sin esto, el tope de runs
+  // por issue no podía contar los traspasos que motivaron la historia.
+  const runId = `run-${nanoid(8)}`;
+  await db
+    .collection('agent_runs')
+    .doc(runId)
+    .set({
+      id: runId,
+      issueId,
+      workspaceId,
+      agentId,
+      role: 'dev',
+      mode: 'handoff',
+      repo: targetRepo,
+      startedAt: new Date().toISOString(),
+      date: todayKey(),
+    });
+
   console.log(`[AgentDispatch] dispatched handoff 'pulse_task' for issue '${after.identifier}' (${issueId}) to '${targetRepo}'.`);
 }
 
@@ -105,11 +160,16 @@ async function dispatchHandoff(
  * `.github/workflows/pulse-agent.yml` picks it up — no human has to open
  * Claude Code and say "take the next task."
  *
- * Two independent kill switches gate the dispatch, both checked before ever
- * touching GitHub: `agents/{agentId}.maxConcurrentIssues` (per-agent, how
- * many issues it can have `in_progress` at once) and a daily circuit
- * breaker per workspace (`agent_dispatch_counters`, capped at
- * `DAILY_DISPATCH_LIMIT`) — without the second one, a
+ * Kill switches gate the dispatch, all checked before ever touching GitHub:
+ * `agents/{agentId}.maxConcurrentIssues` (per-agent, how many issues it can
+ * have `in_progress` at once), a per-issue run budget
+ * (`Workspace.maxRunsPerIssue`/`issueCostCapUsd`, D8/TES-153 — escalates to
+ * `needs_human` instead of just skipping, since a loop stuck on one issue
+ * never trips the workspace-wide breaker below) and a daily circuit breaker
+ * per workspace (`agent_dispatch_counters`, capped at
+ * `Workspace.dailyDispatchLimit` or `DAILY_DISPATCH_LIMIT` if unset, plus
+ * `Workspace.agentsPaused`/`dailyCostCapUsd`, all in
+ * `checkWorkspaceDispatchBudget`) — without these, an
  * issue-created → agent → PR → webhook → issue loop could burn credits
  * indefinitely with only one agent involved.
  *
@@ -207,6 +267,26 @@ export const agentDispatchTrigger = onDocumentWritten(
       }
 
       const workspaceId = after.workspaceId;
+
+      // Tope de runs por issue (D8/TES-153), chequeado antes de la
+      // transacción de dispatch: si se agota, hay que escalar el issue a un
+      // humano, no solo saltear este dispatch.
+      const runBudget = await checkIssueRunBudget(db, workspaceId, event.params.issueId);
+      if (!runBudget.withinBudget) {
+        if (runBudget.reason === 'issue-run-limit') {
+          console.log(
+            `[AgentDispatch] issue '${event.params.issueId}' alcanzó el tope de runs por issue (${runBudget.limit}), needs_human, skipping dispatch.`
+          );
+          const escalation = await buildNeedsHumanEscalation(db, after);
+          await db.collection('issues').doc(event.params.issueId).update(escalation);
+        } else {
+          console.log(
+            `[AgentDispatch] issue '${event.params.issueId}' alcanzó el techo de costo por issue (USD ${runBudget.capUsd}), skipping dispatch.`
+          );
+        }
+        return;
+      }
+
       const issueRef = db.collection('issues').doc(event.params.issueId);
       const dispatchDecision = await db.runTransaction(async (tx: Transaction) => {
         // Leer el propio issue dentro de la transacción, no el `after` del
@@ -222,9 +302,8 @@ export const agentDispatchTrigger = onDocumentWritten(
           }
         }
 
-        if (!(await tryConsumeDailyDispatch(tx, db, workspaceId))) {
-          return { allowed: false, reason: 'circuit-breaker' } as const;
-        }
+        const budget = await checkWorkspaceDispatchBudget(tx, db, workspaceId);
+        if (!budget.allowed) return { allowed: false, reason: budget.reason } as const;
 
         tx.update(issueRef, {
           'agent.dispatchedAt': new Date().toISOString(),
@@ -241,7 +320,7 @@ export const agentDispatchTrigger = onDocumentWritten(
           );
         } else {
           console.log(
-            `[AgentDispatch] circuit breaker tripped for workspace '${workspaceId}' (limit ${DAILY_DISPATCH_LIMIT}/day), skipping dispatch.`
+            `[AgentDispatch] dispatch blocked for workspace '${workspaceId}' (${dispatchDecision.reason}), skipping dispatch.`
           );
         }
         return;
@@ -291,6 +370,25 @@ export const agentDispatchTrigger = onDocumentWritten(
         // uno filtre por el suyo, en vez de inventar un tipo por proveedor.
         agentKind: agent.kind || 'claude',
       });
+
+      // D15/TES-211: registro de runs y costo (mismo motivo que en el
+      // traspaso de más arriba — sin esto, el tope de runs por issue no
+      // contaba los dispatches normales de dev).
+      const runId = `run-${nanoid(8)}`;
+      await db
+        .collection('agent_runs')
+        .doc(runId)
+        .set({
+          id: runId,
+          issueId: event.params.issueId,
+          workspaceId,
+          agentId,
+          role: 'dev',
+          mode: 'task',
+          repo: repoFullName,
+          startedAt: new Date().toISOString(),
+          date: todayKey(),
+        });
 
       console.log(
         `[AgentDispatch] dispatched 'pulse_task' (${agent.kind || 'claude'}) for issue '${after.identifier}' (${event.params.issueId}) to '${repoFullName}' (repo via ${source}).`

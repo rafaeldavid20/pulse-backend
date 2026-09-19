@@ -4,7 +4,9 @@ import { nanoid } from 'nanoid';
 import { githubAppId, githubAppPrivateKeyB64 } from '../common/secrets';
 import { dispatchRepositoryEvent, getPullRequestHeadSha } from '../github/client';
 import { resolveIssueRepo } from '../common/utils/repo-resolution';
-import { DAILY_DISPATCH_LIMIT, tryConsumeDailyDispatch } from '../common/utils/dispatch-counter';
+import { checkWorkspaceDispatchBudget, todayKey } from '../common/utils/dispatch-counter';
+import { checkIssueRunBudget } from '../common/utils/issue-run-budget';
+import { buildNeedsHumanEscalation } from '../common/utils/review-escalation';
 
 const DEFAULT_MAX_REVIEW_ATTEMPTS = 2;
 
@@ -117,6 +119,25 @@ export const qaDispatchTrigger = onDocumentWritten(
         return;
       }
 
+      // Tope de runs por issue (D8/TES-153): cuenta el TOTAL de runs (dev +
+      // QA + traspasos), no solo los intentos de revisión — un issue puede
+      // llegar acá con `attempt` bajo pero varios traspasos ya consumidos.
+      const runBudget = await checkIssueRunBudget(db, workspaceId, issueId);
+      if (!runBudget.withinBudget) {
+        if (runBudget.reason === 'issue-run-limit') {
+          console.log(
+            `[QaDispatch] issue '${issueId}' alcanzó el tope de runs por issue (${runBudget.limit}), needs_human, skipping dispatch.`
+          );
+          const escalation = await buildNeedsHumanEscalation(db, after);
+          await issueRef.update({ ...escalation, 'review.state': 'needs_human' });
+        } else {
+          console.log(
+            `[QaDispatch] issue '${issueId}' alcanzó el techo de costo por issue (USD ${runBudget.capUsd}), skipping dispatch.`
+          );
+        }
+        return;
+      }
+
       const installSnap = await db
         .collection('github_installations')
         .where('workspaceId', '==', workspaceId)
@@ -159,9 +180,8 @@ export const qaDispatchTrigger = onDocumentWritten(
           }
         }
 
-        if (!(await tryConsumeDailyDispatch(tx, db, workspaceId))) {
-          return { allowed: false, reason: 'circuit-breaker' } as const;
-        }
+        const budget = await checkWorkspaceDispatchBudget(tx, db, workspaceId);
+        if (!budget.allowed) return { allowed: false, reason: budget.reason } as const;
 
         tx.update(issueRef, {
           'review.dispatchedAt': new Date().toISOString(),
@@ -177,7 +197,7 @@ export const qaDispatchTrigger = onDocumentWritten(
             )}s atrás (cooldown ${DISPATCH_COOLDOWN_MS / 1000}s), skipping dispatch.`
           );
         } else {
-          console.log(`[QaDispatch] circuit breaker tripped for workspace '${workspaceId}' (limit ${DAILY_DISPATCH_LIMIT}/day), skipping dispatch.`);
+          console.log(`[QaDispatch] dispatch blocked for workspace '${workspaceId}' (${dispatchDecision.reason}), skipping dispatch.`);
         }
         return;
       }
@@ -217,6 +237,7 @@ export const qaDispatchTrigger = onDocumentWritten(
         repo: repoFullName,
         reviewAttempt: nextAttempt,
         startedAt: new Date().toISOString(),
+        date: todayKey(),
       });
 
       console.log(`[QaDispatch] dispatched 'pulse_review' (attempt ${nextAttempt}) for issue '${after.identifier}' (${issueId}) to '${repoFullName}' via QA agent '${qaAgentId}'.`);
