@@ -4,7 +4,7 @@ import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { IssueReview } from '../../common/domain.generated';
 import { resolveIssueRepo } from '../../common/utils/repo-resolution';
-import { tryConsumeDailyDispatch, DAILY_DISPATCH_LIMIT } from '../../common/utils/dispatch-counter';
+import { checkWorkspaceDispatchBudget, todayKey } from '../../common/utils/dispatch-counter';
 import { dispatchRepositoryEvent } from '../../github/client';
 
 const DEFAULT_MAX_REVIEW_ATTEMPTS = 2;
@@ -35,8 +35,9 @@ function reviewablePrs(issue: FirebaseFirestore.DocumentData): ReviewablePr[] | 
  * dos guardas pensadas para dispatches automáticos: el cooldown
  * anti-doble-disparo y el anti-ping-pong por SHA sin cambios — un click es,
  * por definición, un pedido explícito y único, no un loop. El circuit
- * breaker diario (`tryConsumeDailyDispatch`) sí se respeta: protege el costo
- * del workspace sin importar quién dispare.
+ * breaker diario y el kill switch (`checkWorkspaceDispatchBudget`, D8/TES-153)
+ * sí se respetan: protegen el costo del workspace sin importar quién dispare,
+ * y `agentsPaused` no puede sortearse con un click.
  *
  * Si el intento actual sigue `running` (el caso típico: un run que no
  * arrancó o se colgó antes de que el barrido de 30min lo escale), se
@@ -133,9 +134,15 @@ export class ReviewsRerunAction extends PlatformActionHandler {
       throw new Error(`'${repoFullName}' no está autorizado en la instalación de GitHub de este workspace.`);
     }
 
-    const allowed = await db.runTransaction((tx: Transaction) => tryConsumeDailyDispatch(tx, db, issue.workspaceId));
-    if (!allowed) {
-      throw new Error(`Se alcanzó el límite diario de dispatches del workspace (${DAILY_DISPATCH_LIMIT}/día).`);
+    const budget = await db.runTransaction((tx: Transaction) => checkWorkspaceDispatchBudget(tx, db, issue.workspaceId));
+    if (!budget.allowed) {
+      const reasonMessage =
+        budget.reason === 'paused'
+          ? 'los agentes de este workspace están pausados (agentsPaused).'
+          : budget.reason === 'daily-cost-cap'
+            ? `se alcanzó el techo de gasto diario del workspace (USD ${budget.capUsd}).`
+            : `se alcanzó el límite diario de dispatches del workspace (${budget.limit}/día).`;
+      throw new Error(`No se puede re-ejecutar la revisión: ${reasonMessage}`);
     }
 
     const now = new Date().toISOString();
@@ -167,6 +174,7 @@ export class ReviewsRerunAction extends PlatformActionHandler {
       repo: repoFullName,
       reviewAttempt: nextAttempt,
       startedAt: now,
+      date: todayKey(),
     });
 
     console.log(`[ReviewsRerun] re-despachada 'pulse_review' (intento ${nextAttempt}) para '${issue.identifier}' (${data.issueId}) a '${repoFullName}' vía QA '${qaAgentId}'.`);

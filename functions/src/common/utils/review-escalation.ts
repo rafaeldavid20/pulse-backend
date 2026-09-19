@@ -22,6 +22,38 @@ export async function resolveReviewLead(
 }
 
 /**
+ * Payload de escalamiento a `needs_human` para el tope de runs por issue
+ * (`Workspace.maxRunsPerIssue`, D8/TES-153): a diferencia de
+ * `maxReviewAttempts` (que ya venía escalado por `reviews.submit` para cuando
+ * el dispatch de QA lo vuelve a chequear), este tope se descubre recién acá,
+ * en el propio trigger de dispatch — así que el trigger es quien tiene que
+ * reasignar y etiquetar, no solo saltear el dispatch.
+ *
+ * Deja `status: 'in_progress'` (y `git.lastSyncedStatus` al día, mismo motivo
+ * que en `reviews.submit`) para sacar al issue de `todo`/`in_review` y que
+ * ningún trigger de dispatch lo vuelva a levantar.
+ */
+export async function buildNeedsHumanEscalation(
+  db: FirebaseFirestore.Firestore,
+  issue: FirebaseFirestore.DocumentData
+): Promise<Record<string, any>> {
+  const leadId = await resolveReviewLead(db, issue);
+  const currentLabels: string[] = Array.isArray(issue.labelIds) ? issue.labelIds : [];
+  const labelId = await ensureNeedsHumanLabel(db, issue.workspaceId, issue.teamId);
+
+  const updates: Record<string, any> = {
+    assigneeId: leadId || null,
+    status: 'in_progress',
+    'git.lastSyncedStatus': 'in_progress',
+    updatedAt: new Date().toISOString(),
+  };
+  if (!currentLabels.includes(labelId)) {
+    updates.labelIds = [...currentLabels, labelId];
+  }
+  return updates;
+}
+
+/**
  * Idempotente: reusa la label `needs-human` del workspace si ya existe (la
  * crea `reviews.submit` la primera vez), en vez de duplicarla por ruta de
  * escalamiento.
