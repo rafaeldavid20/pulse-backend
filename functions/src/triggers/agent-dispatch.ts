@@ -15,6 +15,183 @@ import { buildNeedsHumanEscalation } from '../common/utils/review-escalation';
 // runs en paralelo). Esta ventana cubre ese hueco.
 const DISPATCH_COOLDOWN_MS = 10 * 60 * 1000;
 
+const DEFAULT_MAX_REVIEW_ATTEMPTS = 2;
+
+/**
+ * Despacha el run de re-trabajo del dev tras un rechazo de QA (D9): sin este
+ * camino, `changes_requested` deja el issue en `in_progress` para siempre —
+ * `agentDispatchTrigger` de más abajo solo dispara al *entrar* a `todo`, y
+ * `reviews.submit` no toca `agent.dispatchedAt` (ese campo es de la cola de
+ * `todo`, no de esta).
+ *
+ * Reglas propias respecto al dispatch normal: sin cooldown de tiempo — la
+ * guarda es `review.attempt` (marcado en `review.reworkDispatchedForAttempt`
+ * dentro de la misma transacción que hace el dispatch), porque acá no hay la
+ * carrera de TES-130 (un rechazo produce un único write a `changes_requested`,
+ * no dos writes separados como assign+status). Y no cuenta al propio issue
+ * contra `maxConcurrentIssues`: el dev ya lo tiene `in_progress`, no es un
+ * issue nuevo. Sí cuenta contra el tope diario y el de runs por issue
+ * (D8/TES-153): un ping-pong de rechazos es exactamente el bucle que esos
+ * topes existen para cortar.
+ */
+async function dispatchRework(
+  issueId: string,
+  after: FirebaseFirestore.DocumentData,
+  agentId: string
+): Promise<void> {
+  const db = getFirestore();
+  const agentSnap = await db.collection('agents').doc(agentId).get();
+  const agent = agentSnap.exists ? agentSnap.data()! : null;
+  if (!agent || !agent.enabled || !agent.autonomousMode) {
+    console.log(`[AgentDispatch] rework for '${issueId}': agent '${agentId}' missing or not enabled/autonomous, skipping.`);
+    return;
+  }
+
+  const review = after.review as Record<string, any> | undefined;
+  const attempt = review?.attempt ?? 0;
+
+  // Defensa en profundidad: `reviews.submit` (D5) ya no deja pasar a
+  // `changes_requested` con los intentos agotados (ahí el outcome es
+  // `needs_human`), pero si esa regla cambia, acá tampoco hay que despachar un
+  // re-trabajo que QA no va a poder volver a revisar.
+  let maxReviewAttempts = DEFAULT_MAX_REVIEW_ATTEMPTS;
+  if (review?.reviewerId) {
+    const qaSnap = await db.collection('agents').doc(review.reviewerId).get();
+    if (qaSnap.exists) maxReviewAttempts = qaSnap.data()!.maxReviewAttempts ?? DEFAULT_MAX_REVIEW_ATTEMPTS;
+  }
+  if (attempt >= maxReviewAttempts) {
+    console.log(`[AgentDispatch] rework for '${issueId}' ya agotó los intentos de revisión (${attempt}/${maxReviewAttempts}), needs_human, no se despacha.`);
+    if (review?.state !== 'needs_human') {
+      await db.collection('issues').doc(issueId).update({ 'review.state': 'needs_human', updatedAt: new Date().toISOString() });
+    }
+    return;
+  }
+
+  const workspaceId = after.workspaceId;
+
+  // Tope de runs por issue (D8/TES-153), chequeado ANTES de tocar GitHub, como
+  // en el dispatch normal y el de traspaso: un ping-pong de rechazos es justo
+  // el bucle que este tope cubre.
+  const runBudget = await checkIssueRunBudget(db, workspaceId, issueId);
+  if (!runBudget.withinBudget) {
+    if (runBudget.reason === 'issue-run-limit') {
+      console.log(
+        `[AgentDispatch] rework for '${issueId}' alcanzó el tope de runs por issue (${runBudget.limit}), needs_human, no se despacha.`
+      );
+      const escalation = await buildNeedsHumanEscalation(db, after);
+      await db
+        .collection('issues')
+        .doc(issueId)
+        .update({ ...escalation, 'review.state': 'needs_human' });
+    } else {
+      console.log(
+        `[AgentDispatch] rework for '${issueId}' alcanzó el techo de costo por issue (USD ${runBudget.capUsd}), skipping.`
+      );
+    }
+    return;
+  }
+
+  const installSnap = await db.collection('github_installations').where('workspaceId', '==', workspaceId).limit(1).get();
+  if (installSnap.empty) {
+    console.log(`[AgentDispatch] rework for '${issueId}': workspace '${workspaceId}' has no GitHub installation, skipping.`);
+    return;
+  }
+  const installation = installSnap.docs[0].data();
+
+  const issueRef = db.collection('issues').doc(issueId);
+  const decision = await db.runTransaction(async (tx: Transaction) => {
+    const issueSnap = await tx.get(issueRef);
+    const currentReview = issueSnap.data()?.review as Record<string, any> | undefined;
+    // Otro trigger concurrente ya lo despachó, o el intento ya no está
+    // rechazado (por ejemplo, un humano lo movió a mano).
+    if (!currentReview || currentReview.state !== 'changes_requested') {
+      return { allowed: false, reason: 'not-changes-requested' } as const;
+    }
+    if (currentReview.reworkDispatchedForAttempt === currentReview.attempt) {
+      return { allowed: false, reason: 'already-dispatched' } as const;
+    }
+
+    const budget = await checkWorkspaceDispatchBudget(tx, db, workspaceId);
+    if (!budget.allowed) return { allowed: false, reason: budget.reason } as const;
+
+    const now = new Date().toISOString();
+    tx.update(issueRef, {
+      'review.reworkDispatchedAt': now,
+      'review.reworkDispatchedForAttempt': currentReview.attempt,
+    });
+    return { allowed: true } as const;
+  });
+  if (!decision.allowed) {
+    console.log(`[AgentDispatch] rework for '${issueId}' not dispatched (${decision.reason}).`);
+    return;
+  }
+
+  // Multi-repo (K9/TES-202): si un finding abierto bloqueante señala un repo
+  // puntual distinto del que resolvería la cascada normal, el re-trabajo tiene
+  // que ir a ESE repo — ahí está la rama y el PR con el finding, no en el
+  // repo por default. "Exactamente un run" (criterio de aceptación): se
+  // despacha a un solo repo; si además hace falta tocar otro, el propio
+  // prompt le pide al dev usar `pulse_request_repo_work`, igual que en
+  // cualquier otro run multi-repo.
+  const findings: Array<{ repoFullName?: string; status?: string; severity?: string }> = review?.findings || [];
+  const flaggedRepos = Array.from(
+    new Set(
+      findings
+        .filter((f) => f.status === 'open' && (f.severity === 'blocker' || f.severity === 'major') && f.repoFullName)
+        .map((f) => f.repoFullName as string)
+    )
+  );
+  const { repoFullName: cascadeRepo } = await resolveIssueRepo(db, { ...after, id: issueId }, { agentId });
+  const repoFullName = flaggedRepos.length > 0 && !flaggedRepos.includes(cascadeRepo || '') ? flaggedRepos[0] : cascadeRepo;
+
+  if (!repoFullName) {
+    console.log(`[AgentDispatch] rework for '${issueId}': no resolvable repo, skipping.`);
+    return;
+  }
+
+  const authorized: string[] = installation.repositoryFullNames || [];
+  if (authorized.length > 0 && !authorized.includes(repoFullName)) {
+    console.log(`[AgentDispatch] rework for '${issueId}': '${repoFullName}' is not in this workspace's GitHub installation, skipping.`);
+    return;
+  }
+
+  await dispatchRepositoryEvent(installation.installationId, repoFullName, 'pulse_task', {
+    issueId,
+    issueIdentifier: after.identifier,
+    workspaceId,
+    agentId,
+    agentKind: agent.kind || 'claude',
+    // El workflow usa esto para correr el job de re-trabajo en vez del de
+    // tarea nueva: sin rama ni PR nuevos, checkout de la rama existente y
+    // push al mismo PR.
+    mode: 'rework',
+    reviewAttempt: attempt,
+  });
+
+  // D15/TES-211: registro de runs y costo, mismo motivo que en el dispatch
+  // normal y el de traspaso.
+  const runId = `run-${nanoid(8)}`;
+  await db
+    .collection('agent_runs')
+    .doc(runId)
+    .set({
+      id: runId,
+      issueId,
+      workspaceId,
+      agentId,
+      role: 'dev',
+      mode: 'rework',
+      repo: repoFullName,
+      reviewAttempt: attempt,
+      startedAt: new Date().toISOString(),
+      date: todayKey(),
+    });
+
+  console.log(
+    `[AgentDispatch] dispatched rework 'pulse_task' (attempt ${attempt}) for issue '${after.identifier}' (${issueId}) to '${repoFullName}'.`
+  );
+}
+
 /**
  * Despacha el run del repo destino de un traspaso (`issue.pendingRepoWork`).
  *
@@ -220,6 +397,19 @@ export const agentDispatchTrigger = onDocumentWritten(
         after.status !== 'canceled'
       ) {
         await dispatchHandoff(event.params.issueId, after, agentId, pendingHandoff.repoFullName);
+        return;
+      }
+
+      // Re-trabajo tras un rechazo de QA (D9/TES-205): dispara al *entrar* a
+      // `changes_requested`, gemelo del `enteredTodo` de más abajo pero para
+      // este otro camino de dispatch — sin esto, el issue queda en
+      // `in_progress` para siempre después del primer rechazo, porque el
+      // dispatch de `todo` de acá abajo nunca se activa (el status ya no es
+      // `todo`).
+      const enteredChangesRequested =
+        after.review?.state === 'changes_requested' && before?.review?.state !== 'changes_requested';
+      if (enteredChangesRequested && agentId) {
+        await dispatchRework(event.params.issueId, after, agentId);
         return;
       }
 
