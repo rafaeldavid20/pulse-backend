@@ -16,6 +16,10 @@ import { CreateCommentAction } from '../../actions/comments/create-comment';
 import { CreateBranchAction } from '../../actions/github/create-branch';
 import { LinkPrAction } from '../../actions/github/link-pr';
 import { CreateLabelAction } from '../../actions/labels/create-label';
+import { ReviewsStartAction } from '../../actions/reviews/start-review';
+import { ReviewsSubmitAction } from '../../actions/reviews/submit-review';
+import { ResolveFindingAction } from '../../actions/reviews/resolve-finding';
+import { ReportCriteriaAction } from '../../actions/reviews/report-criteria';
 
 const acceptanceCriterionSchema = z.object({
   id: z.string().optional().describe('Omitilo para que el servidor le asigne un id estable nuevo.'),
@@ -34,7 +38,11 @@ type WritableActionCode =
   | 'comments.create'
   | 'github.createBranch'
   | 'github.linkPr'
-  | 'labels.create';
+  | 'labels.create'
+  | 'reviews.start'
+  | 'reviews.submit'
+  | 'reviews.resolveFinding'
+  | 'reviews.reportCriteria';
 
 const ACTIONS: Record<WritableActionCode, new (request: any, callerUid?: string) => { run(): Promise<PlatformActionResponse> }> = {
   'issues.claimNext': ClaimNextIssueAction,
@@ -49,6 +57,10 @@ const ACTIONS: Record<WritableActionCode, new (request: any, callerUid?: string)
   'github.createBranch': CreateBranchAction,
   'github.linkPr': LinkPrAction,
   'labels.create': CreateLabelAction,
+  'reviews.start': ReviewsStartAction,
+  'reviews.submit': ReviewsSubmitAction,
+  'reviews.resolveFinding': ResolveFindingAction,
+  'reviews.reportCriteria': ReportCriteriaAction,
 };
 
 /**
@@ -352,6 +364,74 @@ export function registerWriteTools(server: McpServer, principal: McpPrincipal) {
       const doc = await findIssue(principal.workspaceId, identifier);
       if (!doc) return textResult({ error: `No issue found for '${identifier}'.` });
       return runAction('issues.requestRepoWork', { issueId: doc.id, ...rest }, actorUid);
+    }
+  );
+
+  server.tool(
+    'pulse_next_review',
+    'For QA agents. Atomically claims the review that qa-dispatch assigned to this agent (an issue in in_review with review.dispatchedTo set to this agent), with a lock just like pulse_next_task. Returns found:false if nothing is waiting.',
+    {},
+    async () => runAction('reviews.start', { workspaceId: principal.workspaceId }, actorUid)
+  );
+
+  server.tool(
+    'pulse_submit_review',
+    'For QA agents. Submits a review verdict for an issue currently claimed via pulse_next_review. The server computes the outcome from findings/criteriaResults (it does not trust a caller-supplied decision): any open blocker/major finding or a failed criterion rejects it (changes_requested, or needs_human once maxReviewAttempts is reached); an unverifiable-only criterion goes to needs_human; otherwise approved. Writes the review, posts a summary comment on the issue, and publishes a COMMENT review (never APPROVE) on each PR with findings inline at file:line. Fails if the calling agent is not role "qa", or is the issue\'s own assignee.',
+    {
+      identifier: z.string(),
+      verdict: z.string().describe('Natural-language summary of the verdict, for humans.'),
+      findings: z.array(z.object({
+        severity: z.enum(['blocker', 'major', 'minor', 'nit']),
+        message: z.string(),
+        criterionId: z.string().optional(),
+        repoFullName: z.string().optional().describe('Only needed for multi-repo issues.'),
+        file: z.string().optional(),
+        line: z.number().int().optional(),
+      })).optional().default([]),
+      criteriaResults: z.array(z.object({
+        criterionId: z.string(),
+        result: z.enum(['pass', 'fail', 'unverifiable']),
+        evidence: z.string().optional(),
+      })).optional().default([]),
+    },
+    async ({ identifier, ...rest }) => {
+      const doc = await findIssue(principal.workspaceId, identifier);
+      if (!doc) return textResult({ error: `No issue found for '${identifier}'.` });
+      return runAction('reviews.submit', { issueId: doc.id, ...rest }, actorUid);
+    }
+  );
+
+  server.tool(
+    'pulse_resolve_finding',
+    'For dev agents doing rework after changes_requested. Marks a finding from the current review attempt as "fixed" (pushed a correction) or "disputed" (asks the QA of the next attempt to reconsider it instead of accepting it as-is).',
+    {
+      identifier: z.string(),
+      findingId: z.string(),
+      resolution: z.enum(['fixed', 'disputed']),
+      note: z.string().optional().describe('Why: what changed, or why you disagree.'),
+    },
+    async ({ identifier, ...rest }) => {
+      const doc = await findIssue(principal.workspaceId, identifier);
+      if (!doc) return textResult({ error: `No issue found for '${identifier}'.` });
+      return runAction('reviews.resolveFinding', { issueId: doc.id, ...rest }, actorUid);
+    }
+  );
+
+  server.tool(
+    'pulse_report_criteria',
+    'For dev agents, before opening a PR. Declares, criterion by criterion, whether the acceptance criteria were met ("met"/"not_met"/"unverifiable") with a line of evidence each. Full replacement of the checklist — the QA sees this in pulse_get_review_context as a claim to cross-check, not as ground truth. If any criterion is not_met, do not open the PR: comment and release, or flag ambiguity instead.',
+    {
+      identifier: z.string(),
+      checks: z.array(z.object({
+        criterionId: z.string(),
+        result: z.enum(['met', 'not_met', 'unverifiable']),
+        evidence: z.string().describe('File, command run, or output — concrete evidence, not a restatement of the criterion.'),
+      })),
+    },
+    async ({ identifier, checks }) => {
+      const doc = await findIssue(principal.workspaceId, identifier);
+      if (!doc) return textResult({ error: `No issue found for '${identifier}'.` });
+      return runAction('reviews.reportCriteria', { issueId: doc.id, checks }, actorUid);
     }
   );
 

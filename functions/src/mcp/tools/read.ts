@@ -9,6 +9,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 // doesn't.)
 import { z } from 'zod';
 import { McpPrincipal } from '../auth';
+import { getPullRequestDiff, listPullRequestFiles, REVIEW_DIFF_SIZE_CAP } from '../../github/client';
 
 export function textResult(data: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
@@ -254,6 +255,88 @@ export function registerReadTools(server: McpServer, principal: McpPrincipal) {
       const doc = await findIssue(principal.workspaceId, identifier);
       if (!doc) return textResult({ found: false });
       return textResult({ found: true, issue: doc.data() });
+    }
+  );
+
+  server.tool(
+    'pulse_get_review_context',
+    'For QA agents. Everything needed to review an issue against its rubric: the accepted acceptance criteria, the project\'s Definition of Done (once D14 lands), the dev\'s self-check (once D13 lands), findings from previous attempts with their status, the issue\'s comments, and — for each PR in gitRefs — the diff (paginated, capped in size; past the cap you get the file list instead and read the rest from the checkout).',
+    { identifier: z.string() },
+    async ({ identifier }) => {
+      const doc = await findIssue(principal.workspaceId, identifier);
+      if (!doc) return textResult({ error: `No issue found for '${identifier}'.` });
+      const issue = doc.data()!;
+
+      const criteria = (issue.acceptanceCriteria || []).filter((c: any) => c.accepted !== false);
+
+      const [commentsSnap, projectSnap] = await Promise.all([
+        db.collection('comments').where('issueId', '==', doc.id).get(),
+        issue.projectId ? db.collection('projects').doc(issue.projectId).get() : Promise.resolve(null),
+      ]);
+      const project: any = projectSnap?.exists ? projectSnap.data() : null;
+
+      const refs: any[] =
+        Array.isArray(issue.gitRefs) && issue.gitRefs.length > 0
+          ? issue.gitRefs
+          : issue.git?.repoFullName && issue.git?.prNumber !== undefined
+            ? [issue.git]
+            : [];
+
+      let prs: Array<Record<string, any>> = [];
+      if (refs.length > 0) {
+        const installSnap = await db
+          .collection('github_installations')
+          .where('workspaceId', '==', principal.workspaceId)
+          .limit(1)
+          .get();
+        if (installSnap.empty) {
+          prs = refs.map((r) => ({ repoFullName: r.repoFullName, prNumber: r.prNumber, error: 'GitHub no está conectado en este workspace.' }));
+        } else {
+          const installationId = installSnap.docs[0].data().installationId;
+          prs = await Promise.all(
+            refs
+              .filter((r) => r?.prNumber !== undefined)
+              .map(async (r) => {
+                try {
+                  const diff = await getPullRequestDiff(installationId, r.repoFullName, r.prNumber);
+                  if (diff.length <= REVIEW_DIFF_SIZE_CAP) {
+                    return { repoFullName: r.repoFullName, prNumber: r.prNumber, diff };
+                  }
+                  const files = await listPullRequestFiles(installationId, r.repoFullName, r.prNumber);
+                  return {
+                    repoFullName: r.repoFullName,
+                    prNumber: r.prNumber,
+                    diffTooLarge: true,
+                    note: `El diff supera ${REVIEW_DIFF_SIZE_CAP} caracteres — hacé checkout de la rama y leé estos archivos.`,
+                    files,
+                  };
+                } catch (error: any) {
+                  return { repoFullName: r.repoFullName, prNumber: r.prNumber, error: error?.message || String(error) };
+                }
+              })
+          );
+        }
+      }
+
+      const historyFindings = (issue.review?.history || []).map((h: any) => ({
+        attempt: h.attempt,
+        state: h.state,
+        findings: h.findings || [],
+      }));
+      const currentFindings = issue.review?.findings
+        ? [{ attempt: issue.review.attempt, state: issue.review.state, findings: issue.review.findings }]
+        : [];
+
+      return textResult({
+        found: true,
+        issue,
+        criteria,
+        definitionOfDone: project?.definitionOfDone || [],
+        devSelfCheck: issue.devSelfCheck || [],
+        previousFindings: [...historyFindings, ...currentFindings],
+        comments: commentsSnap.docs.map((d) => d.data()),
+        prs,
+      });
     }
   );
 }

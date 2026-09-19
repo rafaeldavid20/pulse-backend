@@ -37,6 +37,11 @@ import { MarkAllNotificationsReadAction } from '../actions/notifications/mark-al
 import { MuteIssueAction } from '../actions/notifications/mute-issue';
 import { SnoozeNotificationAction } from '../actions/notifications/snooze-notification';
 import { UpdateNotificationPreferencesAction } from '../actions/notifications/update-preferences';
+import { ReviewsStartAction } from '../actions/reviews/start-review';
+import { ReviewsSubmitAction } from '../actions/reviews/submit-review';
+import { ReviewsOverrideAction } from '../actions/reviews/override-review';
+import { ResolveFindingAction } from '../actions/reviews/resolve-finding';
+import { ReportCriteriaAction } from '../actions/reviews/report-criteria';
 
 export async function dispatchPlatformAction(
   request: PlatformActionRequest,
@@ -135,6 +140,17 @@ export async function dispatchPlatformAction(
       return new SnoozeNotificationAction(request, callerUid, callerEmail).run();
     case 'notifications.updatePreferences':
       return new UpdateNotificationPreferencesAction(request, callerUid, callerEmail).run();
+
+    case 'reviews.start':
+      return new ReviewsStartAction(request, callerUid, callerEmail).run();
+    case 'reviews.submit':
+      return new ReviewsSubmitAction(request, callerUid, callerEmail).run();
+    case 'reviews.override':
+      return new ReviewsOverrideAction(request, callerUid, callerEmail).run();
+    case 'reviews.resolveFinding':
+      return new ResolveFindingAction(request, callerUid, callerEmail).run();
+    case 'reviews.reportCriteria':
+      return new ReportCriteriaAction(request, callerUid, callerEmail).run();
 
     default:
       return {

@@ -5,13 +5,18 @@
 // dominio de Pulse. Para cambiar algo de acá, editá ese archivo y corré
 // `npm run sync:types` desde `pulse-app`.
 //
-// EXCEPCIÓN TEMPORAL (TES-146, TES-148): `AcceptanceCriterion`,
-// `Issue.acceptanceCriteria`, la entrada en `ISSUE_WRITABLE_FIELDS`, y ahora
-// `IssueReview`/`Issue.review` y sus tipos auxiliares, se agregaron acá a
-// mano porque estas sesiones no tienen push a `pulse-app` (traspasos
-// registrados en el issue, TES-202). El próximo `npm run sync:types` desde
-// `pulse-app`, una vez que ese repo tenga los mismos cambios en `domain.ts`,
-// va a pisar esta copia y actualizar el hash.
+// EXCEPCIÓN TEMPORAL (TES-146, TES-148, TES-150): `AcceptanceCriterion`,
+// `Issue.acceptanceCriteria`, la entrada en `ISSUE_WRITABLE_FIELDS`,
+// `IssueReview`/`Issue.review` y sus tipos auxiliares, y ahora
+// `DevCriterionCheck`/`Issue.devSelfCheck`, `IssueReview.previousAssigneeId`,
+// `ReviewFinding.resolutionNote`, `IssueReviewAttempt.overriddenBy`/
+// `overriddenAt`/`overrideReason` e `IssueReview.dispatchedTo`/`dispatchedAt`
+// (ya escritos por `qa-dispatch.ts`/D4 pero nunca declarados acá), se
+// agregaron acá a mano porque estas
+// sesiones no tienen push a `pulse-app` (traspasos registrados en el issue,
+// TES-202). El próximo `npm run sync:types` desde `pulse-app`, una vez que ese
+// repo tenga los mismos cambios en `domain.ts`, va a pisar esta copia y
+// actualizar el hash.
 //
 // SOURCE_HASH: 9de3931b0784a7d9
 // ============================================================
@@ -369,6 +374,12 @@ export interface Issue {
    * `ISSUE_STATUSES`, `StatusBadge` y el mapeo del webhook.
    */
   review?: IssueReview;
+  /**
+   * Autoverificación del dev contra la rúbrica antes de abrir el PR (D13).
+   * El QA la recibe en `pulse_get_review_context` para contrastarla, no para
+   * creerla ciegamente.
+   */
+  devSelfCheck?: DevCriterionCheck[];
   createdAt: string;
   updatedAt: string;
 }
@@ -456,6 +467,21 @@ export interface ReviewFinding {
   file?: string;
   line?: number;
   message: string;
+  /** Motivo que da el dev al resolver el finding (D9, `pulse_resolve_finding`): por qué lo considera `fixed` o `disputed`. */
+  resolutionNote?: string;
+}
+
+/**
+ * Resultado de la autoverificación del dev (D13) para un criterio puntual,
+ * antes de abrir el PR. `criterionId` referencia un `AcceptanceCriterion.id`
+ * del issue. El QA la recibe en `pulse_get_review_context` como dato a
+ * contrastar contra el diff, no como una verdad ya confirmada.
+ */
+export interface DevCriterionCheck {
+  criterionId: string;
+  result: 'met' | 'not_met' | 'unverifiable';
+  /** Evidencia puntual: archivo, comando corrido, o salida — texto libre. */
+  evidence: string;
 }
 
 /** PR revisado en un repo puntual, con el SHA exacto que vio el QA (D10, K9/TES-202). */
@@ -484,6 +510,15 @@ export interface IssueReviewAttempt {
   criteriaResults?: ReviewCriterionResult[];
   startedAt?: string;
   completedAt?: string;
+  /**
+   * Presente cuando un humano forzó el veredicto con `reviews.override` (D5)
+   * — "Aprobar igual" en D7. Es un callable autenticado, no una tool MCP: solo
+   * una persona puede pisar el veredicto del QA, y queda en el historial con
+   * su uid para que quede claro que no lo decidió el agente.
+   */
+  overriddenBy?: string;
+  overriddenAt?: string;
+  overrideReason?: string;
 }
 
 /**
@@ -502,11 +537,24 @@ export interface IssueReview extends IssueReviewAttempt {
   claimedBy?: string;
   claimedAt?: string;
   /**
+   * Quién despachó `qaDispatchTrigger` (D4) para este intento y cuándo — el
+   * agente QA que `reviews.start` (D5) debe reclamar, y la base del guard
+   * anti-ping-pong (comparar contra el head SHA actual de cada PR).
+   */
+  dispatchedTo?: string;
+  dispatchedAt?: string;
+  /**
    * Intentos ya cerrados, más viejo primero. Sin esto no hay métricas de D7
    * (intentos promedio, tasa de aprobación al primer intento) — solo
    * quedaría el último intento y se perdería el resto.
    */
   history?: IssueReviewAttempt[];
+  /**
+   * Asignado justo antes de que `reviews.submit` (D5) reasignara el issue al
+   * lead por `needs_human`. Sin esto, "Devolver al agente" (D7) no sabría a
+   * quién devolvérselo sin buscarlo a mano en el historial.
+   */
+  previousAssigneeId?: string;
 }
 
 export interface Comment {
