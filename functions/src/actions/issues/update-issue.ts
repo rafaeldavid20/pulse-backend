@@ -2,6 +2,7 @@ import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { cleanUndefined } from '../../common/utils/clean';
+import { normalizeAcceptanceCriteria } from '../../common/utils/acceptance-criteria';
 import { ISSUE_WRITABLE_FIELDS, pickWritableFields } from '../../common/utils/issue-fields';
 import { canHaveChildren } from '../../common/domain.generated';
 import { validateRepoForWorkspace } from '../../common/utils/repo-field';
@@ -62,6 +63,13 @@ export class UpdateIssueAction extends PlatformActionHandler {
       // cambio, para no notificarle a alguien su propia acción.
       updatedBy: this.caller.uid || 'system',
     };
+
+    // Igual que `type`/`parentId`: `pickWritableFields` ya copió el valor
+    // crudo del caller arriba, y acá se pisa con la versión normalizada (ids
+    // estables asignados a los criterios que no traían uno).
+    if ('acceptanceCriteria' in data) {
+      updates.acceptanceCriteria = normalizeAcceptanceCriteria(data.acceptanceCriteria) || [];
+    }
 
     // Si `dueDate` cambia, cualquier alerta `due_soon` (F5) ya emitida para el
     // valor anterior deja de tener sentido — se resetea para permitir una

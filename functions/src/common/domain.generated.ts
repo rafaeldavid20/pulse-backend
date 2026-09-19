@@ -5,6 +5,12 @@
 // dominio de Pulse. Para cambiar algo de acá, editá ese archivo y corré
 // `npm run sync:types` desde `pulse-app`.
 //
+// EXCEPCIÓN TEMPORAL (TES-146): `AcceptanceCriterion`, `Issue.acceptanceCriteria`
+// y la entrada en `ISSUE_WRITABLE_FIELDS` se agregaron acá a mano porque esta
+// sesión no tiene push a `pulse-app` (traspaso registrado en el issue, TES-202).
+// El próximo `npm run sync:types` desde `pulse-app`, una vez que ese repo tenga
+// el mismo cambio en `domain.ts`, va a pisar esta copia y actualizar el hash.
+//
 // SOURCE_HASH: 9de3931b0784a7d9
 // ============================================================
 
@@ -351,8 +357,29 @@ export interface Issue {
   gitRefs?: IssueGitRef[];
   /** Traspasos a otros repos todavía sin PR. Mientras haya alguno el issue no pasa a `in_review`. */
   pendingRepoWork?: PendingRepoWork[];
+  /** Rúbrica del issue (D1). Ausente o vacío: sin criterios, el QA (D6) no tiene contra qué verificar. */
+  acceptanceCriteria?: AcceptanceCriterion[];
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * Un criterio de la rúbrica contra la que el QA (D6) verifica un issue. Sin
+ * criterios aceptados el QA solo puede opinar, que es justo lo que D1 quiere
+ * evitar.
+ */
+export interface AcceptanceCriterion {
+  /** nanoid estable, no un índice: los findings y la autoverificación (D13) lo referencian. */
+  id: string;
+  text: string;
+  /** Ausente equivale a `'manual'`: lo escribió una persona o un agente en la UI o por MCP. */
+  source?: 'manual' | 'generated';
+  /**
+   * Solo significativo para `source: 'generated'`: `issues.generateCriteria`
+   * los crea en `false`, y el QA no los usa hasta que un humano los pase a
+   * `true`. Ausente en criterios manuales, que se consideran aceptados.
+   */
+  accepted?: boolean;
 }
 
 export interface Comment {
@@ -537,6 +564,7 @@ export const ISSUE_WRITABLE_FIELDS = [
   'estimate',
   'defaultAssigneeId',
   'cycleId',
+  'acceptanceCriteria',
 ] as const;
 
 export type IssueWritableField = (typeof ISSUE_WRITABLE_FIELDS)[number];
