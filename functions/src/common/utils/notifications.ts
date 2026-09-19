@@ -21,6 +21,10 @@ export interface Notification {
   userId: string;
   type: NotificationType;
   issueId: string;
+  // Solo poblado para `comment`/`mentioned` (TES-193): le permite al
+  // frontend abrir `IssuePeekPanel` con foco en el comentario puntual en vez
+  // de solo la pestaña "Comentarios".
+  commentId?: string;
   actorId: string;
   title: string;
   body: string;
@@ -39,10 +43,30 @@ function truncate(text: string, max: number): string {
 export type NotificationInput = Omit<Notification, 'id' | 'read' | 'readAt' | 'createdAt'>;
 
 /**
+ * Chequea si `userId` silenció las notificaciones de `issueId` (TES-193, ver
+ * `notifications.muteIssue`). La preferencia vive en el doc de membership
+ * (`members/{workspaceId}_{userId}`) en vez de una subcolección: es un dato
+ * chico y de lectura frecuente (acá, en cada notificación potencial), y ya
+ * existe ese doc por usuario+workspace para todo lo demás.
+ */
+async function isIssueMuted(
+  db: FirebaseFirestore.Firestore,
+  workspaceId: string,
+  userId: string,
+  issueId: string
+): Promise<boolean> {
+  const memberSnap = await db.collection('members').doc(`${workspaceId}_${userId}`).get();
+  if (!memberSnap.exists) return false;
+  const mutedIssueIds: string[] = memberSnap.data()!.mutedIssueIds || [];
+  return mutedIssueIds.includes(issueId);
+}
+
+/**
  * Crea una notificación. Nunca dispara al propio actor (no tiene sentido
- * notificarle a alguien su propia acción) y nunca lanza: es siempre un efecto
- * secundario de otra escritura (un trigger sobre `issues`, un comentario), y
- * un fallo acá no debería tirar abajo la operación principal.
+ * notificarle a alguien su propia acción), nunca dispara si el destinatario
+ * silenció el issue, y nunca lanza: es siempre un efecto secundario de otra
+ * escritura (un trigger sobre `issues`, un comentario), y un fallo acá no
+ * debería tirar abajo la operación principal.
  */
 export async function createNotification(
   db: FirebaseFirestore.Firestore,
@@ -51,6 +75,8 @@ export async function createNotification(
   if (!input.userId || input.userId === input.actorId) return;
 
   try {
+    if (await isIssueMuted(db, input.workspaceId, input.userId, input.issueId)) return;
+
     const id = `ntf-${nanoid(8)}`;
     const notification: Notification = {
       ...input,
