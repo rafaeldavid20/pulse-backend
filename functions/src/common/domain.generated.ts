@@ -5,11 +5,13 @@
 // dominio de Pulse. Para cambiar algo de acá, editá ese archivo y corré
 // `npm run sync:types` desde `pulse-app`.
 //
-// EXCEPCIÓN TEMPORAL (TES-146): `AcceptanceCriterion`, `Issue.acceptanceCriteria`
-// y la entrada en `ISSUE_WRITABLE_FIELDS` se agregaron acá a mano porque esta
-// sesión no tiene push a `pulse-app` (traspaso registrado en el issue, TES-202).
-// El próximo `npm run sync:types` desde `pulse-app`, una vez que ese repo tenga
-// el mismo cambio en `domain.ts`, va a pisar esta copia y actualizar el hash.
+// EXCEPCIÓN TEMPORAL (TES-146, TES-148): `AcceptanceCriterion`,
+// `Issue.acceptanceCriteria`, la entrada en `ISSUE_WRITABLE_FIELDS`, y ahora
+// `IssueReview`/`Issue.review` y sus tipos auxiliares, se agregaron acá a
+// mano porque estas sesiones no tienen push a `pulse-app` (traspasos
+// registrados en el issue, TES-202). El próximo `npm run sync:types` desde
+// `pulse-app`, una vez que ese repo tenga los mismos cambios en `domain.ts`,
+// va a pisar esta copia y actualizar el hash.
 //
 // SOURCE_HASH: 9de3931b0784a7d9
 // ============================================================
@@ -359,6 +361,14 @@ export interface Issue {
   pendingRepoWork?: PendingRepoWork[];
   /** Rúbrica del issue (D1). Ausente o vacío: sin criterios, el QA (D6) no tiene contra qué verificar. */
   acceptanceCriteria?: AcceptanceCriterion[];
+  /**
+   * Intento de revisión de QA en curso (D3). Ausente: el issue nunca entró al
+   * loop de revisión. El *resultado* de QA vive acá, no en `status` — no hay
+   * `qa_failed` en `IssueStatus` (ver decisión en TES-148): agregar estados
+   * nuevos por algo ortogonal al status rompería el board, los filtros,
+   * `ISSUE_STATUSES`, `StatusBadge` y el mapeo del webhook.
+   */
+  review?: IssueReview;
   createdAt: string;
   updatedAt: string;
 }
@@ -380,6 +390,123 @@ export interface AcceptanceCriterion {
    * `true`. Ausente en criterios manuales, que se consideran aceptados.
    */
   accepted?: boolean;
+}
+
+/**
+ * Resultado de una revisión de QA (D3). `pending`/`running` son el intento en
+ * curso; `approved`/`changes_requested`/`needs_human` son los tres cierres
+ * posibles (D6). `needs_human` cubre tanto los intentos agotados como el caso
+ * en que el único problema es un criterio `unverifiable` ("la animación se
+ * siente fluida") — eso no es un rechazo, así que no puede ser
+ * `changes_requested`.
+ *
+ * `stale`: la aprobación quedó desactualizada porque hubo código nuevo después
+ * de aprobar (push posterior al `headSha` revisado, D10) o porque cambiaron
+ * los criterios contra los que se aprobó (edición de `acceptanceCriteria`,
+ * D1). Un issue en `stale` con intentos disponibles se vuelve a revisar en
+ * vez de quedar aprobado sobre código o criterios que ya no son los mismos.
+ */
+export type ReviewState =
+  | 'pending'
+  | 'running'
+  | 'approved'
+  | 'changes_requested'
+  | 'needs_human'
+  | 'stale';
+
+export type FindingSeverity = 'blocker' | 'major' | 'minor' | 'nit';
+
+/**
+ * `open`: sin resolver todavía. `fixed`: el re-trabajo del dev (D9) lo marca
+ * así al pushear una corrección. `disputed`: el dev no está de acuerdo y pide
+ * que el QA lo reconsidere en la re-revisión. `dismissed`: un humano lo
+ * descarta a mano desde la UI (D7, "Descartar finding") sin que medie un push.
+ */
+export type FindingStatus = 'open' | 'fixed' | 'disputed' | 'dismissed';
+
+/**
+ * Resultado de verificar un criterio puntual de la rúbrica contra el código
+ * revisado. `criterionId` referencia un `AcceptanceCriterion.id` del issue, o
+ * (cuando exista, D14/TES-210) un criterio de la Definition of Done a nivel
+ * workspace — en ambos casos es solo un id, no hace falta distinguir la
+ * procedencia acá. `unverifiable` es su propio resultado, no un `fail`: un
+ * criterio que no se puede confirmar automáticamente no debería tumbar el PR
+ * por las mismas razones que uno que sí falla.
+ */
+export interface ReviewCriterionResult {
+  criterionId: string;
+  result: 'pass' | 'fail' | 'unverifiable';
+  /** Nota del QA sobre por qué llegó a ese resultado — texto libre, para revisión humana. */
+  evidence?: string;
+}
+
+/**
+ * Observación puntual de la revisión. `id` es estable (no un índice) porque
+ * el re-trabajo de D9 y el "Descartar finding" de D7 lo referencian para
+ * actualizar `status` sin depender de la posición en el array.
+ * `repoFullName` distingue a qué PR pertenece cuando el issue tiene más de
+ * uno (K9/TES-202) — ausente en el caso de un solo repo.
+ */
+export interface ReviewFinding {
+  id: string;
+  severity: FindingSeverity;
+  status: FindingStatus;
+  criterionId?: string;
+  repoFullName?: string;
+  file?: string;
+  line?: number;
+  message: string;
+}
+
+/** PR revisado en un repo puntual, con el SHA exacto que vio el QA (D10, K9/TES-202). */
+export interface ReviewPrRef {
+  repoFullName: string;
+  prNumber: number;
+  headSha: string;
+}
+
+/**
+ * Un intento de revisión cerrado. Mismos campos que `IssueReview` salvo
+ * `history`, que no anida — cada entrada de `IssueReview.history` es uno de
+ * estos, no un árbol.
+ */
+export interface IssueReviewAttempt {
+  state: ReviewState;
+  /** Agente `role: 'qa'` que corrió (o está corriendo) este intento. */
+  reviewerId?: string;
+  /** 1-based. Tope en `Agent.maxReviewAttempts`; agotado sin aprobación, el cierre es `needs_human`. */
+  attempt: number;
+  /** Resumen en lenguaje natural del veredicto, para humanos — los datos estructurados van en `findings`/`criteriaResults`. */
+  verdict?: string;
+  /** Un elemento por repo con PR abierto (K9/TES-202). Ausente en el caso de un solo repo sin registrar todavía. */
+  prs?: ReviewPrRef[];
+  findings?: ReviewFinding[];
+  criteriaResults?: ReviewCriterionResult[];
+  startedAt?: string;
+  completedAt?: string;
+}
+
+/**
+ * Intento de revisión de QA en curso sobre un issue (D3). Se guarda embebido
+ * en el issue en vez de en una subcolección: el volumen es acotado (tope de
+ * `Agent.maxReviewAttempts`) y así viaja entero en `pulse_get_issue` sin una
+ * lectura aparte.
+ */
+export interface IssueReview extends IssueReviewAttempt {
+  /**
+   * Lock de la revisión, separado de `IssueAgentState` a propósito: mientras
+   * el QA revisa, el dev sigue con el issue reclamado (`agent.state`) — son
+   * dos actores distintos trabajando el mismo issue a la vez, no un traspaso
+   * de posesión.
+   */
+  claimedBy?: string;
+  claimedAt?: string;
+  /**
+   * Intentos ya cerrados, más viejo primero. Sin esto no hay métricas de D7
+   * (intentos promedio, tasa de aprobación al primer intento) — solo
+   * quedaría el último intento y se perdería el resto.
+   */
+  history?: IssueReviewAttempt[];
 }
 
 export interface Comment {
