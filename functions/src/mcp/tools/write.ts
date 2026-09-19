@@ -17,6 +17,11 @@ import { CreateBranchAction } from '../../actions/github/create-branch';
 import { LinkPrAction } from '../../actions/github/link-pr';
 import { CreateLabelAction } from '../../actions/labels/create-label';
 
+const acceptanceCriterionSchema = z.object({
+  id: z.string().optional().describe('Omitilo para que el servidor le asigne un id estable nuevo.'),
+  text: z.string(),
+});
+
 type WritableActionCode =
   | 'issues.claimNext'
   | 'issues.claim'
@@ -135,6 +140,8 @@ export function registerWriteTools(server: McpServer, principal: McpPrincipal) {
         .describe('"owner/repo". Pass an empty string to clear it and go back to inheriting from the epic.'),
       assigneeId: z.string().nullable().optional()
         .describe('Member or agent id to assign. Pass null to unassign. Assigning an agent that has autonomousMode on, on an issue already in "todo", does NOT start it — the dispatch fires on entering "todo", so move it out and back in.'),
+      acceptanceCriteria: z.array(acceptanceCriterionSchema).optional()
+        .describe('Full replacement of the acceptance criteria checklist. Include existing criteria (with their "id") to keep them — omitting one removes it.'),
     },
     async ({ identifier, ...updates }) => {
       const doc = await findIssue(principal.workspaceId, identifier);
@@ -175,6 +182,8 @@ export function registerWriteTools(server: McpServer, principal: McpPrincipal) {
       dueDate: z.string().optional(),
       repoFullName: z.string().optional()
         .describe('"owner/repo". On an epic it becomes the default for every issue under it; on an issue it overrides that default.'),
+      acceptanceCriteria: z.array(acceptanceCriterionSchema).optional()
+        .describe('Acceptance criteria checklist. Without it, QA review (once wired up) can only opine, not verify.'),
     },
     async ({ teamKey, parent, ...rest }) => {
       const team = await findTeamByKey(principal.workspaceId, teamKey);

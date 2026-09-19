@@ -4,6 +4,7 @@ import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { cleanUndefined } from '../../common/utils/clean';
 import { nextIssueNumber } from '../../common/utils/counters';
+import { normalizeAcceptanceCriteria } from '../../common/utils/acceptance-criteria';
 import { ISSUE_WRITABLE_FIELDS, pickWritableFields } from '../../common/utils/issue-fields';
 import { validateRepoForWorkspace } from '../../common/utils/repo-field';
 import {
@@ -99,6 +100,10 @@ export class CreateIssueAction extends PlatformActionHandler {
       assigneeId: data.assigneeId || null,
       creatorId: this.caller.uid || data.creatorId || 'system',
       labelIds: data.labelIds || ['feature'],
+      // Igual que `type`/`parentId`: `pickWritableFields` ya copió el valor
+      // crudo del caller arriba, y acá se pisa con la versión normalizada
+      // (ids estables asignados a los criterios que no traían uno).
+      acceptanceCriteria: normalizeAcceptanceCriteria(data.acceptanceCriteria) || [],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       // Igual que en `issues.update`: para que `issueNotificationsTrigger`
