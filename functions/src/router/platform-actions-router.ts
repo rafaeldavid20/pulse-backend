@@ -35,6 +35,8 @@ import { UpdateCycleSettingsAction } from '../actions/cycles/update-cycle-settin
 import { MarkNotificationReadAction } from '../actions/notifications/mark-read';
 import { MarkAllNotificationsReadAction } from '../actions/notifications/mark-all-read';
 import { MuteIssueAction } from '../actions/notifications/mute-issue';
+import { SnoozeNotificationAction } from '../actions/notifications/snooze-notification';
+import { UpdateNotificationPreferencesAction } from '../actions/notifications/update-preferences';
 
 export async function dispatchPlatformAction(
   request: PlatformActionRequest,
@@ -129,6 +131,10 @@ export async function dispatchPlatformAction(
       return new MarkAllNotificationsReadAction(request, callerUid, callerEmail).run();
     case 'notifications.muteIssue':
       return new MuteIssueAction(request, callerUid, callerEmail).run();
+    case 'notifications.snooze':
+      return new SnoozeNotificationAction(request, callerUid, callerEmail).run();
+    case 'notifications.updatePreferences':
+      return new UpdateNotificationPreferencesAction(request, callerUid, callerEmail).run();
 
     default:
       return {
