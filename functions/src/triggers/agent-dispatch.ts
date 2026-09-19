@@ -1,10 +1,9 @@
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
-import { getFirestore, FieldValue, Transaction } from 'firebase-admin/firestore';
+import { getFirestore, Transaction } from 'firebase-admin/firestore';
 import { githubAppId, githubAppPrivateKeyB64 } from '../common/secrets';
 import { dispatchRepositoryEvent } from '../github/client';
 import { resolveIssueRepo } from '../common/utils/repo-resolution';
-
-const DAILY_DISPATCH_LIMIT = 5;
+import { DAILY_DISPATCH_LIMIT, tryConsumeDailyDispatch } from '../common/utils/dispatch-counter';
 
 // Un run tarda ~30s en arrancar y reclamar el issue (ver `agent.state ===
 // 'claimed'` en claim-issue.ts), así que ese guard solo no alcanza para
@@ -12,10 +11,6 @@ const DAILY_DISPATCH_LIMIT = 5;
 // reclamar (TES-130: dos dispatches en 4s, mismo issue, mismo agente, dos
 // runs en paralelo). Esta ventana cubre ese hueco.
 const DISPATCH_COOLDOWN_MS = 10 * 60 * 1000;
-
-function today(): string {
-  return new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-}
 
 /**
  * Despacha el run del repo destino de un traspaso (`issue.pendingRepoWork`).
@@ -66,7 +61,6 @@ async function dispatchHandoff(
   }
 
   const issueRef = db.collection('issues').doc(issueId);
-  const counterRef = db.collection('agent_dispatch_counters').doc(`${workspaceId}_${today()}`);
   const decision = await db.runTransaction(async (tx: Transaction) => {
     const issueSnap = await tx.get(issueRef);
     const pending: any[] = issueSnap.data()?.pendingRepoWork || [];
@@ -74,12 +68,11 @@ async function dispatchHandoff(
     // Otro trigger concurrente ya lo despachó, o el traspaso se cerró.
     if (!entry || entry.dispatchedAt) return { allowed: false, reason: 'already-dispatched' } as const;
 
-    const counterSnap = await tx.get(counterRef);
-    const count = counterSnap.exists ? counterSnap.data()!.count || 0 : 0;
-    if (count >= DAILY_DISPATCH_LIMIT) return { allowed: false, reason: 'circuit-breaker' } as const;
+    if (!(await tryConsumeDailyDispatch(tx, db, workspaceId))) {
+      return { allowed: false, reason: 'circuit-breaker' } as const;
+    }
 
     const now = new Date().toISOString();
-    tx.set(counterRef, { workspaceId, date: today(), count: FieldValue.increment(1) }, { merge: true });
     tx.update(issueRef, {
       pendingRepoWork: pending.map((e) => (e.repoFullName === targetRepo ? { ...e, dispatchedAt: now } : e)),
       'agent.dispatchedAt': now,
@@ -215,7 +208,6 @@ export const agentDispatchTrigger = onDocumentWritten(
 
       const workspaceId = after.workspaceId;
       const issueRef = db.collection('issues').doc(event.params.issueId);
-      const counterRef = db.collection('agent_dispatch_counters').doc(`${workspaceId}_${today()}`);
       const dispatchDecision = await db.runTransaction(async (tx: Transaction) => {
         // Leer el propio issue dentro de la transacción, no el `after` del
         // evento: dos triggers concurrentes parten del mismo `after` pero
@@ -230,13 +222,10 @@ export const agentDispatchTrigger = onDocumentWritten(
           }
         }
 
-        const counterSnap = await tx.get(counterRef);
-        const count = counterSnap.exists ? counterSnap.data()!.count || 0 : 0;
-        if (count >= DAILY_DISPATCH_LIMIT) {
+        if (!(await tryConsumeDailyDispatch(tx, db, workspaceId))) {
           return { allowed: false, reason: 'circuit-breaker' } as const;
         }
 
-        tx.set(counterRef, { workspaceId, date: today(), count: FieldValue.increment(1) }, { merge: true });
         tx.update(issueRef, {
           'agent.dispatchedAt': new Date().toISOString(),
           'agent.dispatchedTo': agentId,

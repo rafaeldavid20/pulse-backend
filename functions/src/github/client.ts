@@ -114,6 +114,26 @@ export async function createBranch(
   };
 }
 
+/**
+ * SHA actual del HEAD de un PR.
+ *
+ * Se usa para el guard anti-ping-pong de QA (`qa-dispatch.ts`, D4/TES-149):
+ * comparar contra el SHA que vio la última revisión es la única forma de
+ * saber si el dev pusheó algo nuevo, mientras el webhook no siga los eventos
+ * `synchronize` de cada PR (D10/TES-206, todavía sin hacer).
+ */
+export async function getPullRequestHeadSha(
+  installationId: string,
+  repoFullName: string,
+  prNumber: number
+): Promise<string> {
+  const body = (await githubInstallationFetch(
+    installationId,
+    `/repos/${repoFullName}/pulls/${prNumber}`
+  )) as { head: { sha: string } };
+  return body.head.sha;
+}
+
 /** Fires a `repository_dispatch` event — how the Fase 6 Firestore trigger
  * kicks off `.github/workflows/pulse-agent.yml` without a human involved. */
 export async function dispatchRepositoryEvent(
