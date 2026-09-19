@@ -134,6 +134,91 @@ export async function getPullRequestHeadSha(
   return body.head.sha;
 }
 
+/** Tope del diff que se manda entero a `pulse_get_review_context` (D5). Por
+ *  encima de esto se manda la lista de archivos y el QA los lee del checkout,
+ *  en vez de arriesgar una respuesta MCP gigante. */
+export const REVIEW_DIFF_SIZE_CAP = 60_000;
+
+/**
+ * El diff completo de un PR, en formato unified diff (`.diff` de GitHub), vía
+ * token de instalación de la App — no requiere que el caller tenga acceso de
+ * lectura al repo por su cuenta. Usado por `pulse_get_review_context` (D5).
+ */
+export async function getPullRequestDiff(
+  installationId: string,
+  repoFullName: string,
+  prNumber: number
+): Promise<string> {
+  const token = await getInstallationToken(installationId);
+  const res = await fetch(`${API_BASE}/repos/${repoFullName}/pulls/${prNumber}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/vnd.github.v3.diff',
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+  });
+  if (!res.ok) {
+    throw new Error(`GitHub API GET /repos/${repoFullName}/pulls/${prNumber} (diff) -> HTTP ${res.status}: ${await res.text()}`);
+  }
+  return res.text();
+}
+
+export interface PullRequestFile {
+  filename: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  changes: number;
+}
+
+/** Lista de archivos tocados por un PR — el fallback cuando el diff entero excede `REVIEW_DIFF_SIZE_CAP`. */
+export async function listPullRequestFiles(
+  installationId: string,
+  repoFullName: string,
+  prNumber: number
+): Promise<PullRequestFile[]> {
+  const files = (await githubInstallationFetch(
+    installationId,
+    `/repos/${repoFullName}/pulls/${prNumber}/files?per_page=100`
+  )) as Array<Record<string, any>>;
+  return files.map((f) => ({
+    filename: f.filename,
+    status: f.status,
+    additions: f.additions,
+    deletions: f.deletions,
+    changes: f.changes,
+  }));
+}
+
+export interface PullRequestReviewComment {
+  path: string;
+  line: number;
+  body: string;
+}
+
+/**
+ * Publica una review en el PR (D5/D18) — siempre `COMMENT`, nunca `APPROVE`
+ * con la identidad de la App: el merge sigue siendo una decisión humana en el
+ * MVP (D5), y la review acá es solo para que quien mira el PR (y no Pulse) vea
+ * los findings inline en `file:line`.
+ */
+export async function createPullRequestReview(
+  installationId: string,
+  repoFullName: string,
+  prNumber: number,
+  body: string,
+  comments: PullRequestReviewComment[]
+): Promise<void> {
+  await githubInstallationFetch(installationId, `/repos/${repoFullName}/pulls/${prNumber}/reviews`, {
+    method: 'POST',
+    body: JSON.stringify({
+      body,
+      event: 'COMMENT',
+      comments: comments.map((c) => ({ path: c.path, line: c.line, side: 'RIGHT', body: c.body })),
+    }),
+  });
+}
+
 /** Fires a `repository_dispatch` event — how the Fase 6 Firestore trigger
  * kicks off `.github/workflows/pulse-agent.yml` without a human involved. */
 export async function dispatchRepositoryEvent(

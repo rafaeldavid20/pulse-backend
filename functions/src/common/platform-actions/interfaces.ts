@@ -40,7 +40,12 @@ export type PlatformActionCode =
   | 'notifications.markAllRead'
   | 'notifications.muteIssue'
   | 'notifications.snooze'
-  | 'notifications.updatePreferences';
+  | 'notifications.updatePreferences'
+  | 'reviews.start'
+  | 'reviews.submit'
+  | 'reviews.override'
+  | 'reviews.resolveFinding'
+  | 'reviews.reportCriteria';
 
 export interface PlatformActionCaller {
   readonly uid?: string;
