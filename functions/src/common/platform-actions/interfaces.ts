@@ -46,7 +46,10 @@ export type PlatformActionCode =
   | 'reviews.override'
   | 'reviews.resolveFinding'
   | 'reviews.reportCriteria'
-  | 'reviews.reportIncomplete';
+  | 'reviews.reportIncomplete'
+  | 'reviews.dismissFinding'
+  | 'reviews.rerun'
+  | 'reviews.returnToAgent';
 
 export interface PlatformActionCaller {
   readonly uid?: string;
