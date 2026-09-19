@@ -63,6 +63,13 @@ export class UpdateIssueAction extends PlatformActionHandler {
       updatedBy: this.caller.uid || 'system',
     };
 
+    // Si `dueDate` cambia, cualquier alerta `due_soon` (F5) ya emitida para el
+    // valor anterior deja de tener sentido — se resetea para permitir una
+    // nueva cuando corresponda con la nueva fecha.
+    if ('dueDate' in data && data.dueDate !== current.dueDate) {
+      updates.dueSoonNotifiedAt = FieldValue.delete();
+    }
+
     // --- Jerarquía --------------------------------------------------------
     // `type` y `parentId` están en la whitelist, así que ya vinieron copiados
     // arriba con el valor crudo del caller. Acá se revalidan y se reemplazan
