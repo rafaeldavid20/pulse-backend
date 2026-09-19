@@ -31,6 +31,12 @@ export interface Notification {
   read: boolean;
   readAt?: string;
   createdAt: string;
+  // Snooze de una notificación individual (TES-194, ver
+  // `notifications.snooze`): mientras `snoozedUntil` sea futuro, el inbox la
+  // oculta filtrando client-side en `subscribeUserNotifications` — no hace
+  // falta un cron que la "reintroduzca", simplemente deja de matchear el
+  // filtro una vez que la fecha pasa.
+  snoozedUntil?: string;
 }
 
 const MAX_BODY_LENGTH = 240;
@@ -62,6 +68,25 @@ async function isIssueMuted(
 }
 
 /**
+ * Chequea si `userId` apagó por completo el tipo `type` de notificación
+ * (TES-194, ver `notifications.updatePreferences`) — a diferencia de
+ * `isIssueMuted`, esto no depende del issue, apaga la categoría entera para
+ * todo el workspace. Misma forma de guardado que `mutedIssueIds`: un array en
+ * el doc de membership, vacío por default (todo prendido).
+ */
+async function isTypeMuted(
+  db: FirebaseFirestore.Firestore,
+  workspaceId: string,
+  userId: string,
+  type: NotificationType
+): Promise<boolean> {
+  const memberSnap = await db.collection('members').doc(`${workspaceId}_${userId}`).get();
+  if (!memberSnap.exists) return false;
+  const mutedTypes: string[] = memberSnap.data()!.mutedNotificationTypes || [];
+  return mutedTypes.includes(type);
+}
+
+/**
  * Crea una notificación. Nunca dispara al propio actor (no tiene sentido
  * notificarle a alguien su propia acción), nunca dispara si el destinatario
  * silenció el issue, y nunca lanza: es siempre un efecto secundario de otra
@@ -76,6 +101,7 @@ export async function createNotification(
 
   try {
     if (await isIssueMuted(db, input.workspaceId, input.userId, input.issueId)) return;
+    if (await isTypeMuted(db, input.workspaceId, input.userId, input.type)) return;
 
     const id = `ntf-${nanoid(8)}`;
     const notification: Notification = {

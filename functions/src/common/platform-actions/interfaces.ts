@@ -38,7 +38,9 @@ export type PlatformActionCode =
   | 'cycles.updateSettings'
   | 'notifications.markRead'
   | 'notifications.markAllRead'
-  | 'notifications.muteIssue';
+  | 'notifications.muteIssue'
+  | 'notifications.snooze'
+  | 'notifications.updatePreferences';
 
 export interface PlatformActionCaller {
   readonly uid?: string;
