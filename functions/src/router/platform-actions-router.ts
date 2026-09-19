@@ -42,6 +42,9 @@ import { ReviewsSubmitAction } from '../actions/reviews/submit-review';
 import { ReviewsOverrideAction } from '../actions/reviews/override-review';
 import { ResolveFindingAction } from '../actions/reviews/resolve-finding';
 import { ReportCriteriaAction } from '../actions/reviews/report-criteria';
+import { DismissFindingAction } from '../actions/reviews/dismiss-finding';
+import { ReviewsRerunAction } from '../actions/reviews/rerun-review';
+import { ReturnToAgentAction } from '../actions/reviews/return-to-agent';
 
 export async function dispatchPlatformAction(
   request: PlatformActionRequest,
@@ -151,6 +154,12 @@ export async function dispatchPlatformAction(
       return new ResolveFindingAction(request, callerUid, callerEmail).run();
     case 'reviews.reportCriteria':
       return new ReportCriteriaAction(request, callerUid, callerEmail).run();
+    case 'reviews.dismissFinding':
+      return new DismissFindingAction(request, callerUid, callerEmail).run();
+    case 'reviews.rerun':
+      return new ReviewsRerunAction(request, callerUid, callerEmail).run();
+    case 'reviews.returnToAgent':
+      return new ReturnToAgentAction(request, callerUid, callerEmail).run();
 
     default:
       return {
