@@ -12,6 +12,7 @@ export { githubWebhook } from './github/webhook';
 export { agentDispatchTrigger } from './triggers/agent-dispatch';
 export { issueNotificationsTrigger } from './triggers/notify-on-issue-write';
 export { autoCreateCyclesScheduled } from './scheduled/auto-create-cycles';
+export { dueSoonRemindersScheduled } from './scheduled/notify-due-soon';
 export { syncMemberClaimsTrigger } from './triggers/sync-member-claims';
 export { oauthProtectedResourceMetadata, oauthAuthorizationServerMetadata } from './oauth/well-known';
 export { oauthRegister } from './oauth/register';
