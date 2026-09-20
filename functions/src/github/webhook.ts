@@ -36,6 +36,12 @@ async function claimDelivery(deliveryId: string, eventType: string): Promise<boo
 
 function normalizeFromPullRequest(payload: any) {
   const pr = payload.pull_request;
+  // D18/TES-214: el repo es público — un PR de un fork no lo abrió un agente
+  // ni un miembro del workspace (esos pushean ramas directo a este repo), así
+  // que ni se sincroniza contra el issue: ni `gitRefs`, ni un cambio de
+  // status. `head.repo` puede venir `null` si el fork de origen ya se borró;
+  // se lo trata igual que a un fork.
+  if (!pr.head.repo || pr.head.repo.full_name !== payload.repository.full_name) return null;
   return {
     event: 'pull_request' as const,
     repoFullName: payload.repository.full_name,

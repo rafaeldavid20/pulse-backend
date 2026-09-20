@@ -2,7 +2,7 @@ import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { getFirestore, Transaction } from 'firebase-admin/firestore';
 import { nanoid } from 'nanoid';
 import { githubAppId, githubAppPrivateKeyB64 } from '../common/secrets';
-import { dispatchRepositoryEvent, getPullRequestHeadSha } from '../github/client';
+import { dispatchRepositoryEvent, getPullRequestOrigin } from '../github/client';
 import { resolveIssueRepo } from '../common/utils/repo-resolution';
 import { checkWorkspaceDispatchBudget, todayKey } from '../common/utils/dispatch-counter';
 import { checkIssueRunBudget } from '../common/utils/issue-run-budget';
@@ -19,6 +19,7 @@ const DISPATCH_COOLDOWN_MS = 10 * 60 * 1000;
 interface ReviewablePr {
   repoFullName: string;
   prNumber: number;
+  branch?: string;
 }
 
 /**
@@ -43,7 +44,7 @@ function reviewablePrs(issue: FirebaseFirestore.DocumentData): ReviewablePr[] | 
   if (refs.length === 0) return null;
   if (!refs.every((r) => r?.prNumber !== undefined && r.prState === 'open')) return null;
 
-  return refs.map((r) => ({ repoFullName: r.repoFullName, prNumber: r.prNumber }));
+  return refs.map((r) => ({ repoFullName: r.repoFullName, prNumber: r.prNumber, branch: r.branch }));
 }
 
 /**
@@ -149,19 +150,38 @@ export const qaDispatchTrigger = onDocumentWritten(
       }
       const installation = installSnap.docs[0].data();
 
+      // D18/TES-214: el repo es público, así que cualquiera puede abrir un PR
+      // contra una rama con el nombre "correcto" en su propio fork, o el
+      // webhook puede haber emparejado por convención de nombre un PR que no
+      // es el que Pulse creó. Antes de gastar un dispatch se confirma en vivo
+      // contra GitHub — nunca solo contra lo que ya quedó grabado en
+      // `gitRefs` — que el HEAD de cada PR vive en este mismo repo (no un
+      // fork) y en la rama que Pulse registró.
+      const prOrigins = await Promise.all(
+        prs.map((pr) => getPullRequestOrigin(installation.installationId, pr.repoFullName, pr.prNumber))
+      );
+      const untrustedPr = prs.find((pr, i) => {
+        const origin = prOrigins[i];
+        if (origin.headRepoFullName !== pr.repoFullName) return true; // fork, o el fork de origen se borró
+        if (pr.branch && origin.headRef !== pr.branch) return true; // no es la rama que registró Pulse
+        return false;
+      });
+      if (untrustedPr) {
+        console.log(
+          `[QaDispatch] issue '${issueId}' tiene un PR (${untrustedPr.repoFullName}#${untrustedPr.prNumber}) que no viene de una rama registrada en este mismo repo (posible fork), skipping dispatch.`
+        );
+        return;
+      }
+
       // Anti-ping-pong: si ya hubo un intento cerrado y ningún PR tiene un
       // HEAD distinto del que vio esa revisión, el dev no pusheó nada nuevo y
-      // no hay nada que re-revisar. Se lee el SHA en vivo de GitHub (no de
-      // `gitRefs`, que todavía no lo trackea — D10/TES-206) contra
-      // `review.prs[].headSha` del último veredicto.
+      // no hay nada que re-revisar. Se compara contra `review.prs[].headSha`
+      // del último veredicto usando el SHA recién leído arriba.
       const lastReviewedPrs: Array<{ repoFullName: string; prNumber: number; headSha: string }> = review?.prs || [];
       if (attempt >= 1 && lastReviewedPrs.length > 0) {
-        const currentShas = await Promise.all(
-          prs.map((pr) => getPullRequestHeadSha(installation.installationId, pr.repoFullName, pr.prNumber))
-        );
         const anyChanged = prs.some((pr, i) => {
           const last = lastReviewedPrs.find((p) => p.repoFullName === pr.repoFullName && p.prNumber === pr.prNumber);
-          return !last || last.headSha !== currentShas[i];
+          return !last || last.headSha !== prOrigins[i].headSha;
         });
         if (!anyChanged) {
           console.log(`[QaDispatch] issue '${issueId}' volvió a 'in_review' sin commits nuevos desde el último veredicto, skipping dispatch (anti-ping-pong).`);
