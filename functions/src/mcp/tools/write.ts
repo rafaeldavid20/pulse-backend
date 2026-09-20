@@ -21,6 +21,7 @@ import { ReviewsSubmitAction } from '../../actions/reviews/submit-review';
 import { ResolveFindingAction } from '../../actions/reviews/resolve-finding';
 import { ReportCriteriaAction } from '../../actions/reviews/report-criteria';
 import { ReportReviewIncompleteAction } from '../../actions/reviews/report-review-incomplete';
+import { CompleteRunAction } from '../../actions/runs/complete-run';
 
 const acceptanceCriterionSchema = z.object({
   id: z.string().optional().describe('Omitilo para que el servidor le asigne un id estable nuevo.'),
@@ -44,7 +45,8 @@ type WritableActionCode =
   | 'reviews.submit'
   | 'reviews.resolveFinding'
   | 'reviews.reportCriteria'
-  | 'reviews.reportIncomplete';
+  | 'reviews.reportIncomplete'
+  | 'runs.complete';
 
 const ACTIONS: Record<WritableActionCode, new (request: any, callerUid?: string) => { run(): Promise<PlatformActionResponse> }> = {
   'issues.claimNext': ClaimNextIssueAction,
@@ -64,6 +66,7 @@ const ACTIONS: Record<WritableActionCode, new (request: any, callerUid?: string)
   'reviews.resolveFinding': ResolveFindingAction,
   'reviews.reportCriteria': ReportCriteriaAction,
   'reviews.reportIncomplete': ReportReviewIncompleteAction,
+  'runs.complete': CompleteRunAction,
 };
 
 /**
@@ -451,6 +454,19 @@ export function registerWriteTools(server: McpServer, principal: McpPrincipal) {
       if (!doc) return textResult({ error: `No issue found for '${identifier}'.` });
       return runAction('reviews.reportIncomplete', { issueId: doc.id, reason }, actorUid);
     }
+  );
+
+  server.tool(
+    'pulse_report_run',
+    'Internal: called by the Pulse workflow report step (not by the model in normal use) to close out the agent_runs record this run\'s dispatch created — turns and costUsd read from the execution file\'s result message. Idempotent: completing an already-completed run is a no-op.',
+    {
+      runId: z.string(),
+      outcome: z.enum(['pr_opened', 'verdict_submitted', 'released', 'ambiguous', 'failed', 'timeout']),
+      turns: z.number().int().optional(),
+      costUsd: z.number().optional(),
+      runUrl: z.string().optional(),
+    },
+    async ({ runId, ...rest }) => runAction('runs.complete', { runId, ...rest }, actorUid)
   );
 
   server.registerPrompt(

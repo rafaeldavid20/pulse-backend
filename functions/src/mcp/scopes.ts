@@ -9,17 +9,25 @@ export type McpScope =
   | 'projects:write'
   | 'comments:write'
   | 'reviews:read'
-  | 'reviews:write';
+  | 'reviews:write'
+  | 'runs:write';
 
 /** Perfil de una key de agente `role: 'dev'` conectada vía `agents.connectRepo`. */
-export const DEV_SCOPES: McpScope[] = ['issues:read', 'issues:write', 'projects:write', 'comments:write', 'reviews:read'];
+export const DEV_SCOPES: McpScope[] = [
+  'issues:read',
+  'issues:write',
+  'projects:write',
+  'comments:write',
+  'reviews:read',
+  'runs:write',
+];
 
 /**
  * Perfil de una key de agente `role: 'qa'`: puede leer issues, comentar y
  * leer/emitir revisiones, pero no crear/borrar issues, cambiar su status o
  * asignación, ni tocar proyectos.
  */
-export const QA_SCOPES: McpScope[] = ['issues:read', 'comments:write', 'reviews:read', 'reviews:write'];
+export const QA_SCOPES: McpScope[] = ['issues:read', 'comments:write', 'reviews:read', 'reviews:write', 'runs:write'];
 
 /**
  * Scope requerido por cada tool MCP, verificado centralmente antes de
@@ -56,4 +64,6 @@ export const TOOL_SCOPES: Record<string, McpScope> = {
   pulse_next_review: 'reviews:write',
   pulse_submit_review: 'reviews:write',
   pulse_report_review_incomplete: 'reviews:write',
+
+  pulse_report_run: 'runs:write',
 };

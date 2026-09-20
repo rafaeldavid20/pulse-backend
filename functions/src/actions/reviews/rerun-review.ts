@@ -153,6 +153,8 @@ export class ReviewsRerunAction extends PlatformActionHandler {
     });
 
     const prNumber = prs.find((pr) => pr.repoFullName === repoFullName)?.prNumber;
+    // D15/TES-211: ver el comentario equivalente en `qa-dispatch.ts`.
+    const runId = `run-${nanoid(8)}`;
     await dispatchRepositoryEvent(installation.installationId, repoFullName, 'pulse_review', {
       issueId: data.issueId,
       issueIdentifier: issue.identifier,
@@ -161,9 +163,9 @@ export class ReviewsRerunAction extends PlatformActionHandler {
       agentKind: qaAgent.kind || 'claude',
       reviewAttempt: nextAttempt,
       prNumber,
+      runId,
     });
 
-    const runId = `run-${nanoid(8)}`;
     await db.collection('agent_runs').doc(runId).set({
       id: runId,
       issueId: data.issueId,

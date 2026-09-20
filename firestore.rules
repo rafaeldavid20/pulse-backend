@@ -136,6 +136,15 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Per-run cost/outcome ledger (D15/TES-211): one doc per dispatched run
+    // (dev task/rework/handoff, QA review), created by
+    // agentDispatchTrigger/qaDispatchTrigger and closed by runs.complete.
+    // Admin SDK only — the app reads aggregates via workspaces.getAgentBudget
+    // instead of querying this collection directly.
+    match /agent_runs/{runId} {
+      allow read, write: if false;
+    }
+
     // Hourly per-user counter capping client-reported errors relayed to
     // Argus by pulseClientTelemetry (TES-192). Admin SDK only.
     match /client_telemetry_counters/{counterId} {

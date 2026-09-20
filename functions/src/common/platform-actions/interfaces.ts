@@ -51,7 +51,8 @@ export type PlatformActionCode =
   | 'reviews.reportIncomplete'
   | 'reviews.dismissFinding'
   | 'reviews.rerun'
-  | 'reviews.returnToAgent';
+  | 'reviews.returnToAgent'
+  | 'runs.complete';
 
 export interface PlatformActionCaller {
   readonly uid?: string;

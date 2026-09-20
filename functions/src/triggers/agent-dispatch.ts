@@ -155,6 +155,10 @@ async function dispatchRework(
     return;
   }
 
+  // D15/TES-211: el runId se genera ANTES del dispatch para poder mandarlo en
+  // el `client_payload` — el paso de reporte del workflow lo necesita para
+  // saber qué registro de `agent_runs` cerrar con `runs.complete`.
+  const runId = `run-${nanoid(8)}`;
   await dispatchRepositoryEvent(installation.installationId, repoFullName, 'pulse_task', {
     issueId,
     issueIdentifier: after.identifier,
@@ -166,11 +170,11 @@ async function dispatchRework(
     // push al mismo PR.
     mode: 'rework',
     reviewAttempt: attempt,
+    runId,
   });
 
   // D15/TES-211: registro de runs y costo, mismo motivo que en el dispatch
   // normal y el de traspaso.
-  const runId = `run-${nanoid(8)}`;
   await db
     .collection('agent_runs')
     .doc(runId)
@@ -297,6 +301,8 @@ async function dispatchHandoff(
     return;
   }
 
+  // D15/TES-211: ver el comentario equivalente en `dispatchRework`.
+  const runId = `run-${nanoid(8)}`;
   await dispatchRepositoryEvent(installation.installationId, targetRepo, 'pulse_task', {
     issueId,
     issueIdentifier: after.identifier,
@@ -306,12 +312,12 @@ async function dispatchHandoff(
     // El workflow usa esto para decirle al agente que es la continuación de un
     // traspaso y que el detalle está en `pendingRepoWork` del issue.
     handoffRepo: targetRepo,
+    runId,
   });
 
   // D15/TES-211: registro de runs y costo, ahora también del lado dev (antes
   // solo `qa-dispatch.ts` creaba `agent_runs`) — sin esto, el tope de runs
   // por issue no podía contar los traspasos que motivaron la historia.
-  const runId = `run-${nanoid(8)}`;
   await db
     .collection('agent_runs')
     .doc(runId)
@@ -551,6 +557,8 @@ export const agentDispatchTrigger = onDocumentWritten(
         return;
       }
 
+      // D15/TES-211: ver el comentario equivalente en `dispatchRework`.
+      const runId = `run-${nanoid(8)}`;
       await dispatchRepositoryEvent(installation.installationId, repoFullName, 'pulse_task', {
         issueId: event.params.issueId,
         issueIdentifier: after.identifier,
@@ -559,12 +567,12 @@ export const agentDispatchTrigger = onDocumentWritten(
         // Permite que varios runners escuchen el mismo tipo de evento y cada
         // uno filtre por el suyo, en vez de inventar un tipo por proveedor.
         agentKind: agent.kind || 'claude',
+        runId,
       });
 
       // D15/TES-211: registro de runs y costo (mismo motivo que en el
       // traspaso de más arriba — sin esto, el tope de runs por issue no
       // contaba los dispatches normales de dev).
-      const runId = `run-${nanoid(8)}`;
       await db
         .collection('agent_runs')
         .doc(runId)
