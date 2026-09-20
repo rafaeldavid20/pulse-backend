@@ -16,7 +16,9 @@
 // `issueCostCapUsd`/`maxRunsPerIssue` (D8/TES-153), y ahora
 // `IssueReview.reworkDispatchedAt`/`reworkDispatchedForAttempt` (D9/TES-205), y
 // ahora `IssueGitRef.headSha`/`headShaAt` (D10/TES-206), y ahora
-// `AgentRepoConnection`/`Agent.connectedRepos` (D12/TES-208),
+// `AgentRepoConnection`/`Agent.connectedRepos` (D12/TES-208), y ahora
+// `Project.definitionOfDone`/`DefinitionOfDoneCriterion`, la entrada en
+// `PROJECT_WRITABLE_FIELDS` y `ReviewFinding.dodId` (D14/TES-210),
 // se agregaron acá a mano
 // porque estas
 // sesiones no tienen push a `pulse-app` (traspasos registrados en el issue,
@@ -166,8 +168,36 @@ export interface Project {
   leadId?: string;
   color?: string;
   targetDate?: string;
+  /**
+   * Reglas que valen para *todos* los issues del proyecto (D14), a diferencia
+   * de `Issue.acceptanceCriteria` que es por issue. El QA (D6) las verifica
+   * siempre, aunque el issue no las mencione — son el lugar para reglas que
+   * hoy solo viven en CLAUDE.md o en la memoria de quien revisa (ej. "no
+   * editar `domain.generated.ts` a mano"). Ausente o vacío: sin DoD, el
+   * proyecto no tiene reglas propias más allá de la rúbrica de cada issue.
+   */
+  definitionOfDone?: DefinitionOfDoneCriterion[];
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * Un ítem de la Definition of Done de un proyecto (D14). A diferencia de
+ * `AcceptanceCriterion`, no tiene `source`/`accepted`: son reglas que un
+ * humano escribe a mano en el modal del proyecto, nunca generadas.
+ */
+export interface DefinitionOfDoneCriterion {
+  /** nanoid estable, no un índice: los findings del QA (`ReviewFinding.dodId`) lo referencian. */
+  id: string;
+  text: string;
+  /**
+   * Subconjunto de `ReviewFinding.severity`: excluye `minor`/`nit` porque un
+   * incumplimiento de DoD nunca es tan menor — `reviews.submit` (D5) ya trata
+   * cualquier finding `open` con severidad `blocker` o `major` como
+   * bloqueante (`changes_requested`), así que ambas tumban el PR por igual;
+   * la distinción es solo de prioridad para quien lo corrige.
+   */
+  severity: 'blocker' | 'major';
 }
 
 /**
@@ -485,9 +515,9 @@ export type FindingStatus = 'open' | 'fixed' | 'disputed' | 'dismissed';
 /**
  * Resultado de verificar un criterio puntual de la rúbrica contra el código
  * revisado. `criterionId` referencia un `AcceptanceCriterion.id` del issue, o
- * (cuando exista, D14/TES-210) un criterio de la Definition of Done a nivel
- * workspace — en ambos casos es solo un id, no hace falta distinguir la
- * procedencia acá. `unverifiable` es su propio resultado, no un `fail`: un
+ * (D14/TES-210) un `DefinitionOfDoneCriterion.id` del proyecto — en ambos
+ * casos es solo un id, no hace falta distinguir la procedencia acá.
+ * `unverifiable` es su propio resultado, no un `fail`: un
  * criterio que no se puede confirmar automáticamente no debería tumbar el PR
  * por las mismas razones que uno que sí falla.
  */
@@ -510,6 +540,12 @@ export interface ReviewFinding {
   severity: FindingSeverity;
   status: FindingStatus;
   criterionId?: string;
+  /**
+   * Referencia a un `DefinitionOfDoneCriterion.id` del proyecto (D14),
+   * excluyente con `criterionId`: un finding es sobre la rúbrica del issue o
+   * sobre la DoD del proyecto, nunca ambas a la vez.
+   */
+  dodId?: string;
   repoFullName?: string;
   file?: string;
   line?: number;
@@ -807,6 +843,7 @@ export const PROJECT_WRITABLE_FIELDS = [
   'leadId',
   'color',
   'targetDate',
+  'definitionOfDone',
 ] as const;
 
 export type ProjectWritableField = (typeof PROJECT_WRITABLE_FIELDS)[number];

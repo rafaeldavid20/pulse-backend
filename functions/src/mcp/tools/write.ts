@@ -379,14 +379,15 @@ export function registerWriteTools(server: McpServer, principal: McpPrincipal) {
 
   server.tool(
     'pulse_submit_review',
-    'For QA agents. Submits a review verdict for an issue currently claimed via pulse_next_review. The server computes the outcome from findings/criteriaResults (it does not trust a caller-supplied decision): any open blocker/major finding or a failed criterion rejects it (changes_requested, or needs_human once maxReviewAttempts is reached); an unverifiable-only criterion goes to needs_human; otherwise approved. Writes the review, posts a summary comment on the issue, and publishes a COMMENT review (never APPROVE) on each PR with findings inline at file:line. Fails if the calling agent is not role "qa", or is the issue\'s own assignee.',
+    'For QA agents. Submits a review verdict for an issue currently claimed via pulse_next_review. The server computes the outcome from findings/criteriaResults (it does not trust a caller-supplied decision): any open blocker/major finding or a failed criterion rejects it (changes_requested, or needs_human once maxReviewAttempts is reached); an unverifiable-only criterion goes to needs_human; otherwise approved. Always check the project\'s Definition of Done from pulse_get_review_context too, even if the issue does not mention it — a violation is a finding with the DoD item\'s own severity, referencing dodId instead of criterionId. Writes the review, posts a summary comment on the issue, and publishes a COMMENT review (never APPROVE) on each PR with findings inline at file:line. Fails if the calling agent is not role "qa", or is the issue\'s own assignee.',
     {
       identifier: z.string(),
       verdict: z.string().describe('Natural-language summary of the verdict, for humans.'),
       findings: z.array(z.object({
         severity: z.enum(['blocker', 'major', 'minor', 'nit']),
         message: z.string(),
-        criterionId: z.string().optional(),
+        criterionId: z.string().optional().describe('References an AcceptanceCriterion.id from the issue.'),
+        dodId: z.string().optional().describe('References a DefinitionOfDoneCriterion.id from the project, for a DoD violation instead of an acceptance criterion.'),
         repoFullName: z.string().optional().describe('Only needed for multi-repo issues.'),
         file: z.string().optional(),
         line: z.number().int().optional(),
@@ -422,11 +423,11 @@ export function registerWriteTools(server: McpServer, principal: McpPrincipal) {
 
   server.tool(
     'pulse_report_criteria',
-    'For dev agents, before opening a PR. Declares, criterion by criterion, whether the acceptance criteria were met ("met"/"not_met"/"unverifiable") with a line of evidence each. Full replacement of the checklist — the QA sees this in pulse_get_review_context as a claim to cross-check, not as ground truth. If any criterion is not_met, do not open the PR: comment and release, or flag ambiguity instead.',
+    'For dev agents, before opening a PR. Declares, criterion by criterion, whether the acceptance criteria were met ("met"/"not_met"/"unverifiable") with a line of evidence each — also cover every item in the project\'s Definition of Done (D14, from pulse_get_review_context), using its id as criterionId the same way. Full replacement of the checklist — the QA sees this in pulse_get_review_context as a claim to cross-check, not as ground truth. If any criterion is not_met, do not open the PR: comment and release, or flag ambiguity instead.',
     {
       identifier: z.string(),
       checks: z.array(z.object({
-        criterionId: z.string(),
+        criterionId: z.string().describe('An AcceptanceCriterion.id from the issue, or a DefinitionOfDoneCriterion.id from the project.'),
         result: z.enum(['met', 'not_met', 'unverifiable']),
         evidence: z.string().describe('File, command run, or output — concrete evidence, not a restatement of the criterion.'),
       })),
