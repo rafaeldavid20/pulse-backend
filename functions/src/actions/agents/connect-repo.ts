@@ -4,6 +4,7 @@ import { PlatformActionRequest } from '../../common/platform-actions/interfaces'
 import { cleanUndefined } from '../../common/utils/clean';
 import { generateApiKey, hashApiKeySecret } from '../../common/utils/api-key';
 import { mcpKeyPepper } from '../../common/secrets';
+import { DEV_SCOPES, QA_SCOPES } from '../../mcp/scopes';
 import { setRepoSecret, putRepoFile, listRepoSecretNames } from '../../github/client';
 import {
   renderAgentWorkflow,
@@ -81,7 +82,7 @@ export class ConnectRepoAction extends PlatformActionHandler {
         name: `${agent.displayName} @ ${data.repoFullName}`,
         hash: hashApiKeySecret(secret, mcpKeyPepper.value()),
         prefix,
-        scopes: ['issues:read', 'issues:write', 'projects:write', 'comments:write'],
+        scopes: agent.role === 'qa' ? QA_SCOPES : DEV_SCOPES,
         agentId: data.agentId,
         connectedRepo: data.repoFullName,
         createdBy: this.caller.uid || 'system',
