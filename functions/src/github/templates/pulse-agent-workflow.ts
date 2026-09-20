@@ -9,7 +9,7 @@
  * que permite después detectar repos que quedaron con una versión vieja y
  * ofrecer actualizarlos, sin tener que diffear el YAML entero.
  */
-export const WORKFLOW_VERSION = 6;
+export const WORKFLOW_VERSION = 7;
 
 export const WORKFLOW_PATH = '.github/workflows/pulse-agent.yml';
 
@@ -104,10 +104,25 @@ jobs:
 
             Reclamalo con pulse_claim_issue (ya está en 'todo' y asignado a vos, no hace falta
             pulse_next_task), leé su descripción y comentarios completos, creá una rama con
-            pulse_create_branch, implementá los cambios descritos, commiteá y pusheá, abrí un PR
-            y linkealo con pulse_link_pr, y comentá el progreso con pulse_comment_issue. No pases
-            el issue a in_review vos mismo — eso lo hace el webhook de GitHub automáticamente
-            cuando el PR se abre.
+            pulse_create_branch, implementá los cambios descritos y commiteá y pusheá.
+
+            Antes de abrir el PR, autoverificá tu trabajo (D13): llamá a
+            pulse_get_review_context con el identifier para tener los criterios de aceptación
+            aceptados del issue y la Definition of Done del proyecto (si el proyecto todavía no
+            tiene una, te va a llegar vacía). Corré el build, el lint y los tests del repo si
+            existen. Por cada criterio y cada ítem de la Definition of Done, declará el
+            resultado con pulse_report_criteria (criterionId, result: "met" / "not_met" /
+            "unverifiable", evidence: el archivo, comando corrido o salida que lo respalda — no
+            alcanza con "lo revisé"). Si declarás algún criterio "not_met", NO abras el PR:
+            comentá con pulse_comment_issue qué falta y liberá el issue con pulse_release_issue,
+            o si lo que falta es una decisión de producto o diseño, llamá a
+            pulse_flag_ambiguity en su lugar.
+
+            Si toda tu autoverificación dio "met" o "unverifiable", abrí el PR — su cuerpo tiene
+            que incluir una tabla con cada criterio, tu resultado y la evidencia — y linkealo
+            con pulse_link_pr, y comentá el progreso con pulse_comment_issue. No pases el issue
+            a in_review vos mismo — eso lo hace el webhook de GitHub automáticamente cuando el
+            PR se abre.
 
             Aunque el issue ya tenga una rama registrada, verificá que exista en este repo
             (git ls-remote origin <rama>); si no existe, creá una nueva con pulse_create_branch.
