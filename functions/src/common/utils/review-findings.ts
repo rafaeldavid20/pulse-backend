@@ -9,6 +9,12 @@ const CRITERION_RESULTS: ReviewCriterionResult['result'][] = ['pass', 'fail', 'u
  * severidad, y asigna un `id` estable (no un índice) porque el re-trabajo de
  * D9 y "Descartar finding" de D7 lo referencian para actualizar `status` sin
  * depender de la posición en el array. Todo finding nuevo entra `open`.
+ *
+ * `criterionId` y `dodId` (D14) son mutuamente excluyentes en la práctica —
+ * un finding es sobre la rúbrica del issue o sobre la Definition of Done del
+ * proyecto— pero acá no se fuerza esa exclusión: ambos son solo referencias
+ * de texto libre, y no vale la pena rechazar un finding válido por un caller
+ * que mandó los dos.
  */
 export function normalizeFindings(input: unknown): ReviewFinding[] {
   if (!Array.isArray(input)) return [];
@@ -27,6 +33,7 @@ export function normalizeFindings(input: unknown): ReviewFinding[] {
         message: (f.message as string).trim(),
       };
       if (typeof f.criterionId === 'string' && f.criterionId) finding.criterionId = f.criterionId;
+      if (typeof f.dodId === 'string' && f.dodId) finding.dodId = f.dodId;
       if (typeof f.repoFullName === 'string' && f.repoFullName) finding.repoFullName = f.repoFullName;
       if (typeof f.file === 'string' && f.file) finding.file = f.file;
       if (typeof f.line === 'number') finding.line = f.line;

@@ -260,7 +260,7 @@ export function registerReadTools(server: McpServer, principal: McpPrincipal) {
 
   server.tool(
     'pulse_get_review_context',
-    'For QA agents reviewing an issue, for dev agents doing rework after changes_requested (D9), and for dev agents self-checking before opening a PR (D13). Everything needed: the accepted acceptance criteria, the project\'s Definition of Done (once D14 lands), the dev\'s self-check, findings from previous attempts with their status, the issue\'s comments, and — for each PR in gitRefs — the diff (paginated, capped in size; past the cap you get the file list instead and read the rest from the checkout).',
+    'For QA agents reviewing an issue, for dev agents doing rework after changes_requested (D9), and for dev agents self-checking before opening a PR (D13). Everything needed: the accepted acceptance criteria, the project\'s Definition of Done (D14 — rules that apply to every issue in the project, empty if the project has none), the dev\'s self-check, findings from previous attempts with their status, the issue\'s comments, and — for each PR in gitRefs — the diff (paginated, capped in size; past the cap you get the file list instead and read the rest from the checkout).',
     { identifier: z.string() },
     async ({ identifier }) => {
       const doc = await findIssue(principal.workspaceId, identifier);

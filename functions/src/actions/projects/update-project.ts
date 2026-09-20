@@ -4,6 +4,7 @@ import { PlatformActionRequest } from '../../common/platform-actions/interfaces'
 import { cleanUndefined } from '../../common/utils/clean';
 import { PROJECT_WRITABLE_FIELDS } from '../../common/utils/project-fields';
 import { pickWritableFields } from '../../common/utils/issue-fields';
+import { normalizeDefinitionOfDone } from '../../common/utils/definition-of-done';
 
 export class UpdateProjectAction extends PlatformActionHandler {
   private projectId?: string;
@@ -40,12 +41,19 @@ export class UpdateProjectAction extends PlatformActionHandler {
     // Whitelist, not a blind spread of `data`: this can be called from an
     // MCP tool driven by an LLM (or, previously, would've let any caller
     // overwrite `workspaceId`/`teamId` on the project).
-    const updates = cleanUndefined({
+    const updates: Record<string, any> = {
       ...pickWritableFields(data, PROJECT_WRITABLE_FIELDS),
       updatedAt: new Date().toISOString(),
-    });
+    };
 
-    await projRef.update(updates);
+    // Igual que `acceptanceCriteria` en `issues.update`: `pickWritableFields`
+    // ya copió el valor crudo del caller arriba, y acá se pisa con la versión
+    // normalizada (ids estables asignados a los ítems que no traían uno).
+    if ('definitionOfDone' in data) {
+      updates.definitionOfDone = normalizeDefinitionOfDone(data.definitionOfDone) || [];
+    }
+
+    await projRef.update(cleanUndefined(updates));
 
     return { id: projId, ...updates };
   }

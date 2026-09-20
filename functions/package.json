@@ -13,7 +13,8 @@
     "deploy": "firebase deploy --only functions",
     "logs": "firebase functions:log",
     "migrate:hierarchy": "node scripts/migrate-hierarchy.mjs",
-    "migrate:agent-roles": "node scripts/migrate-agent-roles.mjs"
+    "migrate:agent-roles": "node scripts/migrate-agent-roles.mjs",
+    "seed:mvp-dod": "node scripts/seed-mvp-definition-of-done.mjs"
   },
   "engines": {
     "node": "20"
