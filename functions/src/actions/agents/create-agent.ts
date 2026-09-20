@@ -2,9 +2,10 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { cleanUndefined } from '../../common/utils/clean';
-import { AgentRole } from '../../common/domain.generated';
+import { AgentRole, AgentQaMode } from '../../common/domain.generated';
 
 const AGENT_ROLES: AgentRole[] = ['dev', 'qa'];
+const AGENT_QA_MODES: AgentQaMode[] = ['shadow', 'enforce'];
 
 /**
  * Creates an agent as a real workspace `member` — not a special case in the
@@ -37,6 +38,9 @@ export class CreateAgentAction extends PlatformActionHandler {
     if (data.role !== undefined && !AGENT_ROLES.includes(data.role)) {
       throw new Error(`role inválido: '${data.role}'. Debe ser 'dev' o 'qa'.`);
     }
+    if (data.qaMode !== undefined && !AGENT_QA_MODES.includes(data.qaMode)) {
+      throw new Error(`qaMode inválido: '${data.qaMode}'. Debe ser 'shadow' o 'enforce'.`);
+    }
     const role: AgentRole = data.role ?? 'dev';
 
     const agent = {
@@ -52,6 +56,9 @@ export class CreateAgentAction extends PlatformActionHandler {
       maxReviewAttempts: data.maxReviewAttempts ?? 2,
       enabled: data.enabled ?? true,
       autonomousMode: data.autonomousMode ?? false,
+      // Default 'shadow' al crear un agente QA (D17): antes de dejarlo mover
+      // issues, hay que saber si su criterio coincide con el humano.
+      qaMode: role === 'qa' ? (data.qaMode ?? 'shadow') : data.qaMode,
       createdAt: new Date().toISOString(),
     };
     await db.collection('agents').doc(data.agentId).set(cleanUndefined(agent));

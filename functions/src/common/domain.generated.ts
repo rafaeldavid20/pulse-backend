@@ -20,7 +20,9 @@
 // `Project.definitionOfDone`/`DefinitionOfDoneCriterion`, la entrada en
 // `PROJECT_WRITABLE_FIELDS` y `ReviewFinding.dodId` (D14/TES-210), y ahora
 // `AgentRun` (para `agent_runs/{runId}`, Admin SDK only) e
-// `Issue.agentStats`/`IssueAgentStats` (D15/TES-211),
+// `Issue.agentStats`/`IssueAgentStats` (D15/TES-211), y ahora
+// `Agent.qaMode` y `QaCalibrationRecord` (para
+// `qa_calibration_records/{id}`, Admin SDK only) (D17/TES-213),
 // se agregaron acá a mano
 // porque estas
 // sesiones no tienen push a `pulse-app` (traspasos registrados en el issue,
@@ -91,6 +93,14 @@ export type AgentKind = 'claude' | 'chatgpt';
 export type AgentRole = 'dev' | 'qa';
 
 export type AgentIssueState = 'idle' | 'claimed' | 'working' | 'pr_open' | 'blocked';
+
+/**
+ * Default `'shadow'` al crear un agente `qa` (D17). En `shadow` el veredicto
+ * se registra completo pero no mueve el issue: sirve para calibrar si el
+ * criterio del QA coincide con el humano antes de dejarlo actuar. Pasar a
+ * `enforce` es una decisión explícita en Settings (`agents.update`).
+ */
+export type AgentQaMode = 'shadow' | 'enforce';
 
 // ---------------------------------------------------------------------------
 // Entidades
@@ -309,6 +319,8 @@ export interface Agent {
   createdAt: string;
   /** Repos conectados vía `agents.connectRepo`, con la versión de workflow instalada en cada uno. */
   connectedRepos?: AgentRepoConnection[];
+  /** Solo relevante para `role: 'qa'` (D17). Ausente se trata como `'shadow'`. */
+  qaMode?: AgentQaMode;
 }
 
 /**
@@ -342,6 +354,33 @@ export interface AgentRun {
   reviewAttempt?: number;
   /** `YYYY-MM-DD` en UTC del `startedAt`, para las queries por día de `checkWorkspaceDispatchBudget`. */
   date: string;
+}
+
+/**
+ * Un cierre humano (merge o close sin merge) del PR de un issue con veredicto
+ * de QA, contrastado contra ese veredicto (D17/TES-213). Vive en
+ * `qa_calibration_records/{issueId}_{attempt}`, Admin SDK only — el id
+ * determinístico hace que reintentos del webhook o varios PRs (`gitRefs[]`)
+ * cerrando el mismo intento pisen el registro en vez de duplicarlo.
+ *
+ * Solo se escribe cuando el veredicto era `approved` o `changes_requested`
+ * (`needs_human`/`stale`/`running` no dan una señal clara de acuerdo). El
+ * agrupador de la tasa de acuerdo (`agents.getQaCalibration`) lee las últimas
+ * N de estos por `agentId`.
+ */
+export interface QaCalibrationRecord {
+  id: string;
+  workspaceId: string;
+  agentId: string;
+  issueId: string;
+  issueIdentifier: string;
+  attempt: number;
+  verdict: 'approved' | 'changes_requested';
+  humanOutcome: 'merged' | 'closed_unmerged';
+  agreed: boolean;
+  repoFullName: string;
+  prNumber: number;
+  decidedAt: string;
 }
 
 export interface IssueAgentState {

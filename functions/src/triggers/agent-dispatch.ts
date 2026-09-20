@@ -57,7 +57,18 @@ async function dispatchRework(
   let maxReviewAttempts = DEFAULT_MAX_REVIEW_ATTEMPTS;
   if (review?.reviewerId) {
     const qaSnap = await db.collection('agents').doc(review.reviewerId).get();
-    if (qaSnap.exists) maxReviewAttempts = qaSnap.data()!.maxReviewAttempts ?? DEFAULT_MAX_REVIEW_ATTEMPTS;
+    if (qaSnap.exists) {
+      const qaAgent = qaSnap.data()!;
+      maxReviewAttempts = qaAgent.maxReviewAttempts ?? DEFAULT_MAX_REVIEW_ATTEMPTS;
+      // Modo sombra (D17): `reviews.submit` igual escribe `review.state:
+      // 'changes_requested'` para que se vea el veredicto completo, pero
+      // mientras el QA no esté en `enforce` ese veredicto no dispara
+      // re-trabajo — el issue sigue el flujo humano de hoy.
+      if (qaAgent.qaMode !== 'enforce') {
+        console.log(`[AgentDispatch] rework for '${issueId}' not dispatched: QA agent '${review.reviewerId}' is in 'shadow' mode (D17).`);
+        return;
+      }
+    }
   }
   if (attempt >= maxReviewAttempts) {
     console.log(`[AgentDispatch] rework for '${issueId}' ya agotó los intentos de revisión (${attempt}/${maxReviewAttempts}), needs_human, no se despacha.`);

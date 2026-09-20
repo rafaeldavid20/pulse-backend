@@ -19,6 +19,7 @@ import { UpdateAgentAction } from '../actions/agents/update-agent';
 import { ListAgentsAction } from '../actions/agents/list-agents';
 import { ConnectRepoAction } from '../actions/agents/connect-repo';
 import { DisconnectRepoAction } from '../actions/agents/disconnect-repo';
+import { GetQaCalibrationAction } from '../actions/agents/get-qa-calibration';
 import { CreateCommentAction } from '../actions/comments/create-comment';
 import { ClaimIssueAction } from '../actions/issues/claim-issue';
 import { ClaimNextIssueAction } from '../actions/issues/claim-next-issue';
@@ -105,6 +106,8 @@ export async function dispatchPlatformAction(
       return new ConnectRepoAction(request, callerUid, callerEmail).run();
     case 'agents.disconnectRepo':
       return new DisconnectRepoAction(request, callerUid, callerEmail).run();
+    case 'agents.getQaCalibration':
+      return new GetQaCalibrationAction(request, callerUid, callerEmail).run();
     case 'comments.create':
       return new CreateCommentAction(request, callerUid, callerEmail).run();
     case 'issues.claim':
