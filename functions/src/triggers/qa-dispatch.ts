@@ -213,6 +213,10 @@ export const qaDispatchTrigger = onDocumentWritten(
       // `gh pr checkout` — el de este mismo repo, no necesariamente el único
       // si el issue es multi-repo (K9/TES-202).
       const prNumber = prs.find((pr) => pr.repoFullName === repoFullName)?.prNumber;
+      // D15/TES-211: el runId se genera ANTES del dispatch para mandarlo en
+      // el `client_payload` — el paso de reporte de `pulse-qa.yml` lo usa
+      // para cerrar este mismo registro vía `runs.complete`.
+      const runId = `run-${nanoid(8)}`;
       await dispatchRepositoryEvent(installation.installationId, repoFullName, 'pulse_review', {
         issueId,
         issueIdentifier: after.identifier,
@@ -221,12 +225,11 @@ export const qaDispatchTrigger = onDocumentWritten(
         agentKind: qaAgent.kind || 'claude',
         reviewAttempt: nextAttempt,
         prNumber,
+        runId,
       });
 
       // D15/TES-211: registro de runs y costo. El paso de reporte del
-      // workflow (todavía sin hacer) es el que completa `endedAt`/`costUsd`;
-      // acá solo se deja constancia de que el dispatch pasó.
-      const runId = `run-${nanoid(8)}`;
+      // workflow es el que completa `endedAt`/`costUsd` vía `runs.complete`.
       await db.collection('agent_runs').doc(runId).set({
         id: runId,
         issueId,

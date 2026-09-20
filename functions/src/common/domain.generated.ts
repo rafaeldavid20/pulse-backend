@@ -18,7 +18,9 @@
 // ahora `IssueGitRef.headSha`/`headShaAt` (D10/TES-206), y ahora
 // `AgentRepoConnection`/`Agent.connectedRepos` (D12/TES-208), y ahora
 // `Project.definitionOfDone`/`DefinitionOfDoneCriterion`, la entrada en
-// `PROJECT_WRITABLE_FIELDS` y `ReviewFinding.dodId` (D14/TES-210),
+// `PROJECT_WRITABLE_FIELDS` y `ReviewFinding.dodId` (D14/TES-210), y ahora
+// `AgentRun` (para `agent_runs/{runId}`, Admin SDK only) e
+// `Issue.agentStats`/`IssueAgentStats` (D15/TES-211),
 // se agregaron acá a mano
 // porque estas
 // sesiones no tienen push a `pulse-app` (traspasos registrados en el issue,
@@ -309,6 +311,39 @@ export interface Agent {
   connectedRepos?: AgentRepoConnection[];
 }
 
+/**
+ * Un run de agente despachado (D15/TES-211): dev (task/rework/handoff) o QA
+ * (review). Vive en `agent_runs/{runId}`, Admin SDK only — ni la app ni el
+ * modelo lo leen directamente, solo lo agregan `checkIssueRunBudget`/
+ * `checkWorkspaceDispatchBudget` (D8) y `workspaces.getAgentBudget`.
+ *
+ * El trigger que despacha (`agentDispatchTrigger`/`qaDispatchTrigger`) crea el
+ * registro con `outcome` ausente; el paso de reporte del workflow (que ya lee
+ * `total_cost_usd`/`num_turns` del mensaje `result` del execution file) lo
+ * cierra vía `runs.complete`. Un run que nunca se cierra (el job ni llegó a
+ * correr el paso de reporte) queda sin `endedAt`/`costUsd` para siempre — se
+ * sigue contando contra `maxRunsPerIssue` pero no contra los topes en USD.
+ */
+export interface AgentRun {
+  id: string;
+  issueId: string;
+  workspaceId: string;
+  agentId: string;
+  role: 'dev' | 'qa';
+  mode: 'task' | 'rework' | 'handoff' | 'review';
+  repo: string;
+  runUrl?: string;
+  startedAt: string;
+  endedAt?: string;
+  turns?: number;
+  costUsd?: number;
+  outcome?: 'pr_opened' | 'verdict_submitted' | 'released' | 'ambiguous' | 'failed' | 'timeout';
+  /** Solo para `mode: 'review'`/`'rework'`: el intento de revisión que este run atendió. */
+  reviewAttempt?: number;
+  /** `YYYY-MM-DD` en UTC del `startedAt`, para las queries por día de `checkWorkspaceDispatchBudget`. */
+  date: string;
+}
+
 export interface IssueAgentState {
   claimedBy?: string;
   claimedAt?: string;
@@ -457,8 +492,24 @@ export interface Issue {
    * creerla ciegamente.
    */
   devSelfCheck?: DevCriterionCheck[];
+  /**
+   * Denormalizado desde `agent_runs` (D15): evita sumar toda la colección
+   * cada vez que alguien quiere saber cuánto costó este issue. Lo actualiza
+   * `runs.complete` al cerrar cada run — `undefined` hasta el primer run
+   * completado.
+   */
+  agentStats?: IssueAgentStats;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Ver `Issue.agentStats` (D15). */
+export interface IssueAgentStats {
+  /** Runs completados (dev + QA + traspasos + re-trabajos), no despachados-pero-en-curso. */
+  runs: number;
+  /** Suma de `AgentRun.costUsd` de los runs completados. */
+  costUsd: number;
+  lastRunAt: string;
 }
 
 /**

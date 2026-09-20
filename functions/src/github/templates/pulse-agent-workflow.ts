@@ -9,7 +9,7 @@
  * que permite después detectar repos que quedaron con una versión vieja y
  * ofrecer actualizarlos, sin tener que diffear el YAML entero.
  */
-export const WORKFLOW_VERSION = 7;
+export const WORKFLOW_VERSION = 8;
 
 export const WORKFLOW_PATH = '.github/workflows/pulse-agent.yml';
 
@@ -183,6 +183,7 @@ jobs:
           EXECUTION_FILE: \${{ steps.claude.outputs.execution_file }}
           CLAUDE_OUTCOME: \${{ steps.claude.outcome }}
           ISSUE_IDENTIFIER: \${{ github.event.client_payload.issueIdentifier }}
+          RUN_ID: \${{ github.event.client_payload.runId }}
           RUN_URL: \${{ github.server_url }}/\${{ github.repository }}/actions/runs/\${{ github.run_id }}
         run: |
           python3 - <<'PY'
@@ -191,6 +192,7 @@ jobs:
           MCP = 'https://us-east4-pulse-app-93.cloudfunctions.net/pulseMcp'
           KEY = os.environ.get('PULSE_AGENT_MCP_KEY', '')
           IDENT = os.environ.get('ISSUE_IDENTIFIER', '')
+          RUN_ID = os.environ.get('RUN_ID', '')
           DRY = os.environ.get('PULSE_REPORT_DRY_RUN') == '1'
 
           def load(path):
@@ -212,7 +214,7 @@ jobs:
 
           msgs = load(os.environ.get('EXECUTION_FILE') or '')
           tools, names, errors = {}, {}, []
-          final, turns, subtype, is_error = '', None, '', None
+          final, turns, subtype, is_error, cost_usd = '', None, '', None, None
           for m in msgs:
               kind = m.get('type')
               content = (m.get('message') or {}).get('content') or []
@@ -232,6 +234,7 @@ jobs:
               elif kind == 'result':
                   final = str(m.get('result') or '')[:1500]
                   turns, subtype, is_error = m.get('num_turns'), m.get('subtype', ''), m.get('is_error')
+                  cost_usd = m.get('total_cost_usd')
 
           def call(name, args):
               body = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
@@ -298,6 +301,29 @@ jobs:
           if released:
               call('pulse_release_issue', {'identifier': IDENT, 'reason': reason})
           print('Reporte enviado a Pulse.' if ok else 'No se pudo enviar el reporte a Pulse.')
+
+          # D15/TES-211: cierra el agent_runs que agentDispatchTrigger creó al
+          # despachar este run, con el costo/turnos que ya se leyeron del
+          # execution file. RUN_ID viene vacío en dispatches previos a esta
+          # versión del workflow — nada que cerrar en ese caso.
+          if RUN_ID:
+              flagged_ambiguous = any(n.endswith('pulse_flag_ambiguity') for n in tools)
+              if is_error:
+                  outcome = 'failed'
+              elif subtype == 'error_max_turns':
+                  outcome = 'timeout'
+              elif has_pr:
+                  outcome = 'pr_opened'
+              elif flagged_ambiguous:
+                  outcome = 'ambiguous'
+              else:
+                  outcome = 'released'
+              run_args = {'runId': RUN_ID, 'outcome': outcome, 'runUrl': os.environ.get('RUN_URL', '')}
+              if turns is not None:
+                  run_args['turns'] = turns
+              if cost_usd is not None:
+                  run_args['costUsd'] = cost_usd
+              call('pulse_report_run', run_args)
           PY
 
   # D9/TES-205: re-trabajo tras un rechazo de QA. Lo dispara \`dispatchRework\`
@@ -424,6 +450,7 @@ jobs:
           CLAUDE_OUTCOME: \${{ steps.claude.outcome }}
           ISSUE_IDENTIFIER: \${{ github.event.client_payload.issueIdentifier }}
           PUSHED_COMMITS: \${{ steps.pushed.outputs.pushed }}
+          RUN_ID: \${{ github.event.client_payload.runId }}
           RUN_URL: \${{ github.server_url }}/\${{ github.repository }}/actions/runs/\${{ github.run_id }}
         run: |
           python3 - <<'PY'
@@ -433,6 +460,7 @@ jobs:
           KEY = os.environ.get('PULSE_AGENT_MCP_KEY', '')
           IDENT = os.environ.get('ISSUE_IDENTIFIER', '')
           PUSHED = os.environ.get('PUSHED_COMMITS') == 'true'
+          RUN_ID = os.environ.get('RUN_ID', '')
           DRY = os.environ.get('PULSE_REPORT_DRY_RUN') == '1'
 
           def load(path):
@@ -454,7 +482,7 @@ jobs:
 
           msgs = load(os.environ.get('EXECUTION_FILE') or '')
           tools, names, errors = {}, {}, []
-          final, turns, subtype, is_error = '', None, '', None
+          final, turns, subtype, is_error, cost_usd = '', None, '', None, None
           for m in msgs:
               kind = m.get('type')
               content = (m.get('message') or {}).get('content') or []
@@ -474,6 +502,7 @@ jobs:
               elif kind == 'result':
                   final = str(m.get('result') or '')[:1500]
                   turns, subtype, is_error = m.get('num_turns'), m.get('subtype', ''), m.get('is_error')
+                  cost_usd = m.get('total_cost_usd')
 
           tool_list = ', '.join(k + ' x' + str(v) for k, v in sorted(tools.items())) or 'ninguna'
           lines = [
@@ -533,6 +562,28 @@ jobs:
           if released:
               call('pulse_release_issue', {'identifier': IDENT, 'reason': reason})
           print('Reporte enviado a Pulse.' if ok else 'No se pudo enviar el reporte a Pulse.')
+
+          # D15/TES-211: ver el comentario equivalente en \`work-on-issue\`. Acá
+          # no hay PR nuevo que abrir, así que "pusheó commits" hace las veces
+          # de \`pr_opened\` — el dev dejó output listo para que QA lo re-revise.
+          if RUN_ID:
+              flagged_ambiguous = any(n.endswith('pulse_flag_ambiguity') for n in tools)
+              if is_error:
+                  outcome = 'failed'
+              elif subtype == 'error_max_turns':
+                  outcome = 'timeout'
+              elif flagged_ambiguous:
+                  outcome = 'ambiguous'
+              elif PUSHED:
+                  outcome = 'pr_opened'
+              else:
+                  outcome = 'released'
+              run_args = {'runId': RUN_ID, 'outcome': outcome, 'runUrl': os.environ.get('RUN_URL', '')}
+              if turns is not None:
+                  run_args['turns'] = turns
+              if cost_usd is not None:
+                  run_args['costUsd'] = cost_usd
+              call('pulse_report_run', run_args)
           PY
 `;
 }

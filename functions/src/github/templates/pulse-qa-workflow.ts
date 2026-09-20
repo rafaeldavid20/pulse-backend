@@ -8,7 +8,7 @@
  * dev: estampada en un comentario del YAML generado, para poder detectar
  * repos con una versión vieja sin diffear el archivo entero.
  */
-export const QA_WORKFLOW_VERSION = 2;
+export const QA_WORKFLOW_VERSION = 3;
 
 export const QA_WORKFLOW_PATH = '.github/workflows/pulse-qa.yml';
 
@@ -239,6 +239,7 @@ jobs:
           EXECUTION_FILE: \${{ steps.claude.outputs.execution_file }}
           CLAUDE_OUTCOME: \${{ steps.claude.outcome }}
           ISSUE_IDENTIFIER: \${{ github.event.client_payload.issueIdentifier }}
+          RUN_ID: \${{ github.event.client_payload.runId }}
           RUN_URL: \${{ github.server_url }}/\${{ github.repository }}/actions/runs/\${{ github.run_id }}
         run: |
           python3 - <<'PY'
@@ -247,6 +248,7 @@ jobs:
           MCP = 'https://us-east4-pulse-app-93.cloudfunctions.net/pulseMcp'
           KEY = os.environ.get('PULSE_QA_MCP_KEY', '')
           IDENT = os.environ.get('ISSUE_IDENTIFIER', '')
+          RUN_ID = os.environ.get('RUN_ID', '')
           DRY = os.environ.get('PULSE_REPORT_DRY_RUN') == '1'
 
           def load(path):
@@ -268,7 +270,7 @@ jobs:
 
           msgs = load(os.environ.get('EXECUTION_FILE') or '')
           tools, names, errors = {}, {}, []
-          final, turns, subtype = '', None, ''
+          final, turns, subtype, is_error, cost_usd = '', None, '', None, None
           submitted_verdict = False
           for m in msgs:
               kind = m.get('type')
@@ -290,7 +292,8 @@ jobs:
                           errors.append(names.get(c.get('tool_use_id'), '?') + ': ' + str(body)[:200])
               elif kind == 'result':
                   final = str(m.get('result') or '')[:1500]
-                  turns, subtype = m.get('num_turns'), m.get('subtype', '')
+                  turns, subtype, is_error = m.get('num_turns'), m.get('subtype', ''), m.get('is_error')
+                  cost_usd = m.get('total_cost_usd')
 
           tool_list = ', '.join(k + ' x' + str(v) for k, v in sorted(tools.items())) or 'ninguna'
           lines = [
@@ -335,6 +338,22 @@ jobs:
               print('Revisión incompleta: escalada a needs_human.')
           else:
               print('El intento ya estaba cerrado (veredicto real o escalado previo), nada que hacer.')
+
+          # D15/TES-211: cierra el agent_runs que qaDispatchTrigger (o
+          # reviews.rerun) creó al despachar esta revisión.
+          if RUN_ID:
+              if submitted_verdict:
+                  outcome = 'verdict_submitted'
+              elif subtype == 'error_max_turns':
+                  outcome = 'timeout'
+              else:
+                  outcome = 'failed'
+              run_args = {'runId': RUN_ID, 'outcome': outcome, 'runUrl': os.environ.get('RUN_URL', '')}
+              if turns is not None:
+                  run_args['turns'] = turns
+              if cost_usd is not None:
+                  run_args['costUsd'] = cost_usd
+              call('pulse_report_run', run_args)
           PY
 `;
 }
