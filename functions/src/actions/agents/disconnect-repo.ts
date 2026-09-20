@@ -3,8 +3,10 @@ import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { deleteRepoSecret, deleteRepoFile } from '../../github/client';
 import { WORKFLOW_PATH } from '../../github/templates/pulse-agent-workflow';
+import { QA_WORKFLOW_PATH } from '../../github/templates/pulse-qa-workflow';
 
-const MCP_SECRET_NAME = 'PULSE_AGENT_MCP_KEY';
+const DEV_MCP_SECRET_NAME = 'PULSE_AGENT_MCP_KEY';
+const QA_MCP_SECRET_NAME = 'PULSE_QA_MCP_KEY';
 
 /**
  * Desconecta un agente de un repo: revoca su key de MCP y borra el secret.
@@ -17,6 +19,12 @@ const MCP_SECRET_NAME = 'PULSE_AGENT_MCP_KEY';
  * Ninguna falla de GitHub aborta la operación a mitad de camino: lo importante
  * es que la key quede revocada del lado de Pulse, que es lo único que Pulse
  * controla del todo. Lo que no se pudo limpiar se informa en la respuesta.
+ *
+ * D12/TES-208: el secret y el workflow a limpiar dependen de con qué rol se
+ * conectó el agente (`PULSE_QA_MCP_KEY`/`pulse-qa.yml` para `'qa'`,
+ * `PULSE_AGENT_MCP_KEY`/`pulse-agent.yml` para `'dev'`). Se usa lo guardado en
+ * la propia conexión (`connectedRepos[].secretName`/`workflowPath`) y, si no
+ * está (conexiones de antes de D12), se deriva del `role` actual del agente.
  */
 export class DisconnectRepoAction extends PlatformActionHandler {
   private workspaceId?: string;
@@ -50,6 +58,9 @@ export class DisconnectRepoAction extends PlatformActionHandler {
     if (!connection) {
       throw new Error(`El agente no está conectado a '${data.repoFullName}'.`);
     }
+    const isQa = agentSnap.data()!.role === 'qa';
+    const secretName: string = connection.secretName || (isQa ? QA_MCP_SECRET_NAME : DEV_MCP_SECRET_NAME);
+    const workflowPath: string = connection.workflowPath || (isQa ? QA_WORKFLOW_PATH : WORKFLOW_PATH);
 
     const warnings: string[] = [];
 
@@ -71,9 +82,9 @@ export class DisconnectRepoAction extends PlatformActionHandler {
       const installationId = installSnap.docs[0].data().installationId;
 
       try {
-        await deleteRepoSecret(installationId, data.repoFullName, MCP_SECRET_NAME);
+        await deleteRepoSecret(installationId, data.repoFullName, secretName);
       } catch (error) {
-        warnings.push(`No se pudo borrar el secret ${MCP_SECRET_NAME}: ${(error as Error).message}`);
+        warnings.push(`No se pudo borrar el secret ${secretName}: ${(error as Error).message}`);
       }
 
       if (data.removeWorkflow === true) {
@@ -81,7 +92,7 @@ export class DisconnectRepoAction extends PlatformActionHandler {
           await deleteRepoFile(
             installationId,
             data.repoFullName,
-            WORKFLOW_PATH,
+            workflowPath,
             'chore: desconectar el agente de Pulse de este repo'
           );
         } catch (error) {

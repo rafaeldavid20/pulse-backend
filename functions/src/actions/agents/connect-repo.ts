@@ -1,4 +1,4 @@
-import { getFirestore, FieldValue } from 'firebase-admin/firestore';
+import { getFirestore } from 'firebase-admin/firestore';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { cleanUndefined } from '../../common/utils/clean';
@@ -11,8 +11,14 @@ import {
   WORKFLOW_PATH,
   WORKFLOW_VERSION,
 } from '../../github/templates/pulse-agent-workflow';
+import {
+  renderQaWorkflow,
+  QA_WORKFLOW_PATH,
+  QA_WORKFLOW_VERSION,
+} from '../../github/templates/pulse-qa-workflow';
 
-const MCP_SECRET_NAME = 'PULSE_AGENT_MCP_KEY';
+const DEV_MCP_SECRET_NAME = 'PULSE_AGENT_MCP_KEY';
+const QA_MCP_SECRET_NAME = 'PULSE_QA_MCP_KEY';
 const ANTHROPIC_SECRET_NAME = 'CLAUDE_CODE_OAUTH_TOKEN';
 
 /**
@@ -28,6 +34,13 @@ const ANTHROPIC_SECRET_NAME = 'CLAUDE_CODE_OAUTH_TOKEN';
  *
  * La key de MCP es dedicada por repo, no compartida: revocar la de un repo no
  * debería dejar mudos a los demás.
+ *
+ * D12/TES-208: el workflow y el secret que se escriben dependen de
+ * `agent.role`. Un agente `'qa'` recibe `pulse-qa.yml`
+ * (`pulse-qa-workflow.ts`) y su key va en `PULSE_QA_MCP_KEY`; un `'dev'`
+ * recibe `pulse-agent.yml` y `PULSE_AGENT_MCP_KEY`. Son secrets separados a
+ * propósito: revocar la key de un rol no debe dejar mudo al otro agente
+ * conectado al mismo repo.
  */
 export class ConnectRepoAction extends PlatformActionHandler {
   private workspaceId?: string;
@@ -73,6 +86,12 @@ export class ConnectRepoAction extends PlatformActionHandler {
       );
     }
 
+    const isQa = agent.role === 'qa';
+    const mcpSecretName = isQa ? QA_MCP_SECRET_NAME : DEV_MCP_SECRET_NAME;
+    const workflowPath = isQa ? QA_WORKFLOW_PATH : WORKFLOW_PATH;
+    const workflowVersion = isQa ? QA_WORKFLOW_VERSION : WORKFLOW_VERSION;
+    const workflowContent = isQa ? renderQaWorkflow() : renderAgentWorkflow();
+
     // 1. Key de MCP dedicada a este par agente+repo.
     const { keyId, secret, fullKey, prefix } = generateApiKey();
     await db.collection('api_keys').doc(keyId).set(
@@ -96,7 +115,7 @@ export class ConnectRepoAction extends PlatformActionHandler {
     //    faltantes en la App), la key recién creada queda huérfana — se revoca
     //    para no dejar credenciales vivas que nadie va a usar.
     try {
-      await setRepoSecret(installation.installationId, data.repoFullName, MCP_SECRET_NAME, fullKey);
+      await setRepoSecret(installation.installationId, data.repoFullName, mcpSecretName, fullKey);
     } catch (error) {
       await db.collection('api_keys').doc(keyId).update({ revokedAt: new Date().toISOString() });
       throw new Error(
@@ -111,9 +130,9 @@ export class ConnectRepoAction extends PlatformActionHandler {
     const file = await putRepoFile(
       installation.installationId,
       data.repoFullName,
-      WORKFLOW_PATH,
-      renderAgentWorkflow(),
-      `chore: ${'conectar'} el agente ${agent.displayName} de Pulse a este repo`
+      workflowPath,
+      workflowContent,
+      `chore: conectar el agente ${agent.displayName} (${agent.role}) de Pulse a este repo`
     );
 
     // 4. Estado del secret que Pulse deliberadamente no gestiona.
@@ -127,22 +146,33 @@ export class ConnectRepoAction extends PlatformActionHandler {
       // pendiente en vez de romper la conexión que ya quedó hecha.
     }
 
+    // Reemplaza cualquier entrada previa para este repo (una reconexión, o
+    // una actualización de versión de workflow) en vez de acumularlas: solo
+    // debería quedar una conexión activa por repo para este agente.
+    const existingConnections: any[] = agentSnap.data()!.connectedRepos || [];
     await agentRef.update({
-      connectedRepos: FieldValue.arrayUnion({
-        repoFullName: data.repoFullName,
-        apiKeyId: keyId,
-        workflowSha: file.sha,
-        workflowVersion: WORKFLOW_VERSION,
-        connectedAt: new Date().toISOString(),
-      }),
+      connectedRepos: [
+        ...existingConnections.filter((c) => c.repoFullName !== data.repoFullName),
+        {
+          repoFullName: data.repoFullName,
+          apiKeyId: keyId,
+          workflowPath,
+          workflowSha: file.sha,
+          workflowVersion,
+          secretName: mcpSecretName,
+          connectedAt: new Date().toISOString(),
+        },
+      ],
     });
 
     return {
       agentId: data.agentId,
       repoFullName: data.repoFullName,
       apiKeyId: keyId,
+      workflowPath,
       workflowCreated: file.created,
-      workflowVersion: WORKFLOW_VERSION,
+      workflowVersion,
+      mcpSecretName,
       anthropicSecretPresent,
       anthropicSecretName: ANTHROPIC_SECRET_NAME,
       // El comando exacto para el paso que queda a mano, listo para copiar.
