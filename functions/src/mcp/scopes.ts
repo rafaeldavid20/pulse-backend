@@ -8,9 +8,11 @@ export type McpScope =
   | 'issues:write'
   | 'projects:write'
   | 'comments:write'
+  | 'comments:read'
   | 'reviews:read'
   | 'reviews:write'
-  | 'runs:write';
+  | 'runs:write'
+  | 'runs:read';
 
 /** Perfil de una key de agente `role: 'dev'` conectada vía `agents.connectRepo`. */
 export const DEV_SCOPES: McpScope[] = [
@@ -18,8 +20,10 @@ export const DEV_SCOPES: McpScope[] = [
   'issues:write',
   'projects:write',
   'comments:write',
+  'comments:read',
   'reviews:read',
   'runs:write',
+  'runs:read',
 ];
 
 /**
@@ -27,7 +31,15 @@ export const DEV_SCOPES: McpScope[] = [
  * leer/emitir revisiones, pero no crear/borrar issues, cambiar su status o
  * asignación, ni tocar proyectos.
  */
-export const QA_SCOPES: McpScope[] = ['issues:read', 'comments:write', 'reviews:read', 'reviews:write', 'runs:write'];
+export const QA_SCOPES: McpScope[] = [
+  'issues:read',
+  'comments:write',
+  'comments:read',
+  'reviews:read',
+  'reviews:write',
+  'runs:write',
+  'runs:read',
+];
 
 /**
  * Scope requerido por cada tool MCP, verificado centralmente antes de
@@ -38,10 +50,18 @@ export const QA_SCOPES: McpScope[] = ['issues:read', 'comments:write', 'reviews:
 export const TOOL_SCOPES: Record<string, McpScope> = {
   pulse_list_teams: 'issues:read',
   pulse_list_projects: 'issues:read',
+  pulse_get_project: 'issues:read',
   pulse_list_issues: 'issues:read',
   pulse_get_epic: 'issues:read',
   pulse_get_issue: 'issues:read',
+  pulse_list_labels: 'issues:read',
+  pulse_list_members: 'issues:read',
+  pulse_list_agents: 'issues:read',
+  pulse_list_cycles: 'issues:read',
+  pulse_list_activity: 'issues:read',
   pulse_get_review_context: 'reviews:read',
+  pulse_list_comments: 'comments:read',
+  pulse_list_runs: 'runs:read',
 
   pulse_next_task: 'issues:write',
   pulse_claim_issue: 'issues:write',
@@ -67,3 +87,12 @@ export const TOOL_SCOPES: Record<string, McpScope> = {
 
   pulse_report_run: 'runs:write',
 };
+
+/**
+ * Todas las tools registradas por `registerReadTools`/`registerWriteTools`,
+ * usado por `pulse_whoami` (D22/TES-218) para decirle a un agente qué puede
+ * llamar con los scopes que tiene, antes de intentarlo. `pulse_whoami` en sí
+ * no está en `TOOL_SCOPES` (no requiere ningún scope) así que se agrega acá a
+ * mano.
+ */
+export const ALL_TOOL_NAMES: string[] = ['pulse_whoami', ...Object.keys(TOOL_SCOPES)];

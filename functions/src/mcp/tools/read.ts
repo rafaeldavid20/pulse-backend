@@ -1,15 +1,10 @@
 import { getFirestore } from 'firebase-admin/firestore';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-// Static import: this file is itself only reached via a lazy `await
-// import('./tools/read')` from server.ts, so zod's cost is still paid only
-// when an MCP request actually builds a server, not on every cold start.
-// (Passing `z` in as a parameter instead — typed as `typeof import('zod')`
-// — was tried first and triggered TS2589 "Type instantiation is
-// excessively deep" on every non-empty inputSchema; a direct static import
-// doesn't.)
-import { z } from 'zod';
 import { McpPrincipal } from '../auth';
-import { getPullRequestDiff, listPullRequestFiles, REVIEW_DIFF_SIZE_CAP } from '../../github/client';
+import { ALL_TOOL_NAMES, TOOL_SCOPES } from '../scopes';
+import { registerIssueReadTools } from './read-issues';
+import { registerWorkspaceReadTools } from './read-workspace';
+import { registerRunReadTools } from './read-runs';
 
 export function textResult(data: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
@@ -45,298 +40,58 @@ export async function findTeamByKey(workspaceId: string, teamKey: string) {
 }
 
 /**
+ * Resuelve un `Member` del workspace por su `userId` (que para un agente es su
+ * propio `agentId`: `create-agent.ts`/`migrate-agent-roles.mjs` siembran el
+ * mismo id como `member.userId` de su espejo). Usado para resolver a nombre
+ * cualquier id de persona/agente que devuelve `pulse_get_issue`
+ * (`assigneeId`, `creatorId`, `updatedBy`) o `pulse_list_comments`
+ * (`authorId`) — D22/TES-218.
+ */
+export async function findMembersByUserIds(workspaceId: string, userIds: string[]) {
+  const uniqueIds = [...new Set(userIds.filter(Boolean))];
+  if (uniqueIds.length === 0) return new Map<string, FirebaseFirestore.DocumentData>();
+  const db = getFirestore();
+  const snaps = await db.getAll(...uniqueIds.map((id) => db.collection('members').doc(`${workspaceId}_${id}`)));
+  const byUserId = new Map<string, FirebaseFirestore.DocumentData>();
+  snaps.forEach((snap) => {
+    if (snap.exists) byUserId.set(snap.data()!.userId, snap.data()!);
+  });
+  return byUserId;
+}
+
+/**
  * Registers the read-only tools. All of them resolve `workspaceId` from
  * `principal` (set by `authenticateRequest`) rather than accepting it as a
  * tool input — an agent cannot read another workspace's data by asking for
  * its id, because the tool never looks at anything the model could supply.
+ *
+ * Split por dominio (D22/TES-218) porque el archivo único superaba las ~400
+ * líneas que dispara el TS2589 de `zod ^4` documentado en `write.ts`/README:
+ * `read-issues.ts` (issue, épica, comentarios, actividad, contexto de
+ * revisión), `read-workspace.ts` (equipos, proyectos, etiquetas, miembros,
+ * agentes, ciclos) y `read-runs.ts` (`agent_runs`). Este archivo conserva los
+ * helpers compartidos (usados también por `write.ts`) y `pulse_whoami`, que
+ * tiene que funcionar aun para una key sin scopes.
  */
 export function registerReadTools(server: McpServer, principal: McpPrincipal) {
-  const db = getFirestore();
-
   server.registerTool(
     'pulse_whoami',
     {
       title: 'Pulse whoami',
-      description: "Returns the caller's resolved identity: workspace, agent id (if any), and granted scopes.",
-      inputSchema: {},
-    },
-    async () => textResult({ workspaceId: principal.workspaceId, agentId: principal.agentId, scopes: principal.scopes })
-  );
-
-  server.registerTool(
-    'pulse_list_teams',
-    {
-      title: 'List teams',
-      description: 'Lists the teams in the caller’s workspace.',
+      description:
+        "Returns the caller's resolved identity: workspace, agent id (if any), granted scopes, and the tool names those scopes actually enable — check this before calling a tool you're not sure you have access to.",
       inputSchema: {},
     },
     async () => {
-      const snap = await db.collection('teams').where('workspaceId', '==', principal.workspaceId).get();
-      return textResult(snap.docs.map((d) => d.data()));
-    }
-  );
-
-  // Using the legacy `tool()` overload (not `registerTool`) for the tools
-  // below: `registerTool<OutputArgs, InputArgs>` leaves `OutputArgs`
-  // unresolved when no `outputSchema` is given, and combined with a
-  // non-empty `inputSchema` shape that triggers a "Type instantiation is
-  // excessively deep" TS2589 under TS 5.9 + this SDK version. `tool()` has
-  // a single, simpler type parameter and isn't affected.
-  server.tool(
-    'pulse_list_projects',
-    'Lists projects in the workspace, optionally filtered by team key or status.',
-    {
-      teamKey: z.string().optional().describe('Team key, e.g. "ENG" — filters to that team’s projects.'),
-      status: z
-        .enum(['planned', 'in_progress', 'paused', 'completed', 'canceled'])
-        .optional(),
-    },
-    async ({ teamKey, status }) => {
-      let teamId: string | undefined;
-      if (teamKey) {
-        const teamSnap = await db
-          .collection('teams')
-          .where('workspaceId', '==', principal.workspaceId)
-          .where('key', '==', teamKey.toUpperCase())
-          .limit(1)
-          .get();
-        if (teamSnap.empty) return textResult({ projects: [], note: `No team found with key '${teamKey}'.` });
-        teamId = teamSnap.docs[0].id;
-      }
-
-      let query = db.collection('projects').where('workspaceId', '==', principal.workspaceId) as FirebaseFirestore.Query;
-      if (teamId) query = query.where('teamId', '==', teamId);
-      if (status) query = query.where('status', '==', status);
-
-      const snap = await query.get();
-      return textResult(snap.docs.map((d) => d.data()));
-    }
-  );
-
-  server.tool(
-    'pulse_list_issues',
-    'Lists issues in the workspace with optional filters. Use assignee "me" for the caller agent’s own issues.',
-    {
-      assignee: z.string().optional().describe('"me", "unassigned", or a member/agent id.'),
-      status: z.array(z.enum(['backlog', 'todo', 'in_progress', 'in_review', 'done', 'canceled'])).optional(),
-      teamKey: z.string().optional(),
-      projectId: z.string().optional(),
-      labelIds: z.array(z.string()).optional(),
-      type: z.array(z.enum(['epic', 'story', 'task', 'bug', 'subtask'])).optional()
-        .describe('Filter by hierarchy level. Use ["epic"] to list only epics.'),
-      epicId: z.string().optional()
-        .describe('Only issues under this epic (identifier "ENG-12" or doc id). Does not include the epic itself.'),
-      parentId: z.string().optional()
-        .describe('Only direct children of this issue (identifier or doc id).'),
-      search: z.string().optional(),
-      limit: z.number().int().min(1).max(100).default(25),
-    },
-    async ({ assignee, status, teamKey, projectId, labelIds, type, epicId, parentId, search, limit }) => {
-      let query = db.collection('issues').where('workspaceId', '==', principal.workspaceId) as FirebaseFirestore.Query;
-
-      if (teamKey) {
-        const teamSnap = await db
-          .collection('teams')
-          .where('workspaceId', '==', principal.workspaceId)
-          .where('key', '==', teamKey.toUpperCase())
-          .limit(1)
-          .get();
-        if (teamSnap.empty) return textResult({ issues: [], note: `No team found with key '${teamKey}'.` });
-        query = query.where('teamId', '==', teamSnap.docs[0].id);
-      }
-      if (projectId) query = query.where('projectId', '==', projectId);
-
-      // `epicId`/`parentId` aceptan identificador legible ("ENG-12") además del
-      // doc id, igual que `pulse_get_issue` — un agente que leyó un issue tiene
-      // el identificador a mano, no el `issue-xxxx`.
-      if (epicId) {
-        const epicDoc = await findIssue(principal.workspaceId, epicId);
-        if (!epicDoc) return textResult({ issues: [], note: `No epic found for '${epicId}'.` });
-        query = query.where('epicId', '==', epicDoc.id);
-      }
-      if (parentId) {
-        const parentDoc = await findIssue(principal.workspaceId, parentId);
-        if (!parentDoc) return textResult({ issues: [], note: `No issue found for '${parentId}'.` });
-        query = query.where('parentId', '==', parentDoc.id);
-      }
-
-      if (assignee === 'me') {
-        if (!principal.agentId) {
-          return textResult({ issues: [], note: 'This API key is not associated with an agent — "me" has no meaning.' });
-        }
-        query = query.where('assigneeId', '==', principal.agentId);
-      } else if (assignee === 'unassigned') {
-        query = query.where('assigneeId', '==', null);
-      } else if (assignee) {
-        query = query.where('assigneeId', '==', assignee);
-      }
-
-      const snap = await query.limit(200).get();
-      let issues = snap.docs.map((d) => d.data());
-
-      // Filters that can't be expressed as Firestore equality/array-contains
-      // without a composite index we don't have yet — applied in memory
-      // against the (already workspace/team/project-scoped) result set.
-      if (status && status.length > 0) issues = issues.filter((i) => status.includes(i.status));
-      if (type && type.length > 0) issues = issues.filter((i) => type.includes(i.type ?? 'task'));
-      if (labelIds && labelIds.length > 0) {
-        issues = issues.filter((i) => Array.isArray(i.labelIds) && labelIds.some((l) => i.labelIds.includes(l)));
-      }
-      if (search) {
-        const q = search.toLowerCase();
-        issues = issues.filter(
-          (i) => i.title?.toLowerCase().includes(q) || i.identifier?.toLowerCase().includes(q)
-        );
-      }
-
-      issues.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-      return textResult(issues.slice(0, limit));
-    }
-  );
-
-  server.tool(
-    'pulse_get_epic',
-    'Fetches an epic with its full child tree and progress. One call instead of walking the hierarchy issue by issue.',
-    { identifier: z.string().describe('Epic identifier ("ENG-12") or doc id ("issue-xxxx").') },
-    async ({ identifier }) => {
-      const epicDoc = await findIssue(principal.workspaceId, identifier);
-      if (!epicDoc) return textResult({ found: false });
-
-      const epic = epicDoc.data()!;
-      if ((epic.type ?? 'task') !== 'epic') {
-        return textResult({
-          found: true,
-          isEpic: false,
-          note: `'${identifier}' is of type '${epic.type ?? 'task'}', not an epic. Use pulse_get_issue instead.`,
-          issue: epic,
-        });
-      }
-
-      // Un solo query por `epicId` trae el subárbol entero (el campo está
-      // denormalizado justamente para esto), y el árbol se arma en memoria.
-      const descendantsSnap = await db
-        .collection('issues')
-        .where('workspaceId', '==', principal.workspaceId)
-        .where('epicId', '==', epicDoc.id)
-        .get();
-      const descendants = descendantsSnap.docs.map((d) => d.data());
-
-      interface TreeNode extends FirebaseFirestore.DocumentData {
-        children: TreeNode[];
-      }
-      const childrenOf = (parentId: string): TreeNode[] =>
-        descendants
-          .filter((i) => i.parentId === parentId)
-          .map((i) => ({ ...i, children: childrenOf(i.id) }));
-
-      const closed = new Set(['done', 'canceled']);
-      return textResult({
-        found: true,
-        isEpic: true,
-        epic,
-        progress: {
-          total: descendants.length,
-          closed: descendants.filter((i) => closed.has(i.status)).length,
-          byStatus: descendants.reduce<Record<string, number>>((acc, i) => {
-            acc[i.status] = (acc[i.status] || 0) + 1;
-            return acc;
-          }, {}),
-        },
-        children: childrenOf(epicDoc.id),
+      const tools = ALL_TOOL_NAMES.filter((name) => {
+        const required = TOOL_SCOPES[name];
+        return !required || principal.scopes.includes(required);
       });
+      return textResult({ workspaceId: principal.workspaceId, agentId: principal.agentId, scopes: principal.scopes, tools });
     }
   );
 
-  server.tool(
-    'pulse_get_issue',
-    'Fetches a single issue by identifier (e.g. "ENG-142") or doc id ("issue-xxxx").',
-    { identifier: z.string() },
-    async ({ identifier }) => {
-      const doc = await findIssue(principal.workspaceId, identifier);
-      if (!doc) return textResult({ found: false });
-      return textResult({ found: true, issue: doc.data() });
-    }
-  );
-
-  server.tool(
-    'pulse_get_review_context',
-    'For QA agents reviewing an issue, for dev agents doing rework after changes_requested (D9), and for dev agents self-checking before opening a PR (D13). Everything needed: the accepted acceptance criteria, the project\'s Definition of Done (D14 — rules that apply to every issue in the project, empty if the project has none), the dev\'s self-check, findings from previous attempts with their status, the issue\'s comments, and — for each PR in gitRefs — the diff (paginated, capped in size; past the cap you get the file list instead and read the rest from the checkout).',
-    { identifier: z.string() },
-    async ({ identifier }) => {
-      const doc = await findIssue(principal.workspaceId, identifier);
-      if (!doc) return textResult({ error: `No issue found for '${identifier}'.` });
-      const issue = doc.data()!;
-
-      const criteria = (issue.acceptanceCriteria || []).filter((c: any) => c.accepted !== false);
-
-      const [commentsSnap, projectSnap] = await Promise.all([
-        db.collection('comments').where('issueId', '==', doc.id).get(),
-        issue.projectId ? db.collection('projects').doc(issue.projectId).get() : Promise.resolve(null),
-      ]);
-      const project: any = projectSnap?.exists ? projectSnap.data() : null;
-
-      const refs: any[] =
-        Array.isArray(issue.gitRefs) && issue.gitRefs.length > 0
-          ? issue.gitRefs
-          : issue.git?.repoFullName && issue.git?.prNumber !== undefined
-            ? [issue.git]
-            : [];
-
-      let prs: Array<Record<string, any>> = [];
-      if (refs.length > 0) {
-        const installSnap = await db
-          .collection('github_installations')
-          .where('workspaceId', '==', principal.workspaceId)
-          .limit(1)
-          .get();
-        if (installSnap.empty) {
-          prs = refs.map((r) => ({ repoFullName: r.repoFullName, prNumber: r.prNumber, error: 'GitHub no está conectado en este workspace.' }));
-        } else {
-          const installationId = installSnap.docs[0].data().installationId;
-          prs = await Promise.all(
-            refs
-              .filter((r) => r?.prNumber !== undefined)
-              .map(async (r) => {
-                try {
-                  const diff = await getPullRequestDiff(installationId, r.repoFullName, r.prNumber);
-                  if (diff.length <= REVIEW_DIFF_SIZE_CAP) {
-                    return { repoFullName: r.repoFullName, prNumber: r.prNumber, diff };
-                  }
-                  const files = await listPullRequestFiles(installationId, r.repoFullName, r.prNumber);
-                  return {
-                    repoFullName: r.repoFullName,
-                    prNumber: r.prNumber,
-                    diffTooLarge: true,
-                    note: `El diff supera ${REVIEW_DIFF_SIZE_CAP} caracteres — hacé checkout de la rama y leé estos archivos.`,
-                    files,
-                  };
-                } catch (error: any) {
-                  return { repoFullName: r.repoFullName, prNumber: r.prNumber, error: error?.message || String(error) };
-                }
-              })
-          );
-        }
-      }
-
-      const historyFindings = (issue.review?.history || []).map((h: any) => ({
-        attempt: h.attempt,
-        state: h.state,
-        findings: h.findings || [],
-      }));
-      const currentFindings = issue.review?.findings
-        ? [{ attempt: issue.review.attempt, state: issue.review.state, findings: issue.review.findings }]
-        : [];
-
-      return textResult({
-        found: true,
-        issue,
-        criteria,
-        definitionOfDone: project?.definitionOfDone || [],
-        devSelfCheck: issue.devSelfCheck || [],
-        previousFindings: [...historyFindings, ...currentFindings],
-        comments: commentsSnap.docs.map((d) => d.data()),
-        prs,
-      });
-    }
-  );
+  registerIssueReadTools(server, principal);
+  registerWorkspaceReadTools(server, principal);
+  registerRunReadTools(server, principal);
 }
