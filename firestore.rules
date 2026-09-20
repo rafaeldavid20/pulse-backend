@@ -145,6 +145,14 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Calibración del modo sombra de QA (D17/TES-213): un registro por
+    // (issue, intento) que compara el veredicto del QA con el desenlace
+    // humano del PR (merge o close). Admin SDK only — githubWebhook es el
+    // único escritor, la app lee el agregado vía agents.getQaCalibration.
+    match /qa_calibration_records/{recordId} {
+      allow read, write: if false;
+    }
+
     // Hourly per-user counter capping client-reported errors relayed to
     // Argus by pulseClientTelemetry (TES-192). Admin SDK only.
     match /client_telemetry_counters/{counterId} {

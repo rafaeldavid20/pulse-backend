@@ -48,6 +48,12 @@ function reviewablePrs(issue: FirebaseFirestore.DocumentData): ReviewablePr[] {
  * La mitad del valor del diseño: un agente no puede aprobar su propio
  * trabajo. Se valida acá, en el servidor — no alcanza con que el prompt del
  * QA lo pida amablemente.
+ *
+ * Modo sombra (D17/TES-213): con `Agent.qaMode !== 'enforce'` (default al
+ * crear un agente `qa`) el veredicto se registra igual de completo, pero no
+ * se aplica ninguna transición de status/asignado/labels ni se dispara
+ * re-trabajo — el issue sigue el flujo humano de hoy hasta que alguien pase
+ * el QA a `enforce` en Settings.
  */
 export class ReviewsSubmitAction extends PlatformActionHandler {
   private issueId?: string;
@@ -164,47 +170,59 @@ export class ReviewsSubmitAction extends PlatformActionHandler {
       updatedBy: actorUid,
     };
 
+    // Modo sombra (D17): mientras no se sepa si el criterio del QA coincide
+    // con el humano, `reviews.submit` registra el veredicto completo (abajo)
+    // pero no toca status/asignado/labels ni dispara re-trabajo — el issue
+    // sigue el flujo humano de hoy como si no hubiera QA automático. El
+    // re-trabajo (D9) se gatea aparte, en `agentDispatchTrigger`, porque ese
+    // trigger reacciona a `review.state` y no pasa por acá.
+    const qaMode = agent.qaMode === 'enforce' ? 'enforce' : 'shadow';
+
     let needsHumanLeadId: string | undefined;
-    if (outcome === 'changes_requested') {
-      updates.status = 'in_progress';
-      // El guard de override manual del webhook (`sync-from-webhook.ts`) trata
-      // como cambio humano cualquier status que no coincida con
-      // `git.lastSyncedStatus` — así que esta transición de sistema tiene que
-      // dejarlo al día, o el webhook deja de sincronizar este issue (D10).
-      updates['git.lastSyncedStatus'] = 'in_progress';
-    } else if (outcome === 'needs_human') {
-      needsHumanLeadId = await resolveReviewLead(db, issue);
-      nextReview.previousAssigneeId = issue.assigneeId || undefined;
-      updates.assigneeId = needsHumanLeadId || null;
-      if (capped) {
-        // Intentos agotados: es un rechazo real, solo que lo termina de
-        // resolver una persona en vez de un re-trabajo automático (D9).
+    if (qaMode === 'enforce') {
+      if (outcome === 'changes_requested') {
         updates.status = 'in_progress';
+        // El guard de override manual del webhook (`sync-from-webhook.ts`) trata
+        // como cambio humano cualquier status que no coincida con
+        // `git.lastSyncedStatus` — así que esta transición de sistema tiene que
+        // dejarlo al día, o el webhook deja de sincronizar este issue (D10).
         updates['git.lastSyncedStatus'] = 'in_progress';
+      } else if (outcome === 'needs_human') {
+        needsHumanLeadId = await resolveReviewLead(db, issue);
+        nextReview.previousAssigneeId = issue.assigneeId || undefined;
+        updates.assigneeId = needsHumanLeadId || null;
+        if (capped) {
+          // Intentos agotados: es un rechazo real, solo que lo termina de
+          // resolver una persona en vez de un re-trabajo automático (D9).
+          updates.status = 'in_progress';
+          updates['git.lastSyncedStatus'] = 'in_progress';
+        }
+        // `unverifiable`-only no es un rechazo (D3): el status del flujo no se
+        // toca, solo se escala la asignación.
+        const currentLabels: string[] = Array.isArray(issue.labelIds) ? issue.labelIds : [];
+        const labelId = await ensureNeedsHumanLabel(db, issue.workspaceId, issue.teamId);
+        if (!currentLabels.includes(labelId)) {
+          updates.labelIds = [...currentLabels, labelId];
+        }
       }
-      // `unverifiable`-only no es un rechazo (D3): el status del flujo no se
-      // toca, solo se escala la asignación.
-      const currentLabels: string[] = Array.isArray(issue.labelIds) ? issue.labelIds : [];
-      const labelId = await ensureNeedsHumanLabel(db, issue.workspaceId, issue.teamId);
-      if (!currentLabels.includes(labelId)) {
-        updates.labelIds = [...currentLabels, labelId];
-      }
+      // 'approved': el status no cambia — el merge sigue siendo humano en el MVP.
     }
-    // 'approved': el status no cambia — el merge sigue siendo humano en el MVP.
 
     updates.review = cleanUndefined(nextReview);
     await issueRef.update(updates);
 
-    await this.notifyOutcome(db, issue, data.issueId, outcome, capped, actorUid, prs, verdict, needsHumanLeadId);
+    if (qaMode === 'enforce') {
+      await this.notifyOutcome(db, issue, data.issueId, outcome, capped, actorUid, prs, verdict, needsHumanLeadId);
+    }
 
-    const commentBody = this.buildCommentBody(issue, outcome, capped, verdict, findings, criteriaResults, review.attempt);
+    const commentBody = this.buildCommentBody(issue, outcome, capped, verdict, findings, criteriaResults, review.attempt, qaMode);
     await new CreateCommentAction({ actionCode: 'comments.create', data: { issueId: data.issueId, body: commentBody, source: 'mcp' } }, actorUid).run();
 
     if (installation) {
-      await this.publishGithubReviews(installation, prs, outcome, verdict, findings, criteriaResults, issue);
+      await this.publishGithubReviews(installation, prs, outcome, verdict, findings, criteriaResults, issue, qaMode);
     }
 
-    return { issueId: data.issueId, outcome, attempt: review.attempt, status: updates.status || issue.status };
+    return { issueId: data.issueId, outcome, attempt: review.attempt, status: updates.status || issue.status, qaMode };
   }
 
   /**
@@ -277,7 +295,8 @@ export class ReviewsSubmitAction extends PlatformActionHandler {
     verdict: string,
     findings: ReviewFinding[],
     criteriaResults: ReviewCriterionResult[],
-    attempt: number
+    attempt: number,
+    qaMode: 'shadow' | 'enforce'
   ): string {
     const criteriaById = new Map<string, string>(((issue.acceptanceCriteria || []) as AcceptanceCriterion[]).map((c) => [c.id, c.text]));
     const outcomeLabel =
@@ -289,7 +308,14 @@ export class ReviewsSubmitAction extends PlatformActionHandler {
             ? '🧑 Necesita humano (intentos agotados)'
             : '🧑 Necesita humano (criterio no verificable)';
 
-    const lines = [`**Revisión de QA — intento ${attempt}: ${outcomeLabel}**`, '', verdict];
+    const lines = [`**Revisión de QA — intento ${attempt}: ${outcomeLabel}**`, ''];
+    if (qaMode === 'shadow') {
+      lines.push(
+        '🌓 _Modo sombra: este veredicto no cambia el estado del issue ni dispara re-trabajo — es para calibrar al QA. El flujo sigue en manos de un humano._',
+        ''
+      );
+    }
+    lines.push(verdict);
 
     if (criteriaResults.length > 0) {
       lines.push('', '**Criterios**');
@@ -319,7 +345,8 @@ export class ReviewsSubmitAction extends PlatformActionHandler {
     verdict: string,
     findings: ReviewFinding[],
     criteriaResults: ReviewCriterionResult[],
-    issue: FirebaseFirestore.DocumentData
+    issue: FirebaseFirestore.DocumentData,
+    qaMode: 'shadow' | 'enforce'
   ): Promise<void> {
     const criteriaById = new Map<string, string>(((issue.acceptanceCriteria || []) as AcceptanceCriterion[]).map((c) => [c.id, c.text]));
     const outcomeLabel = outcome === 'approved' ? 'Approved' : outcome === 'changes_requested' ? 'Changes requested' : 'Needs a human';
@@ -328,7 +355,11 @@ export class ReviewsSubmitAction extends PlatformActionHandler {
       const inlineForThisPr = findings.filter((f) => f.file && f.line && (!f.repoFullName || f.repoFullName === pr.repoFullName));
       const bodyOnly = findings.filter((f) => !(f.file && f.line) && (!f.repoFullName || f.repoFullName === pr.repoFullName));
 
-      const bodyLines = [`**Pulse QA review — ${outcomeLabel}**`, '', verdict];
+      const bodyLines = [`**Pulse QA review — ${outcomeLabel}**`, ''];
+      if (qaMode === 'shadow') {
+        bodyLines.push('_Shadow mode: this verdict is informational only, it does not block or change the issue._', '');
+      }
+      bodyLines.push(verdict);
       if (criteriaResults.length > 0) {
         bodyLines.push('', '**Criteria**');
         for (const c of criteriaResults) {

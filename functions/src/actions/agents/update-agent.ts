@@ -2,13 +2,16 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { cleanUndefined } from '../../common/utils/clean';
-import { AgentRole } from '../../common/domain.generated';
+import { AgentRole, AgentQaMode } from '../../common/domain.generated';
 
 const AGENT_ROLES: AgentRole[] = ['dev', 'qa'];
+const AGENT_QA_MODES: AgentQaMode[] = ['shadow', 'enforce'];
 
 /** Fields a workspace member is allowed to change on an agent — notably
  * `autonomousMode`, the toggle that lets Fase 6's Firestore trigger dispatch
- * work to GitHub Actions without a human claiming the issue first. */
+ * work to GitHub Actions without a human claiming the issue first, and
+ * `qaMode`, whose only writer is a human in Settings — pasar a `enforce` es
+ * una decisión explícita (D17). */
 const AGENT_WRITABLE_FIELDS = [
   'autonomousMode',
   'enabled',
@@ -18,6 +21,7 @@ const AGENT_WRITABLE_FIELDS = [
   'role',
   'reviewRepo',
   'maxReviewAttempts',
+  'qaMode',
 ] as const;
 
 export class UpdateAgentAction extends PlatformActionHandler {
@@ -46,6 +50,9 @@ export class UpdateAgentAction extends PlatformActionHandler {
     }
     if (data.role !== undefined && !AGENT_ROLES.includes(data.role)) {
       throw new Error(`role inválido: '${data.role}'. Debe ser 'dev' o 'qa'.`);
+    }
+    if (data.qaMode !== undefined && !AGENT_QA_MODES.includes(data.qaMode)) {
+      throw new Error(`qaMode inválido: '${data.qaMode}'. Debe ser 'shadow' o 'enforce'.`);
     }
 
     const agentRef = db.collection('agents').doc(data.agentId);

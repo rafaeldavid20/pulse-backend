@@ -167,6 +167,10 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
 
     await issueDoc.ref.update(updates);
 
+    if (input.event === 'pull_request' && input.prAction === 'closed') {
+      await this.recordQaCalibration(db, workspaceId, issueDoc.id, issue, input);
+    }
+
     if (statusChanged) {
       await this.postComment(
         db,
@@ -256,6 +260,55 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
     if (input.prAction === 'closed') return `el PR #${input.prNumber} se cerró sin mergear`;
     if (input.prAction === 'synchronize') return `el PR #${input.prNumber} recibió un push nuevo`;
     return `el PR #${input.prNumber} pasó a "${input.prAction}"`;
+  }
+
+  /**
+   * Calibración del modo sombra (D17): cuando el humano cierra el PR (merge o
+   * close sin merge), compara ese desenlace con el último veredicto de QA
+   * registrado en el issue — `approved + merged = acuerdo`,
+   * `changes_requested + merged sin cambios = desacuerdo` (y sus simétricos).
+   * `needs_human`/`stale`/`running` no dan una señal clara y se ignoran.
+   *
+   * `changes_requested` solo llega hasta acá "sin cambios" porque cualquier
+   * push nuevo después del veredicto ya lo marcó `stale` (`reviewGoesStale`
+   * arriba, en el evento `synchronize` anterior a este `closed`).
+   *
+   * El id del doc es determinístico (`issueId_attempt`): un issue multi-repo
+   * (`gitRefs[]`) puede cerrar varios PRs para el mismo intento, y el webhook
+   * puede reintentar la entrega — las dos cosas deben pisar el mismo registro,
+   * no duplicarlo.
+   */
+  private async recordQaCalibration(
+    db: FirebaseFirestore.Firestore,
+    workspaceId: string,
+    issueId: string,
+    issue: FirebaseFirestore.DocumentData,
+    input: WebhookSyncInput
+  ): Promise<void> {
+    const review = issue.review as Record<string, any> | undefined;
+    if (!review?.reviewerId || (review.state !== 'approved' && review.state !== 'changes_requested')) return;
+
+    const merged = !!input.merged;
+    const agreed = review.state === 'approved' ? merged : !merged;
+
+    const recordId = `${issueId}_${review.attempt}`;
+    await db
+      .collection('qa_calibration_records')
+      .doc(recordId)
+      .set({
+        id: recordId,
+        workspaceId,
+        agentId: review.reviewerId,
+        issueId,
+        issueIdentifier: issue.identifier,
+        attempt: review.attempt,
+        verdict: review.state,
+        humanOutcome: merged ? 'merged' : 'closed_unmerged',
+        agreed,
+        repoFullName: input.repoFullName,
+        prNumber: input.prNumber,
+        decidedAt: new Date().toISOString(),
+      });
   }
 
   private async postComment(db: FirebaseFirestore.Firestore, workspaceId: string, issueId: string, body: string) {
