@@ -40,6 +40,7 @@ function normalizeFromPullRequest(payload: any) {
     event: 'pull_request' as const,
     repoFullName: payload.repository.full_name,
     branch: pr.head.ref,
+    headSha: pr.head.sha,
     prAction: payload.action,
     prNumber: pr.number,
     prUrl: pr.html_url,
