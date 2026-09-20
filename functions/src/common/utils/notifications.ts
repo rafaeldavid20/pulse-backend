@@ -13,7 +13,27 @@ export type NotificationType =
   | 'comment'
   | 'status_change'
   | 'review_result'
+  | 'needs_human'
+  | 'changes_requested'
   | 'due_soon';
+
+/**
+ * `changes_requested` (D16/TES-212) es "opt-in": el loop se re-trabaja solo,
+ * así que por defecto nadie se entera — solo quien prendió explícitamente la
+ * preferencia lo recibe. Todos los demás tipos son "opt-out" (prendidos por
+ * default, ver `mutedNotificationTypes`), así que se guarda en un array
+ * separado (`enabledNotificationTypes`) en vez de invertir el significado de
+ * `mutedNotificationTypes` para un solo tipo.
+ */
+export const OPT_IN_NOTIFICATION_TYPES: NotificationType[] = ['changes_requested'];
+
+/**
+ * `needs_human` (D16/TES-212) es la notificación importante del loop: no
+ * puede quedar apagada por el mute de tipo por defecto (`mutedNotificationTypes`).
+ * Sigue respetando el mute puntual de un issue (`isIssueMuted`) — eso es una
+ * decisión sobre ESE issue, no una forma de perderse todo el resto.
+ */
+export const UNMUTABLE_NOTIFICATION_TYPES: NotificationType[] = ['needs_human'];
 
 export interface Notification {
   id: string;
@@ -68,21 +88,29 @@ async function isIssueMuted(
 }
 
 /**
- * Chequea si `userId` apagó por completo el tipo `type` de notificación
- * (TES-194, ver `notifications.updatePreferences`) — a diferencia de
- * `isIssueMuted`, esto no depende del issue, apaga la categoría entera para
- * todo el workspace. Misma forma de guardado que `mutedIssueIds`: un array en
- * el doc de membership, vacío por default (todo prendido).
+ * Chequea si `userId` apagó (o, para un tipo opt-in, no prendió) el tipo
+ * `type` de notificación (TES-194, ampliado en TES-212) — a diferencia de
+ * `isIssueMuted`, esto no depende del issue, es la categoría entera para todo
+ * el workspace. Misma forma de guardado que `mutedIssueIds`: un array en el
+ * doc de membership.
  */
-async function isTypeMuted(
+async function isTypeSuppressed(
   db: FirebaseFirestore.Firestore,
   workspaceId: string,
   userId: string,
   type: NotificationType
 ): Promise<boolean> {
+  if (UNMUTABLE_NOTIFICATION_TYPES.includes(type)) return false;
+
   const memberSnap = await db.collection('members').doc(`${workspaceId}_${userId}`).get();
-  if (!memberSnap.exists) return false;
-  const mutedTypes: string[] = memberSnap.data()!.mutedNotificationTypes || [];
+  const memberData = memberSnap.exists ? memberSnap.data()! : {};
+
+  if (OPT_IN_NOTIFICATION_TYPES.includes(type)) {
+    const enabledTypes: string[] = memberData.enabledNotificationTypes || [];
+    return !enabledTypes.includes(type);
+  }
+
+  const mutedTypes: string[] = memberData.mutedNotificationTypes || [];
   return mutedTypes.includes(type);
 }
 
@@ -101,7 +129,7 @@ export async function createNotification(
 
   try {
     if (await isIssueMuted(db, input.workspaceId, input.userId, input.issueId)) return;
-    if (await isTypeMuted(db, input.workspaceId, input.userId, input.type)) return;
+    if (await isTypeSuppressed(db, input.workspaceId, input.userId, input.type)) return;
 
     const id = `ntf-${nanoid(8)}`;
     const notification: Notification = {

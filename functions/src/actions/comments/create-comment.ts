@@ -51,9 +51,16 @@ export class CreateCommentAction extends PlatformActionHandler {
   }
 
   /**
-   * Notificaciones `comment`/`review_result`/`mentioned` (TES-156). Es un
-   * efecto secundario del comentario, no la operación principal: un fallo acá
-   * (issue borrado entre medio, etc.) no debe hacer fallar `comments.create`.
+   * Notificaciones `comment`/`mentioned` (TES-156). Es un efecto secundario
+   * del comentario, no la operación principal: un fallo acá (issue borrado
+   * entre medio, etc.) no debe hacer fallar `comments.create`.
+   *
+   * El veredicto de una revisión de QA ya no se infiere acá por el rol del
+   * autor: `reviews.submit`/`reviews.reportIncomplete`/el barrido de
+   * revisiones colgadas (D16/TES-212) emiten `review_result`/
+   * `changes_requested`/`needs_human` directamente, con la audiencia
+   * (creador/lead) y las excepciones de mute que le corresponden a cada
+   * desenlace — algo que este método, sin ese contexto, no puede reproducir.
    */
   private async notify(db: FirebaseFirestore.Firestore, comment: Record<string, any>): Promise<void> {
     try {
@@ -64,25 +71,15 @@ export class CreateCommentAction extends PlatformActionHandler {
       const membersSnap = await db.collection('members').where('workspaceId', '==', comment.workspaceId).get();
       const members = membersSnap.docs.map((d) => d.data());
 
-      // Un comentario de un agente `role: 'qa'` es el veredicto de una revisión
-      // — el evento que el humano más quiere ver (ver descripción de TES-156) —
-      // así que se distingue de un comentario cualquiera.
-      const author = members.find((m) => m.userId === comment.authorId);
-      const isQaVerdict = author?.agentRole === 'qa';
-
       if (issue.assigneeId) {
         await createNotification(db, {
           workspaceId: comment.workspaceId,
           userId: issue.assigneeId,
           actorId: comment.authorId,
           issueId: comment.issueId,
-          // Solo en `comment`, no en `review_result`: el veredicto de QA no es
-          // "un comentario puntual" que tenga sentido resaltar en el panel.
-          commentId: isQaVerdict ? undefined : comment.id,
-          type: isQaVerdict ? 'review_result' : 'comment',
-          title: isQaVerdict
-            ? `Resultado de revisión en ${issue.identifier}`
-            : `Nuevo comentario en ${issue.identifier}`,
+          commentId: comment.id,
+          type: 'comment',
+          title: `Nuevo comentario en ${issue.identifier}`,
           body: comment.body,
         });
       }

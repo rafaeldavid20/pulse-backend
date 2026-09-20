@@ -2,7 +2,7 @@ import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { getFirestore, Firestore, QueryDocumentSnapshot } from 'firebase-admin/firestore';
 import { nanoid } from 'nanoid';
 import { cleanUndefined } from '../common/utils/clean';
-import { resolveReviewLead, ensureNeedsHumanLabel } from '../common/utils/review-escalation';
+import { resolveReviewLead, ensureNeedsHumanLabel, notifyNeedsHuman } from '../common/utils/review-escalation';
 import { IssueReview } from '../common/domain.generated';
 
 const STUCK_THRESHOLD_MS = 30 * 60 * 1000;
@@ -67,6 +67,10 @@ async function maybeEscalateStuckReview(db: Firestore, doc: QueryDocumentSnapsho
 
   const minutes = Math.round(elapsedMs / 60000);
   const commentId = `cmt-${nanoid(8)}`;
+  const reason =
+    `El intento ${review.attempt} lleva ${minutes} minutos en \`running\` sin veredicto (agente ` +
+    `'${review.claimedBy || review.dispatchedTo || 'desconocido'}'). El run de GitHub Actions puede no haber ` +
+    'arrancado, o haberse cortado sin llegar al paso de reporte.';
   await db
     .collection('comments')
     .doc(commentId)
@@ -75,14 +79,12 @@ async function maybeEscalateStuckReview(db: Firestore, doc: QueryDocumentSnapsho
       workspaceId: issue.workspaceId,
       issueId: doc.id,
       authorId: 'system',
-      body:
-        `**Revisión de QA colgada** — el intento ${review.attempt} lleva ${minutes} minutos en \`running\` sin ` +
-        `veredicto (agente '${review.claimedBy || review.dispatchedTo || 'desconocido'}'). El run de GitHub ` +
-        'Actions puede no haber arrancado, o haberse cortado sin llegar al paso de reporte. Se escala a ' +
-        'needs_human para que decida una persona.',
+      body: `**Revisión de QA colgada** — ${reason} Se escala a needs_human para que decida una persona.`,
       source: 'web',
       createdAt: now,
     });
+
+  await notifyNeedsHuman(db, issue, doc.id, leadId, 'system', reason);
 
   console.log(`[ReviewSweeper] escaló la revisión colgada del issue '${issue.identifier}' (${doc.id}) a needs_human tras ${minutes}m.`);
 }

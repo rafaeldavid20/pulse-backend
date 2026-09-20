@@ -88,16 +88,37 @@ quemar créditos indefinidamente:
   porque `agent_dispatch_counters`/`agent_runs` son Admin-SDK-only. Ninguna de
   las dos vive todavía en `pulse-app`; ver traspaso registrado en TES-153.
 
-## Notificaciones (F1)
+## Notificaciones (F1, D16)
 
 `issueNotificationsTrigger` (`functions/src/triggers/notify-on-issue-write.ts`,
 un `onDocumentWritten` sobre `issues/{issueId}`) genera notificaciones
 `assigned` y `status_change`; `comments.create`
-(`functions/src/actions/comments/create-comment.ts`) genera `comment`,
-`review_result` (cuando el autor es un agente `role: 'qa'`) y `mentioned`
-(parseo best-effort de `@algo` contra `userId`/`displayName`/email de los
-miembros del workspace — no hay todavía un picker de menciones en el
+(`functions/src/actions/comments/create-comment.ts`) genera `comment` y
+`mentioned` (parseo best-effort de `@algo` contra `userId`/`displayName`/email
+de los miembros del workspace — no hay todavía un picker de menciones en el
 frontend). `due_soon` es del modelo pero su generación es de F5.
+
+El veredicto de una revisión de QA (D5/D6) se notifica directamente desde
+donde se decide el desenlace, no infiriéndolo del rol del autor de un
+comentario — cada uno tiene su propia audiencia:
+
+- `review_result` (approved) → al creador del issue y al lead del proyecto
+  (`reviews.submit`), con link a cada PR: "TES-X aprobado por QA, listo para
+  merge".
+- `needs_human` (intentos agotados, criterio no verificable, revisión
+  incompleta o colgada — `reviews.submit`, `reviews.reportIncomplete` y
+  `scheduled/review-sweeper.ts`) → al responsable resuelto por
+  `resolveReviewLead` (lead del proyecto, o el creador si no hay lead).
+  Exactamente una notificación por escalamiento; **no puede quedar apagada**
+  por el mute de tipo por defecto (`UNMUTABLE_NOTIFICATION_TYPES` en
+  `common/utils/notifications.ts`) — solo el mute puntual de ese issue lo
+  filtra.
+- `changes_requested` (`reviews.submit`) → al creador y al lead, pero es
+  **opt-in**: por defecto nadie lo recibe (el loop se resuelve solo con el
+  re-trabajo del dev), hay que prenderlo a mano vía
+  `notifications.updatePreferences` (`OPT_IN_NOTIFICATION_TYPES`, guardado en
+  `enabledNotificationTypes` del doc de membership, no en
+  `mutedNotificationTypes`).
 
 El modelo `Notification` vive en
 `functions/src/common/utils/notifications.ts` hasta que se agregue a

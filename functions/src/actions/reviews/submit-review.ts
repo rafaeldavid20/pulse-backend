@@ -3,7 +3,8 @@ import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { cleanUndefined } from '../../common/utils/clean';
 import { normalizeFindings, normalizeCriteriaResults } from '../../common/utils/review-findings';
-import { resolveReviewLead, ensureNeedsHumanLabel } from '../../common/utils/review-escalation';
+import { resolveReviewLead, getProjectLeadId, ensureNeedsHumanLabel, notifyNeedsHuman } from '../../common/utils/review-escalation';
+import { createNotification } from '../../common/utils/notifications';
 import { CreateCommentAction } from '../comments/create-comment';
 import { getPullRequestHeadSha, createPullRequestReview, PullRequestReviewComment } from '../../github/client';
 import {
@@ -22,6 +23,7 @@ type Outcome = 'approved' | 'changes_requested' | 'needs_human';
 interface ReviewablePr {
   repoFullName: string;
   prNumber: number;
+  prUrl?: string;
 }
 
 function reviewablePrs(issue: FirebaseFirestore.DocumentData): ReviewablePr[] {
@@ -31,7 +33,9 @@ function reviewablePrs(issue: FirebaseFirestore.DocumentData): ReviewablePr[] {
       : issue.git?.repoFullName && issue.git?.prNumber !== undefined
         ? [issue.git]
         : [];
-  return refs.filter((r) => r?.prNumber !== undefined).map((r) => ({ repoFullName: r.repoFullName, prNumber: r.prNumber }));
+  return refs
+    .filter((r) => r?.prNumber !== undefined)
+    .map((r) => ({ repoFullName: r.repoFullName, prNumber: r.prNumber, prUrl: r.prUrl }));
 }
 
 /**
@@ -160,6 +164,7 @@ export class ReviewsSubmitAction extends PlatformActionHandler {
       updatedBy: actorUid,
     };
 
+    let needsHumanLeadId: string | undefined;
     if (outcome === 'changes_requested') {
       updates.status = 'in_progress';
       // El guard de override manual del webhook (`sync-from-webhook.ts`) trata
@@ -168,9 +173,9 @@ export class ReviewsSubmitAction extends PlatformActionHandler {
       // dejarlo al día, o el webhook deja de sincronizar este issue (D10).
       updates['git.lastSyncedStatus'] = 'in_progress';
     } else if (outcome === 'needs_human') {
-      const leadId = await resolveReviewLead(db, issue);
+      needsHumanLeadId = await resolveReviewLead(db, issue);
       nextReview.previousAssigneeId = issue.assigneeId || undefined;
-      updates.assigneeId = leadId || null;
+      updates.assigneeId = needsHumanLeadId || null;
       if (capped) {
         // Intentos agotados: es un rechazo real, solo que lo termina de
         // resolver una persona en vez de un re-trabajo automático (D9).
@@ -190,6 +195,8 @@ export class ReviewsSubmitAction extends PlatformActionHandler {
     updates.review = cleanUndefined(nextReview);
     await issueRef.update(updates);
 
+    await this.notifyOutcome(db, issue, data.issueId, outcome, capped, actorUid, prs, verdict, needsHumanLeadId);
+
     const commentBody = this.buildCommentBody(issue, outcome, capped, verdict, findings, criteriaResults, review.attempt);
     await new CreateCommentAction({ actionCode: 'comments.create', data: { issueId: data.issueId, body: commentBody, source: 'mcp' } }, actorUid).run();
 
@@ -198,6 +205,69 @@ export class ReviewsSubmitAction extends PlatformActionHandler {
     }
 
     return { issueId: data.issueId, outcome, attempt: review.attempt, status: updates.status || issue.status };
+  }
+
+  /**
+   * Notificaciones del veredicto (D16/TES-212): además del comentario en el
+   * issue (que ya notifica al assignee como parte del flujo genérico de
+   * `comments.create`), cada desenlace tiene su propia audiencia y tipo —
+   * distinto de simplemente "alguien comentó" — porque el destinatario que
+   * importa no siempre es el assignee actual.
+   */
+  private async notifyOutcome(
+    db: FirebaseFirestore.Firestore,
+    issue: FirebaseFirestore.DocumentData,
+    issueId: string,
+    outcome: Outcome,
+    capped: boolean,
+    actorUid: string,
+    prs: ReviewablePr[],
+    verdict: string,
+    needsHumanLeadId: string | undefined
+  ): Promise<void> {
+    if (outcome === 'needs_human') {
+      const reason = capped
+        ? 'Se agotaron los intentos de revisión.'
+        : 'Hay un criterio de aceptación no verificable.';
+      await notifyNeedsHuman(db, issue, issueId, needsHumanLeadId, actorUid, reason);
+      return;
+    }
+
+    // approved/changes_requested van al creador y al lead del proyecto (no al
+    // assignee, que ya se entera por el comentario del veredicto): son
+    // quienes deciden el merge o le siguen el paso al issue, no quien lo
+    // implementó.
+    const leadId = await getProjectLeadId(db, issue.projectId);
+    const recipients = new Set<string>([issue.creatorId, leadId].filter((id): id is string => Boolean(id)));
+
+    if (outcome === 'approved') {
+      const links = prs
+        .map((pr) => pr.prUrl || `https://github.com/${pr.repoFullName}/pull/${pr.prNumber}`)
+        .join('\n');
+      for (const userId of recipients) {
+        await createNotification(db, {
+          workspaceId: issue.workspaceId,
+          userId,
+          actorId: actorUid,
+          issueId,
+          type: 'review_result',
+          title: `${issue.identifier} aprobado por QA, listo para merge`,
+          body: links || 'QA aprobó la revisión.',
+        });
+      }
+    } else if (outcome === 'changes_requested') {
+      for (const userId of recipients) {
+        await createNotification(db, {
+          workspaceId: issue.workspaceId,
+          userId,
+          actorId: actorUid,
+          issueId,
+          type: 'changes_requested',
+          title: `${issue.identifier}: QA pidió cambios`,
+          body: verdict,
+        });
+      }
+    }
   }
 
   private buildCommentBody(
