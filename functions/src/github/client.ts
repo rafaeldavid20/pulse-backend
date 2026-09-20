@@ -134,6 +134,41 @@ export async function getPullRequestHeadSha(
   return body.head.sha;
 }
 
+export interface PullRequestOrigin {
+  headSha: string;
+  headRef: string;
+  /** `null` si el fork de origen ya se borró — se trata igual que un fork (D18). */
+  headRepoFullName: string | null;
+  baseRepoFullName: string;
+}
+
+/**
+ * De dónde viene realmente el HEAD de un PR — no solo su SHA (D18/TES-214):
+ * el repo es público, así que antes de dispararle QA hay que confirmar en
+ * vivo contra GitHub que el PR no viene de un fork y que su rama es la que
+ * Pulse registró en `gitRefs`, sin confiar solo en lo que ya quedó grabado
+ * ahí (que un webhook de PR también escribe).
+ */
+export async function getPullRequestOrigin(
+  installationId: string,
+  repoFullName: string,
+  prNumber: number
+): Promise<PullRequestOrigin> {
+  const body = (await githubInstallationFetch(
+    installationId,
+    `/repos/${repoFullName}/pulls/${prNumber}`
+  )) as {
+    head: { sha: string; ref: string; repo: { full_name: string } | null };
+    base: { repo: { full_name: string } };
+  };
+  return {
+    headSha: body.head.sha,
+    headRef: body.head.ref,
+    headRepoFullName: body.head.repo?.full_name ?? null,
+    baseRepoFullName: body.base.repo.full_name,
+  };
+}
+
 /** Tope del diff que se manda entero a `pulse_get_review_context` (D5). Por
  *  encima de esto se manda la lista de archivos y el QA los lee del checkout,
  *  en vez de arriesgar una respuesta MCP gigante. */
