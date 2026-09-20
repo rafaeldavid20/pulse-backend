@@ -5,7 +5,7 @@
 // dominio de Pulse. Para cambiar algo de acá, editá ese archivo y corré
 // `npm run sync:types` desde `pulse-app`.
 //
-// EXCEPCIÓN TEMPORAL (TES-146, TES-148, TES-150, TES-153): `AcceptanceCriterion`,
+// EXCEPCIÓN TEMPORAL (TES-146, TES-148, TES-150, TES-153, TES-205): `AcceptanceCriterion`,
 // `Issue.acceptanceCriteria`, la entrada en `ISSUE_WRITABLE_FIELDS`,
 // `IssueReview`/`Issue.review` y sus tipos auxiliares, y ahora
 // `DevCriterionCheck`/`Issue.devSelfCheck`, `IssueReview.previousAssigneeId`,
@@ -13,7 +13,9 @@
 // `overriddenAt`/`overrideReason`, `IssueReview.dispatchedTo`/`dispatchedAt`
 // (ya escritos por `qa-dispatch.ts`/D4 pero nunca declarados acá), y ahora
 // `Workspace.agentsPaused`/`dailyDispatchLimit`/`dailyCostCapUsd`/
-// `issueCostCapUsd`/`maxRunsPerIssue` (D8/TES-153), se agregaron acá a mano
+// `issueCostCapUsd`/`maxRunsPerIssue` (D8/TES-153), y ahora
+// `IssueReview.reworkDispatchedAt`/`reworkDispatchedForAttempt` (D9/TES-205),
+// se agregaron acá a mano
 // porque estas
 // sesiones no tienen push a `pulse-app` (traspasos registrados en el issue,
 // TES-202). El próximo `npm run sync:types` desde `pulse-app`, una vez que ese
@@ -559,6 +561,14 @@ export interface IssueReview extends IssueReviewAttempt {
    */
   dispatchedTo?: string;
   dispatchedAt?: string;
+  /**
+   * Marca de dispatch del re-trabajo del dev (D9), separada de
+   * `dispatchedTo`/`dispatchedAt` de arriba (esos son de QA): sin cooldown de
+   * tiempo, la guarda contra un doble dispatch para el mismo rechazo es
+   * comparar `reworkDispatchedForAttempt` contra `attempt`.
+   */
+  reworkDispatchedAt?: string;
+  reworkDispatchedForAttempt?: number;
   /**
    * Intentos ya cerrados, más viejo primero. Sin esto no hay métricas de D7
    * (intentos promedio, tasa de aprobación al primer intento) — solo
