@@ -15,7 +15,8 @@
 // `Workspace.agentsPaused`/`dailyDispatchLimit`/`dailyCostCapUsd`/
 // `issueCostCapUsd`/`maxRunsPerIssue` (D8/TES-153), y ahora
 // `IssueReview.reworkDispatchedAt`/`reworkDispatchedForAttempt` (D9/TES-205), y
-// ahora `IssueGitRef.headSha`/`headShaAt` (D10/TES-206),
+// ahora `IssueGitRef.headSha`/`headShaAt` (D10/TES-206), y ahora
+// `AgentRepoConnection`/`Agent.connectedRepos` (D12/TES-208),
 // se agregaron acá a mano
 // porque estas
 // sesiones no tienen push a `pulse-app` (traspasos registrados en el issue,
@@ -236,6 +237,27 @@ export interface Member {
   agentRole?: AgentRole;
 }
 
+/**
+ * Un repo al que `agents.connectRepo` conectó a este agente (D12/TES-208).
+ * `workflowPath`/`secretName` quedan grabados tal como se usaron al conectar
+ * (`pulse-agent.yml`/`PULSE_AGENT_MCP_KEY` para `role: 'dev'`,
+ * `pulse-qa.yml`/`PULSE_QA_MCP_KEY` para `role: 'qa'`), para que
+ * `agents.disconnectRepo` limpie lo mismo que se escribió aunque el `role`
+ * del agente haya cambiado después. Hay a lo sumo una entrada por
+ * `repoFullName`: reconectar (p. ej. para actualizar la versión del
+ * workflow) reemplaza la entrada existente en vez de acumularla.
+ */
+export interface AgentRepoConnection {
+  repoFullName: string;
+  apiKeyId: string;
+  workflowPath: string;
+  workflowSha?: string;
+  /** Versión de la plantilla (`WORKFLOW_VERSION`/`QA_WORKFLOW_VERSION`) escrita en el repo. */
+  workflowVersion: number;
+  secretName: string;
+  connectedAt: string;
+}
+
 export interface Agent {
   id: string;
   workspaceId: string;
@@ -253,6 +275,8 @@ export interface Agent {
   enabled: boolean;
   autonomousMode: boolean;
   createdAt: string;
+  /** Repos conectados vía `agents.connectRepo`, con la versión de workflow instalada en cada uno. */
+  connectedRepos?: AgentRepoConnection[];
 }
 
 export interface IssueAgentState {
