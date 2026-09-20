@@ -5,7 +5,7 @@
 // dominio de Pulse. Para cambiar algo de acá, editá ese archivo y corré
 // `npm run sync:types` desde `pulse-app`.
 //
-// EXCEPCIÓN TEMPORAL (TES-146, TES-148, TES-150, TES-153, TES-205): `AcceptanceCriterion`,
+// EXCEPCIÓN TEMPORAL (TES-146, TES-148, TES-150, TES-153, TES-205, TES-206): `AcceptanceCriterion`,
 // `Issue.acceptanceCriteria`, la entrada en `ISSUE_WRITABLE_FIELDS`,
 // `IssueReview`/`Issue.review` y sus tipos auxiliares, y ahora
 // `DevCriterionCheck`/`Issue.devSelfCheck`, `IssueReview.previousAssigneeId`,
@@ -14,7 +14,8 @@
 // (ya escritos por `qa-dispatch.ts`/D4 pero nunca declarados acá), y ahora
 // `Workspace.agentsPaused`/`dailyDispatchLimit`/`dailyCostCapUsd`/
 // `issueCostCapUsd`/`maxRunsPerIssue` (D8/TES-153), y ahora
-// `IssueReview.reworkDispatchedAt`/`reworkDispatchedForAttempt` (D9/TES-205),
+// `IssueReview.reworkDispatchedAt`/`reworkDispatchedForAttempt` (D9/TES-205), y
+// ahora `IssueGitRef.headSha`/`headShaAt` (D10/TES-206),
 // se agregaron acá a mano
 // porque estas
 // sesiones no tienen push a `pulse-app` (traspasos registrados en el issue,
@@ -299,6 +300,10 @@ export interface IssueGitRef {
   prUrl?: string;
   prState?: 'open' | 'draft' | 'merged' | 'closed';
   lastSyncedAt?: string;
+  /** SHA del último commit visto en el PR (D10/TES-206), para el guard anti-ping-pong de QA (D4). */
+  headSha?: string;
+  /** Cuándo se vio ese `headSha` por última vez. */
+  headShaAt?: string;
 }
 
 /**

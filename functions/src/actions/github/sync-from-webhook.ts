@@ -10,6 +10,7 @@ interface WebhookSyncInput {
   event: 'create' | 'pull_request';
   repoFullName: string;
   branch: string;
+  headSha?: string;
   prAction?: string;
   prNumber?: number;
   prUrl?: string;
@@ -76,8 +77,21 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
     if (input.event === 'pull_request') {
       refEntry.prState = input.merged ? 'merged' : input.draft ? 'draft' : this.prStateFor(input.prAction);
       refEntry.merged = !!input.merged;
+      // Fuente de verdad del SHA revisable (D10/TES-206): antes solo se
+      // conocía pidiéndolo en vivo a GitHub (ver el anti-ping-pong de D4 en
+      // `qa-dispatch.ts`), y sin `synchronize` procesado acá tampoco se
+      // actualizaba en cada push.
+      if (input.headSha) {
+        refEntry.headSha = input.headSha;
+        refEntry.headShaAt = new Date().toISOString();
+      }
     }
     const nextRefs = upsertGitRef(issue.gitRefs, refEntry);
+
+    // Push nuevo sobre una revisión ya aprobada (D3/D10): la aprobación era de
+    // otro código, así que no puede seguir contando como vigente.
+    const isNewPush = input.event === 'pull_request' && input.prAction === 'synchronize';
+    const reviewGoesStale = isNewPush && issue.review?.state === 'approved';
 
     // Con varias ramas, el estado sale del conjunto y no de este evento suelto:
     // `in_review` cuando TODOS los PRs están abiertos, `done` cuando todos están
@@ -147,6 +161,10 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
       statusChanged = true;
     }
 
+    if (reviewGoesStale) {
+      updates['review.state'] = 'stale';
+    }
+
     await issueDoc.ref.update(updates);
 
     if (statusChanged) {
@@ -155,6 +173,13 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
         workspaceId,
         issueDoc.id,
         `GitHub: ${this.describeEvent(input)} → estado actualizado a \`${desiredStatus}\`.`
+      );
+    } else if (reviewGoesStale) {
+      await this.postComment(
+        db,
+        workspaceId,
+        issueDoc.id,
+        `GitHub: ${this.describeEvent(input)} → la aprobación de QA quedó desactualizada (\`stale\`), había código nuevo después de aprobar.`
       );
     } else if (overriddenManually) {
       await this.postComment(
@@ -205,7 +230,14 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
       return currentStatus === 'todo' ? 'in_progress' : null;
     }
     // pull_request
-    if (['opened', 'reopened', 'ready_for_review'].includes(input.prAction || '')) {
+    //
+    // `synchronize` (push nuevo a un PR abierto) es lo que cierra el ciclo
+    // rechazo → push → `in_review` sin intervención humana (D10/TES-206): sin
+    // procesarlo acá, un issue que `reviews.submit` dejó en `in_progress`
+    // nunca volvía a `in_review` después del re-trabajo del dev.
+    // `converted_to_draft` siempre llega con `draft: true`, así que cae en la
+    // misma rama que las demás y empuja a `in_progress`.
+    if (['opened', 'reopened', 'ready_for_review', 'synchronize', 'converted_to_draft'].includes(input.prAction || '')) {
       return input.draft ? 'in_progress' : 'in_review';
     }
     if (input.prAction === 'closed') {
@@ -222,6 +254,7 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
     if (input.event === 'create') return `se creó la rama \`${input.branch}\``;
     if (input.prAction === 'closed' && input.merged) return `el PR #${input.prNumber} se mergeó`;
     if (input.prAction === 'closed') return `el PR #${input.prNumber} se cerró sin mergear`;
+    if (input.prAction === 'synchronize') return `el PR #${input.prNumber} recibió un push nuevo`;
     return `el PR #${input.prNumber} pasó a "${input.prAction}"`;
   }
 
