@@ -131,9 +131,8 @@ un veredicto contra las mismas piezas que usa un dev:
   `pulse_report_criteria`.
 - `reviews.submit` exige que quien llama sea un agente `role: 'qa'` y que no
   sea el propio asignado dev del issue — que un tester no pueda aprobar su
-  propio trabajo es la mitad del valor del diseño. La verificación central de
-  scopes por tool (`reviews:read`/`reviews:write`) es D11/TES-207, todavía sin
-  hacer; esta validación puntual no depende de eso.
+  propio trabajo es la mitad del valor del diseño. Esta validación puntual es
+  independiente de los scopes de abajo (D11/TES-207).
 - `changes_requested` mueve el issue a `in_progress`; al llegar a
   `maxReviewAttempts` (o si el único problema es un criterio
   `unverifiable`) pasa a `needs_human`: se reasigna a `Project.leadId` (o al
@@ -152,3 +151,24 @@ un veredicto contra las mismas piezas que usa un dev:
   `in_progress` esperando ese dispatch. **D13**/**D14** son las que llenan
   `devSelfCheck` y `Project.definitionOfDone` con datos reales; hasta
   entonces `pulse_get_review_context` los devuelve vacíos.
+
+## Scopes del MCP (D11)
+
+`functions/src/mcp/scopes.ts` mapea cada tool MCP a un scope requerido
+(`TOOL_SCOPES`) y define los dos perfiles que `agents.connectRepo` asigna
+según `agent.role`: **dev** (`issues:read`, `issues:write`, `projects:write`,
+`comments:write`, `reviews:read`) y **qa** (`issues:read`, `comments:write`,
+`reviews:read`, `reviews:write` — sin `issues:write` ni `projects:write`, así
+que no puede crear/borrar issues ni cambiar su status o asignación).
+
+`buildMcpTransport` (`mcp/server.ts`) envuelve `server.tool`/`registerTool`
+antes de registrar ninguna tool: si el `principal` no tiene el scope que
+`TOOL_SCOPES` exige, devuelve un `CallToolResult` con `isError: true` y el
+handler real de la tool ni se ejecuta. Es un único punto de enforcement — las
+tools en `mcp/tools/*.ts` no saben que los scopes existen. Una tool sin
+entrada en `TOOL_SCOPES` (como `pulse_whoami`) no requiere ningún scope.
+
+Las keys existentes creadas antes de esta historia (sin `reviews:*` en su
+array de `scopes`) siguen funcionando igual que antes para todo lo que ya
+podían hacer. Los tokens OAuth (`claude.ai`, Fase 7) no cambian: mantienen
+`DEFAULT_OAUTH_SCOPES` tal cual estaba.

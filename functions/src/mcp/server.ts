@@ -1,4 +1,35 @@
 import type { McpPrincipal } from './auth';
+import { TOOL_SCOPES } from './scopes';
+
+/**
+ * Wraps `server.tool`/`server.registerTool` so every tool registered by
+ * `registerReadTools`/`registerWriteTools` is checked against `TOOL_SCOPES`
+ * before its real handler runs — a single enforcement point instead of a
+ * check duplicated in every tool body (D11/TES-207). Both overloads take the
+ * handler as their last argument, so wrapping generically by position covers
+ * every call site without the tool files needing to know scopes exist.
+ */
+function enforceScopes(server: any, principal: McpPrincipal) {
+  for (const methodName of ['tool', 'registerTool'] as const) {
+    const original = (server[methodName] as (...args: any[]) => any).bind(server);
+    server[methodName] = (name: string, ...rest: any[]) => {
+      const handler = rest[rest.length - 1];
+      if (typeof handler !== 'function') return original(name, ...rest);
+
+      const required = TOOL_SCOPES[name];
+      const guarded = async (...handlerArgs: any[]) => {
+        if (required && !principal.scopes.includes(required)) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: `scope '${required}' requerido` }, null, 2) }],
+            isError: true,
+          };
+        }
+        return handler(...handlerArgs);
+      };
+      return original(name, ...rest.slice(0, -1), guarded);
+    };
+  }
+}
 
 /**
  * Builds a fresh McpServer + WebStandardStreamableHTTPServerTransport pair
@@ -20,6 +51,7 @@ export async function buildMcpTransport(principal: McpPrincipal) {
   const { registerWriteTools } = await import('./tools/write');
 
   const server = new McpServer({ name: 'pulse-mcp', version: '0.1.0' });
+  enforceScopes(server, principal);
   registerReadTools(server, principal);
   registerWriteTools(server, principal);
 
