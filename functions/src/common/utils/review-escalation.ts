@@ -1,7 +1,23 @@
 import { nanoid } from 'nanoid';
+import { createNotification } from './notifications';
 
 export const NEEDS_HUMAN_LABEL = 'needs-human';
 const NEEDS_HUMAN_LABEL_COLOR = '#E5484D';
+
+/**
+ * `Project.leadId` del proyecto del issue, si tiene uno asignado. Separado de
+ * `resolveReviewLead` (que además hace fallback al creador) porque D16/TES-212
+ * necesita distinguir "hay lead" de "no hay lead, uso al creador" para no
+ * mandarle dos notificaciones a la misma persona.
+ */
+export async function getProjectLeadId(
+  db: FirebaseFirestore.Firestore,
+  projectId?: string
+): Promise<string | undefined> {
+  if (!projectId) return undefined;
+  const projectSnap = await db.collection('projects').doc(projectId).get();
+  return projectSnap.exists ? projectSnap.data()!.leadId : undefined;
+}
 
 /**
  * A quién escalar un issue que necesita una decisión humana (D3/D6): el lead
@@ -13,12 +29,36 @@ export async function resolveReviewLead(
   db: FirebaseFirestore.Firestore,
   issue: FirebaseFirestore.DocumentData
 ): Promise<string | undefined> {
-  if (issue.projectId) {
-    const projectSnap = await db.collection('projects').doc(issue.projectId).get();
-    const leadId = projectSnap.exists ? projectSnap.data()!.leadId : undefined;
-    if (leadId) return leadId;
-  }
-  return issue.creatorId;
+  const leadId = await getProjectLeadId(db, issue.projectId);
+  return leadId || issue.creatorId;
+}
+
+/**
+ * Notificación `needs_human` (D16/TES-212) al responsable ya resuelto por
+ * `resolveReviewLead` — una sola, sin importar cuál de las tres rutas de
+ * escalamiento la dispare (criterio de aceptación de TES-212: "exactamente
+ * una notificación al responsable"). No hace falta un flag para saltear el
+ * mute de tipo por defecto: `createNotification` ya lo bypassea para este
+ * tipo (ver `UNMUTABLE_NOTIFICATION_TYPES`).
+ */
+export async function notifyNeedsHuman(
+  db: FirebaseFirestore.Firestore,
+  issue: FirebaseFirestore.DocumentData,
+  issueId: string,
+  responsibleId: string | undefined,
+  actorId: string,
+  reason: string
+): Promise<void> {
+  if (!responsibleId) return;
+  await createNotification(db, {
+    workspaceId: issue.workspaceId,
+    userId: responsibleId,
+    actorId,
+    issueId,
+    type: 'needs_human',
+    title: `${issue.identifier} necesita una decisión`,
+    body: reason,
+  });
 }
 
 /**

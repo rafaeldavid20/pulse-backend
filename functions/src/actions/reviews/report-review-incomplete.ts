@@ -2,7 +2,7 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { cleanUndefined } from '../../common/utils/clean';
-import { resolveReviewLead, ensureNeedsHumanLabel } from '../../common/utils/review-escalation';
+import { resolveReviewLead, ensureNeedsHumanLabel, notifyNeedsHuman } from '../../common/utils/review-escalation';
 import { CreateCommentAction } from '../comments/create-comment';
 import { IssueReview } from '../../common/domain.generated';
 
@@ -96,6 +96,15 @@ export class ReportReviewIncompleteAction extends PlatformActionHandler {
       },
       actorUid
     ).run();
+
+    await notifyNeedsHuman(
+      db,
+      issue,
+      data.issueId,
+      leadId,
+      actorUid,
+      `El run de QA (intento ${review.attempt}) terminó sin emitir un veredicto. ${reason}`
+    );
 
     return { issueId: data.issueId, escalated: true, attempt: review.attempt };
   }
