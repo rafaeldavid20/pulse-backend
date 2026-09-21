@@ -123,6 +123,11 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      # claude-code-action pide un token OIDC para autenticarse. Sin esto el
+      # job muere antes de arrancar con "Could not fetch an OIDC token" — y no
+      # se notaba porque hasta TES-222 no había ningún agente QA que lo
+      # ejecutara. El job de dev ya lo tenía.
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
