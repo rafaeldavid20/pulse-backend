@@ -173,6 +173,31 @@ un veredicto contra las mismas piezas que usa un dev:
   `devSelfCheck` y `Project.definitionOfDone` con datos reales; hasta
   entonces `pulse_get_review_context` los devuelve vacíos.
 
+## Emparejar un evento de GitHub con su issue (TES-242)
+
+`resolveIssue` (`sync-from-webhook.ts`) decide a qué issue pertenece un push o
+un PR, en tres niveles: la rama ya registrada en el issue, la convención de
+nombre (`pul/tes-241-...`), y un `Closes TES-241` en el PR.
+
+El nivel 2 empareja **por nombre**, así que cualquier rama que se llame como el
+issue queda atada a él — incluida una que no es su trabajo. Pasó: una rama que
+preparaba el terreno de TES-241 secuestró el issue, lo mandó a `in_review` y
+disparó una revisión de QA contra un diff que sólo agregaba archivos de skill.
+QA respondió `changes_requested` con blockers correctos sobre ese diff e
+inválidos sobre el issue. Con QA en `enforce`, eso habría despachado **un run
+de re-trabajo pagado** sobre findings que no correspondían.
+
+Dos reglas lo acotan:
+
+1. **La convención sólo decide si el issue no tiene ya una rama registrada en
+   ese repo.** Si la tiene —la creó `createBranch` o la registró un push
+   anterior—, otra rama con nombre parecido no la reemplaza.
+2. **Un veredicto cuyo PR ya no es del issue queda `stale` y no cuenta como
+   intento.** Es el caso hermano del `stale` por push nuevo después de aprobar:
+   acá `gitRefs` y `review.prs` apuntan a PRs distintos, y el veredicto viejo
+   no puede seguir pesando ni consumir uno de los `maxReviewAttempts`. Se
+   comenta en el issue para que el cambio sea visible.
+
 ## Configuración del run en runtime (TES-228 / M1)
 
 Los workflows que `agents.connectRepo` escribe en el repo del cliente **ya no
