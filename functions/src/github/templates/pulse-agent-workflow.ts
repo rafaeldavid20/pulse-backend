@@ -11,7 +11,7 @@
  */
 import { RUN_CONFIG_CLAUDE_ARGS, runConfigStep } from './run-config-step';
 
-export const WORKFLOW_VERSION = 11;
+export const WORKFLOW_VERSION = 12;
 
 export const WORKFLOW_PATH = '.github/workflows/pulse-agent.yml';
 
