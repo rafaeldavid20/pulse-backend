@@ -23,8 +23,16 @@ import { encryptToken } from './crypto';
 const FUNCTIONS_BASE = 'https://us-east4-pulse-app-93.cloudfunctions.net';
 export const SALESFORCE_REDIRECT_URI = `${FUNCTIONS_BASE}/salesforceCallback`;
 
-/** Lo mínimo para leer y desplegar metadata, y para poder refrescar sin que el usuario vuelva a loguearse. */
-const OAUTH_SCOPES = 'api refresh_token offline_access web';
+/**
+ * Lo mínimo para leer y desplegar metadata, y para poder refrescar sin que el
+ * usuario vuelva a loguearse.
+ *
+ * `id` está porque el callback resuelve quién autorizó pegándole a la URL de
+ * identidad que devuelve el token, y ese endpoint exige el scope `id`
+ * explícitamente — sin él la conexión falla con un 403 justo después del
+ * login, que es el peor momento para descubrirlo.
+ */
+const OAUTH_SCOPES = 'api id refresh_token offline_access web';
 
 const STATE_TTL_SECONDS = 10 * 60;
 const SETTINGS_URL = `${PULSE_APP_URL}/settings/salesforce`;
