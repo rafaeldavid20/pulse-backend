@@ -173,6 +173,51 @@ un veredicto contra las mismas piezas que usa un dev:
   `devSelfCheck` y `Project.definitionOfDone` con datos reales; hasta
   entonces `pulse_get_review_context` los devuelve vacíos.
 
+## Configuración del run en runtime (TES-228 / M1)
+
+Los workflows que `agents.connectRepo` escribe en el repo del cliente **ya no
+llevan el prompt ni las listas de tools**. Cada run los pide al arrancar, con la
+key del agente:
+
+```
+pulse_get_run_config({ identifier, mode: 'task' | 'rework' | 'review', handoffRepo?, reviewAttempt? })
+  -> { version, mode, prompt, allowedTools, disallowedTools, maxTurns?, skills[] }
+```
+
+El paso `Resolver la configuración del run en Pulse` (compartido por los tres
+modos, `templates/run-config-step.ts`) la resuelve, materializa los skills en
+`.claude/skills/<name>/SKILL.md` y expone prompt y tools como outputs que
+consume `claude-code-action`.
+
+**Por qué.** Antes, cambiar una línea de prompt exigía reescribir el `.yml` en
+cada repo de cada cliente y reconectarlos. Los dos repos de Pulse corrieron
+`pulse-agent-workflow-version: 5` mientras el template iba por 9 — semanas en
+las que el agente nunca recibió la instrucción de llamar a
+`pulse_report_criteria`, que es por qué TES-218 se cerró sin `devSelfCheck`. Con
+un cliente es una molestia; con cien, la mitad corre instrucciones viejas sin
+que nadie lo note.
+
+Los prompts viven ahora en `functions/src/run-config/prompts.ts`, con
+`{{variable}}` como sintaxis de interpolación — distinta de la de JS y la de
+GitHub Actions a propósito, porque este texto pasa por las dos. Se movieron
+**idénticos**: hay un chequeo de que el prompt renderizado coincide carácter por
+carácter con el que llevaba el `.yml`.
+
+`Skill` quedó habilitada en las tools de los tres modos: sin eso, un skill
+disponible en el checkout no se puede invocar igual (TES-230). `Agent`/`Task`
+siguen prohibidas y **no son configurables**: en un run headless terminar el
+turno termina la sesión (TES-132), así que un skill que despacha subagentes no
+funciona acá.
+
+Si la configuración no se puede resolver, el run **no arranca**: comenta el
+motivo en el issue y corta el job. Un run sin instrucciones es peor que un run
+que no corrió.
+
+Lo que M1 deja abierto a propósito: `skills` viene siempre vacío. Acá se
+construye el canal; el contenido lo llenan M3 (skills del repo del cliente) y M4
+(skills gestionados en Pulse), y cuando lo hagan **no hace falta tocar ningún
+repo**.
+
 ## Trabajo pendiente que ningún run puede hacer (TES-219)
 
 Un run que no puede terminar algo tiene dos salidas, y son distintas:

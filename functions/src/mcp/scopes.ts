@@ -62,6 +62,9 @@ export const TOOL_SCOPES: Record<string, McpScope> = {
   pulse_get_review_context: 'reviews:read',
   pulse_list_comments: 'comments:read',
   pulse_list_runs: 'runs:read',
+  // Lo llama el workflow al arrancar, con la key del agente (dev o QA): va bajo
+  // `issues:read`, que los dos perfiles tienen, y no bajo `runs:read`.
+  pulse_get_run_config: 'issues:read',
 
   pulse_next_task: 'issues:write',
   pulse_claim_issue: 'issues:write',
