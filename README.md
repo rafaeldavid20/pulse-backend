@@ -173,23 +173,82 @@ un veredicto contra las mismas piezas que usa un dev:
   `devSelfCheck` y `Project.definitionOfDone` con datos reales; hasta
   entonces `pulse_get_review_context` los devuelve vacíos.
 
-## Scopes del MCP (D11)
+## Scopes del MCP (D11, D22)
 
 `functions/src/mcp/scopes.ts` mapea cada tool MCP a un scope requerido
 (`TOOL_SCOPES`) y define los dos perfiles que `agents.connectRepo` asigna
 según `agent.role`: **dev** (`issues:read`, `issues:write`, `projects:write`,
-`comments:write`, `reviews:read`) y **qa** (`issues:read`, `comments:write`,
-`reviews:read`, `reviews:write` — sin `issues:write` ni `projects:write`, así
-que no puede crear/borrar issues ni cambiar su status o asignación).
+`comments:write`, `comments:read`, `reviews:read`, `runs:write`,
+`runs:read`) y **qa** (`issues:read`, `comments:write`, `comments:read`,
+`reviews:read`, `reviews:write`, `runs:write`, `runs:read` — sin
+`issues:write` ni `projects:write`, así que no puede crear/borrar issues ni
+cambiar su status o asignación).
 
 `buildMcpTransport` (`mcp/server.ts`) envuelve `server.tool`/`registerTool`
 antes de registrar ninguna tool: si el `principal` no tiene el scope que
-`TOOL_SCOPES` exige, devuelve un `CallToolResult` con `isError: true` y el
-handler real de la tool ni se ejecuta. Es un único punto de enforcement — las
-tools en `mcp/tools/*.ts` no saben que los scopes existen. Una tool sin
-entrada en `TOOL_SCOPES` (como `pulse_whoami`) no requiere ningún scope.
+`TOOL_SCOPES` exige, devuelve un `CallToolResult` con `isError: true` (mensaje
+`scope '<scope>' requerido`) y el handler real de la tool ni se ejecuta. Es un
+único punto de enforcement — las tools en `mcp/tools/*.ts` no saben que los
+scopes existen. Una tool sin entrada en `TOOL_SCOPES` (como `pulse_whoami`) no
+requiere ningún scope. `pulse_whoami` además devuelve `tools`: los nombres de
+todas las tools que los scopes de la key actual habilitan, para que un agente
+sepa con qué cuenta antes de intentar (`ALL_TOOL_NAMES` en `scopes.ts`).
 
 Las keys existentes creadas antes de esta historia (sin `reviews:*` en su
 array de `scopes`) siguen funcionando igual que antes para todo lo que ya
 podían hacer. Los tokens OAuth (`claude.ai`, Fase 7) no cambian: mantienen
 `DEFAULT_OAUTH_SCOPES` tal cual estaba.
+
+`comments:read` y `runs:read` (D22/TES-218) son scopes nuevos: una key emitida
+antes de este cambio no los tiene y `pulse_list_comments`/`pulse_list_runs` le
+van a devolver el error de scope faltante hasta que se migre. Correr
+(dry-run por defecto, `--apply` para escribir):
+
+```bash
+node functions/scripts/migrate-api-key-scopes.mjs [--apply]
+```
+
+Una key con `agentId` se reemplaza por el perfil canónico de su rol
+(`DEV_SCOPES`/`QA_SCOPES`); una key personal (sin `agentId`, usada por un
+humano operando el backlog por MCP) solo recibe los dos scopes de lectura
+nuevos, sin tocar el resto de su `scopes`.
+
+## Superficie de lectura del MCP (D22)
+
+`mcp/tools/read.ts` orquesta tres archivos por dominio — se partió cuando
+`read.ts` solo (todas las tools de lectura juntas) hubiera superado las ~400
+líneas que disparan el TS2589 de `zod ^4` en un `inputSchema` no vacío (ver
+comentario de cabecera en cada archivo; el fix es el overload `server.tool()`
+en vez de `registerTool()`, no cambia con el split):
+
+- **`read-issues.ts`**: `pulse_list_issues`, `pulse_get_epic`,
+  `pulse_get_issue`, `pulse_list_comments`, `pulse_list_activity`,
+  `pulse_get_review_context`.
+- **`read-workspace.ts`**: `pulse_list_teams`, `pulse_list_projects`,
+  `pulse_get_project`, `pulse_list_labels`, `pulse_list_members`,
+  `pulse_list_agents`, `pulse_list_cycles`.
+- **`read-runs.ts`**: `pulse_list_runs`.
+
+`pulse_list_comments` es la tool que cierra el loop de ambigüedad de
+`pulse_flag_ambiguity`: antes, leer lo que alguien respondió en los
+comentarios de un issue etiquetado `ambigua` exigía `pulse_get_review_context`
+(scope `reviews:read`, pensado para QA, y que además arrastra el diff de cada
+PR — caro y semánticamente equivocado para "¿qué se dijo acá?"). Resuelve
+`authorId` a nombre vía `pulse_list_members` (`findMembersByUserIds` en
+`read.ts`, que busca `members/{workspaceId}_{id}` — el mismo id que
+`assigneeId`/`creatorId`/`updatedBy` de un issue, sea un uid humano o un
+`agentId`, gracias al member espejo que `agents.create`/
+`migrate-agent-roles.mjs` siembran para cada agente).
+
+`pulse_list_activity` lee la colección `activity` (`Activity` en
+`domain.generated.ts`), que hoy ningún código del backend escribe todavía —
+la tool está para cuando exista ese productor, y mientras tanto devuelve
+siempre una lista vacía en vez de faltar.
+
+Ninguna de las tools nuevas necesitó un índice compuesto nuevo en
+`firestore.indexes.json`: `comments` ya tenía uno por
+`workspaceId + issueId + createdAt` (`pulse_list_comments` lo reusa con
+`orderBy`/rango en `createdAt`); `agent_runs` y `cycles` se filtran por un
+solo campo de igualdad (`workspaceId`, y opcionalmente `issueId`/`teamId` en
+memoria) y se ordenan en memoria, igual que ya hacía `pulse_list_issues` con
+`status`/`type`/`labelIds`/`search`.

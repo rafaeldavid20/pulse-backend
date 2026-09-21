@@ -154,6 +154,8 @@ export function registerWriteTools(server: McpServer, principal: McpPrincipal) {
       projectId: z.string().optional(),
       estimate: z.number().optional(),
       dueDate: z.string().optional(),
+      cycleId: z.string().nullable().optional()
+        .describe('Cycle to move this issue into — from pulse_list_cycles. Pass null to send it back to the backlog (no cycle).'),
       repoFullName: z.string().optional()
         .describe('"owner/repo". Pass an empty string to clear it and go back to inheriting from the epic.'),
       assigneeId: z.string().nullable().optional()

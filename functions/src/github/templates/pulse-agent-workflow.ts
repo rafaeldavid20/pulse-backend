@@ -9,7 +9,7 @@
  * que permite después detectar repos que quedaron con una versión vieja y
  * ofrecer actualizarlos, sin tener que diffear el YAML entero.
  */
-export const WORKFLOW_VERSION = 8;
+export const WORKFLOW_VERSION = 9;
 
 export const WORKFLOW_PATH = '.github/workflows/pulse-agent.yml';
 
@@ -103,8 +103,9 @@ jobs:
             (identifier \${{ github.event.client_payload.issueIdentifier }}).
 
             Reclamalo con pulse_claim_issue (ya está en 'todo' y asignado a vos, no hace falta
-            pulse_next_task), leé su descripción y comentarios completos, creá una rama con
-            pulse_create_branch, implementá los cambios descritos y commiteá y pusheá.
+            pulse_next_task), leé su descripción completa y sus comentarios con
+            pulse_list_comments, creá una rama con pulse_create_branch, implementá los
+            cambios descritos y commiteá y pusheá.
 
             Antes de abrir el PR, autoverificá tu trabajo (D13): llamá a
             pulse_get_review_context con el identifier para tener los criterios de aceptación
@@ -141,10 +142,10 @@ jobs:
             etiqueta ambigua y lo libera, para que quien maneja el issue decida si completa
             la descripción o te autoriza a decidir.
 
-            Si el issue ya tiene la etiqueta ambigua y los comentarios responden esas
-            preguntas o te autorizan a decidir, seguí adelante: llamá a pulse_flag_ambiguity
-            con clear en true para sacar la etiqueta, y dejá escritas en el PR las
-            decisiones que tomaste.
+            Si el issue ya tiene la etiqueta ambigua, releé sus comentarios con
+            pulse_list_comments: si responden esas preguntas o te autorizan a decidir, seguí
+            adelante llamando a pulse_flag_ambiguity con clear en true para sacar la
+            etiqueta, y dejá escritas en el PR las decisiones que tomaste.
 
             Esta sesión solo puede pushear a ESTE repo. Si el issue también necesita cambios en
             otro repo, NO crees ramas ni PRs allá: implementá lo de este repo y, antes de
