@@ -97,6 +97,26 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
     const isNewPush = input.event === 'pull_request' && input.prAction === 'synchronize';
     const reviewGoesStale = isNewPush && issue.review?.state === 'approved';
 
+    // El veredicto vigente revisó un PR que ya no es de este issue (TES-242).
+    // Pasa cuando una rama ajena se emparejó por convención de nombre, QA la
+    // revisó, y después llegó el PR verdadero: `gitRefs` apunta a uno y
+    // `review.prs` a otro, sin que nada lo señale. Ese veredicto no puede
+    // seguir contando —sus findings son sobre otro código— ni puede haber
+    // consumido un intento: se marca `stale` y el contador vuelve a cero para
+    // que la revisión real empiece limpia.
+    const reviewedPrNumbers: number[] = (issue.review?.prs || [])
+      .map((p: any) => p?.prNumber)
+      .filter((n: unknown): n is number => typeof n === 'number');
+    const livePrNumbers = new Set(
+      nextRefs.map((r: any) => r?.prNumber).filter((n: unknown): n is number => typeof n === 'number')
+    );
+    const reviewIsOrphaned =
+      !!issue.review?.state &&
+      issue.review.state !== 'stale' &&
+      reviewedPrNumbers.length > 0 &&
+      livePrNumbers.size > 0 &&
+      reviewedPrNumbers.every((n) => !livePrNumbers.has(n));
+
     // Con varias ramas, el estado sale del conjunto y no de este evento suelto:
     // `in_review` cuando TODOS los PRs están abiertos, `done` cuando todos están
     // mergeados. Un issue cuyo cambio de backend se mergeó pero cuyo cambio de
@@ -183,8 +203,11 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
       statusChanged = true;
     }
 
-    if (reviewGoesStale) {
+    if (reviewGoesStale || reviewIsOrphaned) {
       updates['review.state'] = 'stale';
+    }
+    if (reviewIsOrphaned) {
+      updates['review.attempt'] = 0;
     }
 
     if (blockedByPendingWork) {
@@ -226,6 +249,15 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
         workspaceId,
         issueDoc.id,
         `GitHub: ${this.describeEvent(input)} → estado actualizado a \`${desiredStatus}\`.`
+      );
+    } else if (reviewIsOrphaned) {
+      await this.postComment(
+        db,
+        workspaceId,
+        issueDoc.id,
+        `GitHub: ${this.describeEvent(input)}. La revisión anterior había mirado el PR ` +
+          `#${reviewedPrNumbers.join(', #')}, que ya no es de este issue: queda marcada como \`stale\` y no cuenta ` +
+          'como intento. La revisión se rehace sobre el PR vigente.'
       );
     } else if (reviewGoesStale) {
       await this.postComment(
@@ -276,6 +308,19 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
     });
   }
 
+  /**
+   * Rama que el issue ya tiene registrada en este repo, si tiene alguna:
+   * `gitRefs` primero (multi-repo, K9/TES-202) y `git` como respaldo para los
+   * issues anteriores a ese campo.
+   */
+  private registeredBranchForIssue(issue: FirebaseFirestore.DocumentData, repoFullName: string): string | undefined {
+    const refs: any[] = Array.isArray(issue.gitRefs) ? issue.gitRefs : [];
+    const ref = refs.find((r) => r?.repoFullName === repoFullName && r?.branch);
+    if (ref) return ref.branch as string;
+    if (issue.git?.repoFullName === repoFullName && issue.git?.branch) return issue.git.branch as string;
+    return undefined;
+  }
+
   private async resolveIssue(workspaceId: string, input: WebhookSyncInput) {
     const db = getFirestore();
 
@@ -290,10 +335,29 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
     if (!byGitFields.empty) return byGitFields.docs[0];
 
     // Level 2: branch naming convention (pul/eng-142-slug).
+    //
+    // La convención empareja por NOMBRE, así que cualquier rama que se llame
+    // `pul/tes-241-...` queda atada a TES-241 — incluida una que no es el
+    // trabajo del issue (TES-242: una rama que preparaba el terreno secuestró
+    // el issue, lo mandó a `in_review` y disparó QA contra el diff
+    // equivocado). Con QA en `enforce` eso despacha re-trabajo pagado sobre
+    // findings que no corresponden.
+    //
+    // Regla: la convención sólo decide cuando el issue TODAVÍA no tiene una
+    // rama registrada en este repo. Si ya tiene una —la creó `createBranch`, o
+    // la registró un push anterior— esa es la rama del issue, y otra con
+    // nombre parecido no la reemplaza por llamarse igual.
     const fromBranch = identifierFromBranch(input.branch);
     if (fromBranch) {
       const doc = await findIssue(workspaceId, fromBranch);
-      if (doc) return doc;
+      if (doc) {
+        const registered = this.registeredBranchForIssue(doc.data()!, input.repoFullName);
+        if (!registered || registered === input.branch) return doc;
+        console.log(
+          `[SyncFromWebhook] la rama '${input.branch}' matchea por convención con '${fromBranch}', ` +
+            `pero ese issue ya tiene registrada la rama '${registered}' en '${input.repoFullName}': no se empareja.`
+        );
+      }
     }
 
     // Level 3: "Closes ENG-142" in the PR title/body.
