@@ -35,3 +35,18 @@ export const githubAppClientId = defineSecret('GITHUB_APP_CLIENT_ID');
 export const githubAppClientSecret = defineSecret('GITHUB_APP_CLIENT_SECRET');
 export const githubWebhookSecret = defineSecret('GITHUB_WEBHOOK_SECRET');
 export const githubAppSlug = defineSecret('GITHUB_APP_SLUG');
+
+// Salesforce Connected App (épica O). Un único Connected App "Pulse" creado
+// en una org propia, cuyo consumer key cualquier org de cliente puede
+// autorizar — el mismo mecanismo que usa el CLI de Salesforce. No hay un
+// Connected App por cliente.
+export const salesforceClientId = defineSecret('SALESFORCE_CLIENT_ID');
+export const salesforceClientSecret = defineSecret('SALESFORCE_CLIENT_SECRET');
+/**
+ * Clave de cifrado de los refresh tokens de Salesforce: 32 bytes en base64.
+ * A diferencia de `mcpKeyPepper`, que se usa para *hashear* (one-way), acá
+ * hace falta recuperar el token para refrescar el access token, así que es
+ * cifrado simétrico reversible (AES-256-GCM) y la clave tiene que ser suya:
+ * reusar el pepper mezclaría un secreto de verificación con uno de descifrado.
+ */
+export const salesforceTokenKey = defineSecret('SALESFORCE_TOKEN_KEY');

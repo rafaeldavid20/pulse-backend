@@ -124,6 +124,23 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Entornos de ejecución (épica O): una org de Salesforce por doc, con el
+    // refresh token cifrado y el access token cacheado en el campo `auth`.
+    // Admin SDK only por la misma razón que github_installations: el frontend
+    // recibe una vista saneada por la acción environments.list, que arma la
+    // respuesta por lista blanca y nunca devuelve `auth`.
+    match /environments/{environmentId} {
+      allow read, write: if false;
+    }
+
+    // `state` + `code_verifier` de PKCE de una autorización de Salesforce en
+    // curso. Admin SDK only: quien lea el verifier puede canjear el code
+    // interceptado, que es exactamente lo que PKCE evita. Se consume de una
+    // sola vez en salesforceCallback y tiene `expiresAt` para una política TTL.
+    match /salesforce_oauth_states/{stateId} {
+      allow read, write: if false;
+    }
+
     // Webhook delivery idempotency ledger (X-GitHub-Delivery -> processed).
     // Admin SDK only — githubWebhook is the only writer, nothing reads it.
     match /webhook_events/{deliveryId} {
