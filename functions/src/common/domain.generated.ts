@@ -5,32 +5,7 @@
 // dominio de Pulse. Para cambiar algo de acá, editá ese archivo y corré
 // `npm run sync:types` desde `pulse-app`.
 //
-// EXCEPCIÓN TEMPORAL (TES-146, TES-148, TES-150, TES-153, TES-205, TES-206): `AcceptanceCriterion`,
-// `Issue.acceptanceCriteria`, la entrada en `ISSUE_WRITABLE_FIELDS`,
-// `IssueReview`/`Issue.review` y sus tipos auxiliares, y ahora
-// `DevCriterionCheck`/`Issue.devSelfCheck`, `IssueReview.previousAssigneeId`,
-// `ReviewFinding.resolutionNote`, `IssueReviewAttempt.overriddenBy`/
-// `overriddenAt`/`overrideReason`, `IssueReview.dispatchedTo`/`dispatchedAt`
-// (ya escritos por `qa-dispatch.ts`/D4 pero nunca declarados acá), y ahora
-// `Workspace.agentsPaused`/`dailyDispatchLimit`/`dailyCostCapUsd`/
-// `issueCostCapUsd`/`maxRunsPerIssue` (D8/TES-153), y ahora
-// `IssueReview.reworkDispatchedAt`/`reworkDispatchedForAttempt` (D9/TES-205), y
-// ahora `IssueGitRef.headSha`/`headShaAt` (D10/TES-206), y ahora
-// `AgentRepoConnection`/`Agent.connectedRepos` (D12/TES-208), y ahora
-// `Project.definitionOfDone`/`DefinitionOfDoneCriterion`, la entrada en
-// `PROJECT_WRITABLE_FIELDS` y `ReviewFinding.dodId` (D14/TES-210), y ahora
-// `AgentRun` (para `agent_runs/{runId}`, Admin SDK only) e
-// `Issue.agentStats`/`IssueAgentStats` (D15/TES-211), y ahora
-// `Agent.qaMode` y `QaCalibrationRecord` (para
-// `qa_calibration_records/{id}`, Admin SDK only) (D17/TES-213),
-// se agregaron acá a mano
-// porque estas
-// sesiones no tienen push a `pulse-app` (traspasos registrados en el issue,
-// TES-202). El próximo `npm run sync:types` desde `pulse-app`, una vez que ese
-// repo tenga los mismos cambios en `domain.ts`, va a pisar esta copia y
-// actualizar el hash.
-//
-// SOURCE_HASH: 9de3931b0784a7d9
+// SOURCE_HASH: 3accc8ad51e018ed
 // ============================================================
 
 /**
@@ -101,6 +76,22 @@ export type AgentIssueState = 'idle' | 'claimed' | 'working' | 'pr_open' | 'bloc
  * `enforce` es una decisión explícita en Settings (`agents.update`).
  */
 export type AgentQaMode = 'shadow' | 'enforce';
+
+/** Camino de dispatch que originó el run (D15). */
+export type AgentRunMode = 'task' | 'rework' | 'handoff' | 'review';
+
+/**
+ * Cómo terminó un run (D15). `failed`/`timeout` cubren los runs que no
+ * llegan a ningún cierre limpio — sin ellos el costo de esos runs quedaría
+ * fuera de cualquier total.
+ */
+export type AgentRunOutcome =
+  | 'pr_opened'
+  | 'verdict_submitted'
+  | 'released'
+  | 'ambiguous'
+  | 'failed'
+  | 'timeout';
 
 // ---------------------------------------------------------------------------
 // Entidades
@@ -181,12 +172,11 @@ export interface Project {
   color?: string;
   targetDate?: string;
   /**
-   * Reglas que valen para *todos* los issues del proyecto (D14), a diferencia
-   * de `Issue.acceptanceCriteria` que es por issue. El QA (D6) las verifica
-   * siempre, aunque el issue no las mencione — son el lugar para reglas que
-   * hoy solo viven en CLAUDE.md o en la memoria de quien revisa (ej. "no
-   * editar `domain.generated.ts` a mano"). Ausente o vacío: sin DoD, el
-   * proyecto no tiene reglas propias más allá de la rúbrica de cada issue.
+   * Reglas que valen para todos los issues del proyecto (D14), a diferencia
+   * de `Issue.acceptanceCriteria` que es por issue. El QA las verifica
+   * siempre, además de la rúbrica del issue puntual — un finding que viola
+   * una de estas referencia `ReviewFinding.dodId` en vez de `criterionId`.
+   * Ausente o vacío: sin reglas de proyecto además de las del issue.
    */
   definitionOfDone?: DefinitionOfDoneCriterion[];
   createdAt: string;
@@ -195,20 +185,16 @@ export interface Project {
 
 /**
  * Un ítem de la Definition of Done de un proyecto (D14). A diferencia de
- * `AcceptanceCriterion`, no tiene `source`/`accepted`: son reglas que un
- * humano escribe a mano en el modal del proyecto, nunca generadas.
+ * `AcceptanceCriterion`, no tiene `source`/`accepted`: no hay propuesta de IA
+ * ni aceptación manual acá, todos los ítems valen apenas se guardan. Tampoco
+ * admite severidad `minor`/`nit` ni `unverifiable` como resultado: una regla
+ * de proyecto que no vale la pena bloquear un PR no debería estar acá, sino
+ * en `AcceptanceCriterion` del issue puntual o en ningún lado.
  */
 export interface DefinitionOfDoneCriterion {
-  /** nanoid estable, no un índice: los findings del QA (`ReviewFinding.dodId`) lo referencian. */
+  /** nanoid estable, no un índice: los findings lo referencian por `dodId`. */
   id: string;
   text: string;
-  /**
-   * Subconjunto de `ReviewFinding.severity`: excluye `minor`/`nit` porque un
-   * incumplimiento de DoD nunca es tan menor — `reviews.submit` (D5) ya trata
-   * cualquier finding `open` con severidad `blocker` o `major` como
-   * bloqueante (`changes_requested`), así que ambas tumban el PR por igual;
-   * la distinción es solo de prioridad para quien lo corrige.
-   */
   severity: 'blocker' | 'major';
 }
 
@@ -277,6 +263,12 @@ export interface Member {
    * Humanos / Dev / QA sin leer `agents`, que es Admin-SDK-only.
    */
   agentRole?: AgentRole;
+  /**
+   * Tipos de notificación que este miembro apagó para todo el workspace
+   * (F4, ver `notifications.updatePreferences`) — vacío/ausente por default
+   * (todo prendido). Distinto de silenciar un issue puntual (F1/F3).
+   */
+  mutedNotificationTypes?: NotificationType[];
 }
 
 /**
@@ -324,39 +316,6 @@ export interface Agent {
 }
 
 /**
- * Un run de agente despachado (D15/TES-211): dev (task/rework/handoff) o QA
- * (review). Vive en `agent_runs/{runId}`, Admin SDK only — ni la app ni el
- * modelo lo leen directamente, solo lo agregan `checkIssueRunBudget`/
- * `checkWorkspaceDispatchBudget` (D8) y `workspaces.getAgentBudget`.
- *
- * El trigger que despacha (`agentDispatchTrigger`/`qaDispatchTrigger`) crea el
- * registro con `outcome` ausente; el paso de reporte del workflow (que ya lee
- * `total_cost_usd`/`num_turns` del mensaje `result` del execution file) lo
- * cierra vía `runs.complete`. Un run que nunca se cierra (el job ni llegó a
- * correr el paso de reporte) queda sin `endedAt`/`costUsd` para siempre — se
- * sigue contando contra `maxRunsPerIssue` pero no contra los topes en USD.
- */
-export interface AgentRun {
-  id: string;
-  issueId: string;
-  workspaceId: string;
-  agentId: string;
-  role: 'dev' | 'qa';
-  mode: 'task' | 'rework' | 'handoff' | 'review';
-  repo: string;
-  runUrl?: string;
-  startedAt: string;
-  endedAt?: string;
-  turns?: number;
-  costUsd?: number;
-  outcome?: 'pr_opened' | 'verdict_submitted' | 'released' | 'ambiguous' | 'failed' | 'timeout';
-  /** Solo para `mode: 'review'`/`'rework'`: el intento de revisión que este run atendió. */
-  reviewAttempt?: number;
-  /** `YYYY-MM-DD` en UTC del `startedAt`, para las queries por día de `checkWorkspaceDispatchBudget`. */
-  date: string;
-}
-
-/**
  * Un cierre humano (merge o close sin merge) del PR de un issue con veredicto
  * de QA, contrastado contra ese veredicto (D17/TES-213). Vive en
  * `qa_calibration_records/{issueId}_{attempt}`, Admin SDK only — el id
@@ -388,6 +347,49 @@ export interface IssueAgentState {
   claimedAt?: string;
   state?: AgentIssueState;
   blockedReason?: string;
+}
+
+/**
+ * Un dispatch de agente (D15). Colección `agent_runs/{runId}`, Admin-SDK-only
+ * (igual que `agent_dispatch_counters`): el trigger de dispatch crea el
+ * registro con `outcome` ausente, y el paso de reporte del workflow lo
+ * completa con lo que trae el mensaje `result` del execution file
+ * (`total_cost_usd`, `num_turns`) al terminar — incluidos los runs que
+ * fallan o agotan el tiempo, para que el costo de un issue no quede
+ * subestimado.
+ */
+export interface AgentRun {
+  id: string;
+  issueId: string;
+  workspaceId: string;
+  agentId: string;
+  role: AgentRole;
+  mode: AgentRunMode;
+  repo: string;
+  runUrl?: string;
+  startedAt: string;
+  endedAt?: string;
+  turns?: number;
+  costUsd?: number;
+  outcome?: AgentRunOutcome;
+  /** Solo para `role: 'qa'` — a qué intento de `IssueReview` corresponde este run. */
+  reviewAttempt?: number;
+  /**
+   * Fecha (`YYYY-MM-DD`, UTC) de `startedAt`, denormalizada. Permite sumar
+   * `costUsd`/contar runs del día con un `where('date','==',x)` en vez de un
+   * rango sobre `startedAt`, igual que `agent_dispatch_counters` (D8).
+   */
+  date: string;
+}
+
+/**
+ * Costo acumulado de un issue (D15), denormalizado en `Issue.agentStats` para
+ * no tener que sumar sus `agent_runs` en cada lectura.
+ */
+export interface IssueAgentStats {
+  runs: number;
+  costUsd: number;
+  lastRunAt: string;
 }
 
 export interface IssueGitState {
@@ -428,9 +430,9 @@ export interface IssueGitRef {
   prUrl?: string;
   prState?: 'open' | 'draft' | 'merged' | 'closed';
   lastSyncedAt?: string;
-  /** SHA del último commit visto en el PR (D10/TES-206), para el guard anti-ping-pong de QA (D4). */
+  /** SHA de `pull_request.head` en el último evento de webhook procesado. */
   headSha?: string;
-  /** Cuándo se vio ese `headSha` por última vez. */
+  /** Cuándo se registró `headSha` por última vez. */
   headShaAt?: string;
 }
 
@@ -459,6 +461,66 @@ export interface PendingRepoWork {
   requestedAt: string;
   /** Lo marca `agentDispatchTrigger` al despachar el run del repo destino. */
   dispatchedAt?: string;
+}
+
+/**
+ * Por qué un run no pudo terminar algo que el issue pedía (TES-219). No es
+ * texto libre a propósito: el motivo decide quién tiene que retomarlo — una
+ * decisión de producto va a una persona, una operación de producción a quien
+ * tenga las credenciales, y nada de eso lo puede resolver otro run.
+ */
+export type PendingWorkReason =
+  | 'needs_prod_credentials'
+  | 'product_decision'
+  | 'out_of_scope'
+  | 'blocked'
+  /** Solo lo pone QA: el criterio no se puede verificar desde un run, hay que hacerlo a mano. */
+  | 'needs_manual_verification';
+
+/**
+ * Trabajo que quedó sin hacer y que **ningún run puede retomar** (TES-219).
+ *
+ * Es el caso hermano de `PendingRepoWork`, y existe por el mismo motivo: antes
+ * de esto un agente que no podía terminar algo lo escribía en el cuerpo del PR,
+ * el merge cerraba el issue y el aviso se perdía (ver TES-218, cuya migración de
+ * keys quedó sin correr exactamente así). La diferencia con `PendingRepoWork` es
+ * el desenlace: aquello se despacha a otro repo, esto **crea un issue de
+ * seguimiento** que hereda el pendiente, porque no hay run que lo pueda tomar.
+ *
+ * `followUpIssueId` lo completa el servidor al crear ese hijo. Una entrada sin
+ * él es un pendiente declarado que no llegó a materializarse en un issue: eso
+ * es lo que bloquea el cierre del padre.
+ */
+export interface PendingWork {
+  /** nanoid estable: el gate de cierre y el follow-up lo referencian. */
+  id: string;
+  /** Qué falta hacer, en una línea — es el título del issue de seguimiento. */
+  summary: string;
+  reason: PendingWorkReason;
+  /** Contexto para quien lo retome: qué se intentó, qué quedó escrito, qué falta. */
+  context?: string;
+  /** `AcceptanceCriterion.id` del issue que queda sin cumplir, si aplica. */
+  criterionId?: string;
+  /** Issue de seguimiento creado por el servidor. Ausente: no se pudo crear. */
+  followUpIssueId?: string;
+  /** ej. "TES-220" — denormalizado para no tener que leer el hijo al mostrarlo. */
+  followUpIdentifier?: string;
+  /** `'dev'`: lo declaró el agente que hizo el trabajo. `'qa'`: lo dedujo la revisión de un criterio `unverifiable`. */
+  source: 'dev' | 'qa';
+  reportedBy: string;
+  reportedAt: string;
+}
+
+/**
+ * Marca en el issue de seguimiento de dónde salió (TES-219). El vínculo fuerte
+ * es `parentId` (el follow-up cuelga del issue original); esto guarda lo que la
+ * jerarquía sola no dice: qué criterio quedó colgando y por qué motivo.
+ */
+export interface FollowUpOrigin {
+  issueId: string;
+  identifier: string;
+  reason: PendingWorkReason;
+  criterionId?: string;
 }
 
 export interface Issue {
@@ -490,6 +552,12 @@ export interface Issue {
   subIssueCount?: number;
   subIssueDoneCount?: number;
   dueDate?: string;
+  /**
+   * Fecha de inicio, sobre todo para épicas: junto con `dueDate` define el
+   * rango que la vista Timeline (E6) dibuja como barra. Opcional y ajeno al
+   * status — una épica puede tener fechas planeadas sin haber arrancado.
+   */
+  startDate?: string;
   estimate?: number;
   /** Ciclo al que pertenece. Ausente significa backlog/sin planear. */
   cycleId?: string;
@@ -515,6 +583,14 @@ export interface Issue {
   gitRefs?: IssueGitRef[];
   /** Traspasos a otros repos todavía sin PR. Mientras haya alguno el issue no pasa a `in_review`. */
   pendingRepoWork?: PendingRepoWork[];
+  /**
+   * Trabajo declarado pendiente que ningún run puede retomar (TES-219). No
+   * bloquea el cierre por sí mismo: lo que lo bloquea es una entrada sin
+   * `followUpIssueId`, o un criterio `not_met` sin entrada que lo cubra.
+   */
+  pendingWork?: PendingWork[];
+  /** Solo en un issue creado como seguimiento de otro (TES-219). */
+  followUpOf?: FollowUpOrigin;
   /** Rúbrica del issue (D1). Ausente o vacío: sin criterios, el QA (D6) no tiene contra qué verificar. */
   acceptanceCriteria?: AcceptanceCriterion[];
   /**
@@ -531,24 +607,10 @@ export interface Issue {
    * creerla ciegamente.
    */
   devSelfCheck?: DevCriterionCheck[];
-  /**
-   * Denormalizado desde `agent_runs` (D15): evita sumar toda la colección
-   * cada vez que alguien quiere saber cuánto costó este issue. Lo actualiza
-   * `runs.complete` al cerrar cada run — `undefined` hasta el primer run
-   * completado.
-   */
+  /** Runs y costo acumulados del issue (D15), denormalizado desde `agent_runs`. Ausente: todavía no corrió ningún agente. */
   agentStats?: IssueAgentStats;
   createdAt: string;
   updatedAt: string;
-}
-
-/** Ver `Issue.agentStats` (D15). */
-export interface IssueAgentStats {
-  /** Runs completados (dev + QA + traspasos + re-trabajos), no despachados-pero-en-curso. */
-  runs: number;
-  /** Suma de `AgentRun.costUsd` de los runs completados. */
-  costUsd: number;
-  lastRunAt: string;
 }
 
 /**
@@ -630,11 +692,7 @@ export interface ReviewFinding {
   severity: FindingSeverity;
   status: FindingStatus;
   criterionId?: string;
-  /**
-   * Referencia a un `DefinitionOfDoneCriterion.id` del proyecto (D14),
-   * excluyente con `criterionId`: un finding es sobre la rúbrica del issue o
-   * sobre la DoD del proyecto, nunca ambas a la vez.
-   */
+  /** Referencia a un `DefinitionOfDoneCriterion.id` del proyecto (D14), en vez de `criterionId`, cuando el finding viola una regla de proyecto y no un criterio del issue. */
   dodId?: string;
   repoFullName?: string;
   file?: string;
@@ -717,14 +775,6 @@ export interface IssueReview extends IssueReviewAttempt {
   dispatchedTo?: string;
   dispatchedAt?: string;
   /**
-   * Marca de dispatch del re-trabajo del dev (D9), separada de
-   * `dispatchedTo`/`dispatchedAt` de arriba (esos son de QA): sin cooldown de
-   * tiempo, la guarda contra un doble dispatch para el mismo rechazo es
-   * comparar `reworkDispatchedForAttempt` contra `attempt`.
-   */
-  reworkDispatchedAt?: string;
-  reworkDispatchedForAttempt?: number;
-  /**
    * Intentos ya cerrados, más viejo primero. Sin esto no hay métricas de D7
    * (intentos promedio, tasa de aprobación al primer intento) — solo
    * quedaría el último intento y se perdería el resto.
@@ -736,6 +786,14 @@ export interface IssueReview extends IssueReviewAttempt {
    * quién devolvérselo sin buscarlo a mano en el historial.
    */
   previousAssigneeId?: string;
+  /**
+   * Cuándo se despachó el run de re-trabajo (D9) y para qué `attempt` fue —
+   * la guarda contra doble despacho compara `reworkDispatchedForAttempt`
+   * contra `attempt` en vez de un cooldown de tiempo, porque lo que puede
+   * repetirse es el mismo intento, no el paso del reloj.
+   */
+  reworkDispatchedAt?: string;
+  reworkDispatchedForAttempt?: number;
 }
 
 export interface Comment {
@@ -766,6 +824,46 @@ export interface Activity {
     toValue?: string;
   };
   createdAt: string;
+}
+
+/**
+ * `due_soon` queda en el enum desde F1 pero su generación es de F5
+ * (recordatorios de vencimiento) — todavía no hay nada que la emita.
+ */
+export type NotificationType =
+  | 'assigned'
+  | 'mentioned'
+  | 'comment'
+  | 'status_change'
+  | 'review_result'
+  | 'due_soon';
+
+/** Presets rápidos de snooze (F4, ver `notifications.snooze`). `'clear'` saca el snooze. */
+export type SnoozePreset = '1h' | 'tomorrow' | 'next_week' | 'clear';
+
+/**
+ * Generada server-side (Admin SDK) por triggers sobre `issues` y por
+ * `comments.create` — nunca escrita por el cliente. `readAt` es la marca de
+ * cuándo se leyó; `read` es la que filtra el inbox y el badge de contador.
+ */
+export interface Notification {
+  id: string;
+  workspaceId: string;
+  userId: string;
+  type: NotificationType;
+  issueId: string;
+  actorId: string;
+  title: string;
+  body: string;
+  read: boolean;
+  readAt?: string;
+  createdAt: string;
+  /**
+   * Snooze de esta notificación puntual (F4, ver `notifications.snooze`).
+   * Mientras sea futuro, se oculta del inbox — filtrado client-side en
+   * `subscribeUserNotifications`/`subscribeAllUserNotifications`, sin cron.
+   */
+  snoozedUntil?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -917,6 +1015,7 @@ export const ISSUE_WRITABLE_FIELDS = [
   'labelIds',
   'parentId',
   'dueDate',
+  'startDate',
   'estimate',
   'defaultAssigneeId',
   'cycleId',

@@ -9,7 +9,7 @@
  * que permite después detectar repos que quedaron con una versión vieja y
  * ofrecer actualizarlos, sin tener que diffear el YAML entero.
  */
-export const WORKFLOW_VERSION = 9;
+export const WORKFLOW_VERSION = 10;
 
 export const WORKFLOW_PATH = '.github/workflows/pulse-agent.yml';
 
@@ -114,10 +114,19 @@ jobs:
             existen. Por cada criterio y cada ítem de la Definition of Done, declará el
             resultado con pulse_report_criteria (criterionId, result: "met" / "not_met" /
             "unverifiable", evidence: el archivo, comando corrido o salida que lo respalda — no
-            alcanza con "lo revisé"). Si declarás algún criterio "not_met", NO abras el PR:
-            comentá con pulse_comment_issue qué falta y liberá el issue con pulse_release_issue,
-            o si lo que falta es una decisión de producto o diseño, llamá a
-            pulse_flag_ambiguity en su lugar.
+            alcanza con "lo revisé").
+
+            Si declarás algún criterio "not_met", mirá por qué antes de decidir qué hacer:
+            - Si es algo que te falta hacer a vos, NO abras el PR: comentá con
+              pulse_comment_issue qué falta y liberá el issue con pulse_release_issue.
+            - Si es una decisión de producto o diseño, llamá a pulse_flag_ambiguity.
+            - Si es algo que NINGÚN run puede hacer —correr una migración contra producción,
+              tocar secretos, algo que se fue del alcance del issue—, registralo con
+              pulse_report_pending_work (summary, reason, criterionId del criterio que queda
+              colgando, y context con lo que dejaste hecho). Pulse crea el issue de seguimiento
+              y avisa a quien corresponda; recién ahí podés abrir el PR por el resto del
+              trabajo. Escribirlo solo en el cuerpo del PR NO sirve: el merge cierra el issue y
+              ese texto no lo vuelve a leer nadie.
 
             Si toda tu autoverificación dio "met" o "unverifiable", abrí el PR — su cuerpo tiene
             que incluir una tabla con cada criterio, tu resultado y la evidencia — y linkealo
@@ -155,7 +164,10 @@ jobs:
 
             \${{ github.event.client_payload.handoffRepo && format('Este run es la CONTINUACIÓN de un traspaso hacia {0}: el trabajo pendiente para este repo está en pendingRepoWork del issue (pulse_get_issue). Leé qué falta y qué ya se hizo, y hacé solo eso. El repo de origen ya tiene su rama y su PR: no los toques. Después de pulse_claim_issue seguí el flujo normal (rama, commit, push, PR, pulse_link_pr).', github.event.client_payload.handoffRepo) || '' }}
 
-            En tu mensaje final listá explícitamente lo que quedó sin hacer, si algo quedó.
+            En tu mensaje final listá explícitamente lo que quedó sin hacer, si algo quedó — y
+            si eso que quedó no lo puede hacer ningún run, además registralo con
+            pulse_report_pending_work: tu mensaje final y el cuerpo del PR no sobreviven al
+            merge, el issue de seguimiento sí.
 
             Si el repo no corresponde al trabajo descrito, no improvises: comentá el problema
             con pulse_comment_issue y terminá sin crear rama ni PR.

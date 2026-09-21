@@ -1,8 +1,7 @@
-import { nanoid } from 'nanoid';
 import { createNotification } from './notifications';
+import { NEEDS_HUMAN_LABEL, NEEDS_HUMAN_LABEL_COLOR, ensureLabel } from './labels';
 
-export const NEEDS_HUMAN_LABEL = 'needs-human';
-const NEEDS_HUMAN_LABEL_COLOR = '#E5484D';
+export { NEEDS_HUMAN_LABEL };
 
 /**
  * `Project.leadId` del proyecto del issue, si tiene uno asignado. Separado de
@@ -96,24 +95,14 @@ export async function buildNeedsHumanEscalation(
 /**
  * Idempotente: reusa la label `needs-human` del workspace si ya existe (la
  * crea `reviews.submit` la primera vez), en vez de duplicarla por ruta de
- * escalamiento.
+ * escalamiento. La mecánica vive en `ensureLabel` (`utils/labels.ts`), que es
+ * la misma que usa la etiqueta `trabajo-manual` de TES-219; acá queda el
+ * nombre y el color propios de esta etiqueta.
  */
 export async function ensureNeedsHumanLabel(
   db: FirebaseFirestore.Firestore,
   workspaceId: string,
   teamId: string
 ): Promise<string> {
-  const found = await db
-    .collection('labels')
-    .where('workspaceId', '==', workspaceId)
-    .where('name', '==', NEEDS_HUMAN_LABEL)
-    .limit(1)
-    .get();
-  if (!found.empty) return found.docs[0].id;
-  const labelId = `lbl-${nanoid(8)}`;
-  await db
-    .collection('labels')
-    .doc(labelId)
-    .set({ id: labelId, workspaceId, teamId, name: NEEDS_HUMAN_LABEL, color: NEEDS_HUMAN_LABEL_COLOR });
-  return labelId;
+  return ensureLabel(db, workspaceId, teamId, NEEDS_HUMAN_LABEL, NEEDS_HUMAN_LABEL_COLOR);
 }

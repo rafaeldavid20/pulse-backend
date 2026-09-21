@@ -8,6 +8,7 @@ import { ClaimNextIssueAction } from '../../actions/issues/claim-next-issue';
 import { ClaimIssueAction } from '../../actions/issues/claim-issue';
 import { ReleaseIssueAction } from '../../actions/issues/release-issue';
 import { RequestRepoWorkAction } from '../../actions/issues/request-repo-work';
+import { ReportPendingWorkAction } from '../../actions/issues/report-pending-work';
 import { UpdateIssueAction } from '../../actions/issues/update-issue';
 import { CreateIssueAction } from '../../actions/issues/create-issue';
 import { ReparentIssueAction } from '../../actions/issues/reparent-issue';
@@ -33,6 +34,7 @@ type WritableActionCode =
   | 'issues.claim'
   | 'issues.release'
   | 'issues.requestRepoWork'
+  | 'issues.reportPendingWork'
   | 'issues.update'
   | 'issues.create'
   | 'issues.reparent'
@@ -53,6 +55,7 @@ const ACTIONS: Record<WritableActionCode, new (request: any, callerUid?: string)
   'issues.claim': ClaimIssueAction,
   'issues.release': ReleaseIssueAction,
   'issues.requestRepoWork': RequestRepoWorkAction,
+  'issues.reportPendingWork': ReportPendingWorkAction,
   'issues.update': UpdateIssueAction,
   'issues.create': CreateIssueAction,
   'issues.reparent': ReparentIssueAction,
@@ -372,6 +375,25 @@ export function registerWriteTools(server: McpServer, principal: McpPrincipal) {
       const doc = await findIssue(principal.workspaceId, identifier);
       if (!doc) return textResult({ error: `No issue found for '${identifier}'.` });
       return runAction('issues.requestRepoWork', { issueId: doc.id, ...rest }, actorUid);
+    }
+  );
+
+  server.tool(
+    'pulse_report_pending_work',
+    'Declares work this issue needed that NO run can do — it needs production credentials, a product decision, or it grew beyond this issue. Pulse creates a follow-up issue for it (unassigned, labelled trabajo-manual, hanging off this one) and notifies the project lead, so the leftover survives the merge. Use it INSTEAD of only writing "pending" in the PR body: that text disappears the moment the PR is merged. Not for work missing in another repo of this workspace — that is pulse_request_repo_work, which another run picks up. Pass criterionId when a specific acceptance criterion is the one left unmet: an issue whose criterion is not_met does not close automatically until a follow-up owns it.',
+    {
+      identifier: z.string(),
+      summary: z.string().describe('What is still missing, in one line — it becomes the follow-up issue title.'),
+      reason: z
+        .enum(['needs_prod_credentials', 'product_decision', 'out_of_scope', 'blocked'])
+        .describe('Why no run can finish it. This decides who has to pick it up, so pick the accurate one.'),
+      context: z.string().optional().describe('What you tried, what you left written, what the next person needs to know.'),
+      criterionId: z.string().optional().describe('AcceptanceCriterion.id of this issue that stays unmet, from pulse_get_issue.'),
+    },
+    async ({ identifier, ...rest }) => {
+      const doc = await findIssue(principal.workspaceId, identifier);
+      if (!doc) return textResult({ error: `No issue found for '${identifier}'.` });
+      return runAction('issues.reportPendingWork', { issueId: doc.id, ...rest }, actorUid);
     }
   );
 

@@ -3,6 +3,7 @@ import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { cleanUndefined } from '../../common/utils/clean';
 import { normalizeFindings, normalizeCriteriaResults } from '../../common/utils/review-findings';
+import { MAX_FOLLOW_UPS_PER_REVIEW, registerPendingWork } from '../../common/utils/pending-work';
 import { resolveReviewLead, getProjectLeadId, ensureNeedsHumanLabel, notifyNeedsHuman } from '../../common/utils/review-escalation';
 import { createNotification } from '../../common/utils/notifications';
 import { CreateCommentAction } from '../comments/create-comment';
@@ -213,6 +214,7 @@ export class ReviewsSubmitAction extends PlatformActionHandler {
 
     if (qaMode === 'enforce') {
       await this.notifyOutcome(db, issue, data.issueId, outcome, capped, actorUid, prs, verdict, needsHumanLeadId);
+      await this.createUnverifiableFollowUps(db, issue, data.issueId, criteriaResults, actorUid);
     }
 
     const commentBody = this.buildCommentBody(issue, outcome, capped, verdict, findings, criteriaResults, review.attempt, qaMode);
@@ -223,6 +225,55 @@ export class ReviewsSubmitAction extends PlatformActionHandler {
     }
 
     return { issueId: data.issueId, outcome, attempt: review.attempt, status: updates.status || issue.status, qaMode };
+  }
+
+  /**
+   * Un criterio que QA no pudo verificar es trabajo pendiente, no un veredicto
+   * (TES-219). Antes se escalaba a `needs_human` y ahí moría: el issue quedaba
+   * reasignado, pero lo que faltaba verificar no quedaba anotado en ningún
+   * lado que sobreviviera al cierre. Cada `unverifiable` se convierte en un
+   * issue de seguimiento por la misma vía que usa el dev cuando lo declara él
+   * — la diferencia es quién lo detectó, no qué rastro deja.
+   *
+   * Solo en `enforce`: en modo sombra (D17) el QA no toca el flujo humano, y
+   * crear issues mientras se lo calibra sería justamente tocarlo.
+   *
+   * Un fallo acá no puede tumbar el veredicto, que ya está escrito: se loguea
+   * y sigue.
+   */
+  private async createUnverifiableFollowUps(
+    db: FirebaseFirestore.Firestore,
+    issue: FirebaseFirestore.DocumentData,
+    issueId: string,
+    criteriaResults: ReviewCriterionResult[],
+    actorUid: string
+  ): Promise<void> {
+    const unverifiable = criteriaResults.filter((c) => c.result === 'unverifiable');
+    if (unverifiable.length === 0) return;
+
+    // Se relee el issue en cada vuelta: `registerPendingWork` reemplaza el
+    // array completo de `pendingWork`, así que dos criterios seguidos sobre el
+    // snapshot viejo harían que el segundo pisara al primero.
+    for (const result of unverifiable.slice(0, MAX_FOLLOW_UPS_PER_REVIEW)) {
+      try {
+        const fresh = await db.collection('issues').doc(issueId).get();
+        if (!fresh.exists) return;
+        const current = fresh.data()!;
+        const criterion = (current.acceptanceCriteria || []).find((c: any) => c?.id === result.criterionId);
+        await registerPendingWork(db, {
+          issueId,
+          issue: current,
+          summary: `Verificar a mano: ${criterion?.text || result.criterionId}`,
+          reason: 'needs_manual_verification',
+          context: result.evidence,
+          criterionId: result.criterionId,
+          source: 'qa',
+          actorUid,
+        });
+      } catch (error) {
+        console.error(`[ReviewsSubmit] no se pudo crear el seguimiento de '${result.criterionId}':`, error);
+      }
+    }
   }
 
   /**

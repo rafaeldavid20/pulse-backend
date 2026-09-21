@@ -173,6 +173,59 @@ un veredicto contra las mismas piezas que usa un dev:
   `devSelfCheck` y `Project.definitionOfDone` con datos reales; hasta
   entonces `pulse_get_review_context` los devuelve vacíos.
 
+## Trabajo pendiente que ningún run puede hacer (TES-219)
+
+Un run que no puede terminar algo tiene dos salidas, y son distintas:
+
+- **Falta trabajo en otro repo del workspace** → `pulse_request_repo_work`
+  (`issues.requestRepoWork`, TES-202). Lo retoma otro run: la entrada vive en
+  `issue.pendingRepoWork` y `agentDispatchTrigger` despacha al repo destino.
+- **No lo puede hacer ningún run** —una migración contra producción, una
+  decisión de producto, algo que se fue del alcance— → `pulse_report_pending_work`
+  (`issues.reportPendingWork`). No hay a quién despachárselo, así que el
+  servidor **crea un issue de seguimiento** en el acto.
+
+La segunda existe por TES-218: el agente escribió su pendiente (correr
+`migrate-api-key-scopes.mjs` en producción) en el cuerpo del PR, el merge cerró
+el issue, y la migración sigue sin correr. El aviso estaba escrito en el único
+canal que nada lee.
+
+El seguimiento lo crea `registerPendingWork` (`common/utils/pending-work.ts`),
+compartido por las dos rutas que lo pueden disparar:
+
+- El **dev** lo declara con la tool (`source: 'dev'`).
+- **QA** lo deduce: cada criterio que `reviews.submit` cierra en `unverifiable`
+  genera uno (`source: 'qa'`, `reason: 'needs_manual_verification'`). Solo en
+  `qaMode: 'enforce'` — en modo sombra (D17) el QA no toca el flujo humano — y
+  con tope `MAX_FOLLOW_UPS_PER_REVIEW` para que un QA sin calibrar no llene el
+  backlog.
+
+El issue de seguimiento se crea reusando `issues.create` (misma validación de
+jerarquía y mismo contador de identificadores): cuelga del issue original,
+nace en `backlog`, etiquetado `trabajo-manual` y **sin asignar** — asignarlo a
+un agente y moverlo a `todo` dispararía un run pagado para algo que ningún run
+puede resolver. `followUpOf` guarda de dónde salió y qué criterio quedó
+colgando. Además se comenta en el issue (para las personas) y se notifica al
+lead del proyecto como `needs_human`, que es el tipo que no se puede silenciar
+por preferencia: una etiqueta sola solo la ve quien filtre por ella.
+
+**El merge dejó de ser condición suficiente para `done`.**
+`github.syncFromWebhook` no cierra un issue si hay un criterio declarado
+`not_met` que ningún follow-up hereda, o un pendiente declarado que no llegó a
+materializarse en un issue (`uncoveredNotMetCriteria` / `orphanPendingWork`).
+En esos casos lo deja en `in_review`, lo etiqueta y avisa. Lo que **no**
+bloquea: un criterio `not_met` que ya tiene su follow-up — el pendiente
+sobrevive en un issue propio y el padre puede cerrar, porque hay trabajo que
+ese issue no va a poder terminar nunca y dejarlo abierto para siempre solo
+agrega ruido. Ese `in_review` forzado no dispara QA: `qa-dispatch` exige que
+todos los PRs estén `open`, y acá el PR está mergeado.
+
+Pendiente de esta misma historia: el gate fuerte (que la **ausencia** de
+`devSelfCheck` también frene el cierre) queda para cuando se confirme que los
+runs lo están produciendo de forma consistente — con los workflows atrasados
+que había antes de esta historia, ningún run lo producía y prenderlo habría
+congelado todos los cierres.
+
 ## Scopes del MCP (D11, D22)
 
 `functions/src/mcp/scopes.ts` mapea cada tool MCP a un scope requerido
