@@ -74,6 +74,7 @@ export const TOOL_SCOPES: Record<string, McpScope> = {
   pulse_create_branch: 'issues:write',
   pulse_link_pr: 'issues:write',
   pulse_request_repo_work: 'issues:write',
+  pulse_report_pending_work: 'issues:write',
   pulse_resolve_finding: 'issues:write',
   pulse_report_criteria: 'issues:write',
 

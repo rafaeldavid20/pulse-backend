@@ -29,6 +29,7 @@ export type PlatformActionCode =
   | 'issues.claimNext'
   | 'issues.release'
   | 'issues.requestRepoWork'
+  | 'issues.reportPendingWork'
   | 'github.createInstallUrl'
   | 'github.status'
   | 'github.createBranch'

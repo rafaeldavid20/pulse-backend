@@ -5,6 +5,10 @@ import { PlatformActionRequest } from '../../common/platform-actions/interfaces'
 import { findIssue } from '../../mcp/tools/read';
 import { identifierFromBranch, identifierFromClosesKeyword } from '../../common/utils/issue-refs';
 import { upsertGitRef, statusFromGitRefs } from '../../common/utils/project-repos';
+import { orphanPendingWork, uncoveredNotMetCriteria } from '../../common/utils/pending-work';
+import { MANUAL_WORK_LABEL, MANUAL_WORK_LABEL_COLOR, ensureLabel, withLabel } from '../../common/utils/labels';
+import { resolveReviewLead } from '../../common/utils/review-escalation';
+import { createNotification } from '../../common/utils/notifications';
 
 interface WebhookSyncInput {
   event: 'create' | 'pull_request';
@@ -114,8 +118,26 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
       nextRefs.length > 1
         ? statusFromGitRefs(nextRefs)
         : this.desiredStatus(input, issue.status);
-    const desiredStatus =
+    const afterRepoWork =
       nextPending.length > 0 && (computed === 'in_review' || computed === 'done') ? 'in_progress' : computed;
+
+    // Invariante de TES-219: un merge no cierra un issue que dejó trabajo
+    // declarado sin dueño. Dos casos, los dos con el mismo desenlace — el
+    // issue se queda en `in_review` etiquetado, en vez de irse a `done` con el
+    // pendiente enterrado en el cuerpo del PR (que es exactamente lo que pasó
+    // con TES-218):
+    //  - un criterio que el dev declaró `not_met` y que ningún follow-up hereda;
+    //  - un pendiente declarado cuyo issue de seguimiento no se llegó a crear.
+    //
+    // Lo que NO bloquea: un criterio `not_met` que ya tiene su follow-up. Esa
+    // es la decisión de diseño de la historia — el pendiente sobrevive en un
+    // issue propio y el padre puede cerrar, porque hay trabajo (credenciales
+    // de producción, una decisión de producto) que este issue no va a poder
+    // terminar nunca y dejarlo abierto para siempre solo agrega ruido.
+    const uncovered = uncoveredNotMetCriteria(issue);
+    const orphans = orphanPendingWork(issue);
+    const blockedByPendingWork = afterRepoWork === 'done' && (uncovered.length > 0 || orphans.length > 0);
+    const desiredStatus = blockedByPendingWork ? 'in_review' : afterRepoWork;
 
     // Manual-override guard: if a human moved the status away from the
     // status *we* last set via sync, a webhook event shouldn't silently
@@ -165,13 +187,40 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
       updates['review.state'] = 'stale';
     }
 
+    if (blockedByPendingWork) {
+      const labelId = await ensureLabel(
+        db,
+        issue.workspaceId,
+        issue.teamId,
+        MANUAL_WORK_LABEL,
+        MANUAL_WORK_LABEL_COLOR
+      );
+      const nextLabels = withLabel(issue.labelIds, labelId);
+      if (nextLabels) updates.labelIds = nextLabels;
+    }
+
     await issueDoc.ref.update(updates);
+
+    if (blockedByPendingWork) {
+      await this.notifyBlockedClose(db, issue, issueDoc.id, uncovered, orphans.length);
+    }
 
     if (input.event === 'pull_request' && input.prAction === 'closed') {
       await this.recordQaCalibration(db, workspaceId, issueDoc.id, issue, input);
     }
 
-    if (statusChanged) {
+    if (blockedByPendingWork) {
+      const detail = uncovered.length
+        ? `hay ${uncovered.length} criterio(s) declarado(s) \`not_met\` sin un issue de seguimiento que los herede`
+        : `hay ${orphans.length} pendiente(s) declarado(s) sin issue de seguimiento`;
+      await this.postComment(
+        db,
+        workspaceId,
+        issueDoc.id,
+        `GitHub: ${this.describeEvent(input)}, pero el issue **no se cerró**: ${detail}. ` +
+          'Creá el seguimiento con `pulse_report_pending_work` (o a mano) y movelo a `done` cuando el pendiente tenga dueño.'
+      );
+    } else if (statusChanged) {
       await this.postComment(
         db,
         workspaceId,
@@ -195,6 +244,36 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
     }
 
     return { matched: true, issueId: issueDoc.id, statusChanged, newStatus: statusChanged ? desiredStatus : issue.status };
+  }
+
+  /**
+   * El issue quedó sin cerrar por un pendiente sin dueño: eso tiene que llegarle
+   * a una persona. La etiqueta sola no alcanza — solo la ve quien filtre por
+   * ella, y el punto de TES-219 es que nadie vuelve a mirar lo que no le
+   * llega. Va como `needs_human` (el tipo que no se puede silenciar por
+   * preferencia) al lead del proyecto, o a quien creó el issue si no hay lead.
+   */
+  private async notifyBlockedClose(
+    db: FirebaseFirestore.Firestore,
+    issue: FirebaseFirestore.DocumentData,
+    issueId: string,
+    uncovered: string[],
+    orphanCount: number
+  ): Promise<void> {
+    const responsibleId = await resolveReviewLead(db, issue);
+    if (!responsibleId) return;
+    const body = uncovered.length
+      ? `El PR se mergeó pero ${uncovered.length} criterio(s) siguen declarados como no cumplidos y nadie los heredó.`
+      : `El PR se mergeó pero ${orphanCount} pendiente(s) declarado(s) no llegaron a tener issue de seguimiento.`;
+    await createNotification(db, {
+      workspaceId: issue.workspaceId,
+      userId: responsibleId,
+      actorId: 'github',
+      issueId,
+      type: 'needs_human',
+      title: `${issue.identifier} no se cerró: quedó trabajo sin dueño`,
+      body,
+    });
   }
 
   private async resolveIssue(workspaceId: string, input: WebhookSyncInput) {
