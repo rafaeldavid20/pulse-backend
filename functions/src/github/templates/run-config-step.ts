@@ -83,15 +83,72 @@ export function runConfigStep(opts: {
           if not config.get('prompt'):
               fail('la configuración vino sin prompt')
 
-          # Los skills se materializan donde Claude Code los descubre. Hoy la
-          # lista viene vacía (M1 construye el canal, M3/M4 el contenido), así
-          # que esto no hace nada todavía — y cuando empiece a venir llena, no
-          # hace falta tocar ningún repo.
+          # Los skills que Pulse gestiona (M4) se materializan donde Claude Code
+          # los descubre, junto a los que el cliente ya tenga en su repo (M3).
+          # Un skill del repo con el mismo nombre NO se pisa: el repo es la
+          # fuente que el cliente controla más de cerca, y que Pulse le
+          # sobrescriba un archivo versionado sería una sorpresa desagradable.
           for skill in config.get('skills') or []:
               target = pathlib.Path('.claude/skills') / skill['name']
+              skill_file = target / 'SKILL.md'
+              if skill_file.exists():
+                  print('::notice::skill %s ya existe en el repo: gana el del repo, se ignora el de Pulse' % skill['name'])
+                  continue
               target.mkdir(parents=True, exist_ok=True)
-              (target / 'SKILL.md').write_text(skill['content'], encoding='utf-8')
+              skill_file.write_text(skill['content'], encoding='utf-8')
               print('skill materializado: %s (%s)' % (skill['name'], skill.get('source', '?')))
+
+
+          def frontmatter(text):
+              # Parser mínimo a propósito: sólo se valida lo que hace falta para
+              # que un skill sea invocable (name y description). Nada de traer
+              # un parser de YAML a un runner por tres campos.
+              if not text.startswith('---'):
+                  return None
+              end = text.find('\\n---', 3)
+              if end == -1:
+                  return None
+              fields = {}
+              for line in text[3:end].splitlines():
+                  if ':' in line and not line.startswith(' '):
+                      key, _, value = line.partition(':')
+                      fields[key.strip()] = value.strip()
+              return fields
+
+
+          # Inventario de lo que el run tiene realmente disponible, del repo del
+          # cliente y de Pulse. Un skill roto no puede fallar en silencio: el
+          # agente simplemente no lo usaría y nadie entendería por qué el run
+          # salió distinto.
+          found, broken = [], []
+          for skill_file in sorted(pathlib.Path('.claude/skills').glob('*/SKILL.md')):
+              name = skill_file.parent.name
+              try:
+                  fields = frontmatter(skill_file.read_text(encoding='utf-8'))
+              except Exception as read_error:
+                  broken.append((name, 'no se pudo leer: %s' % read_error))
+                  continue
+              if fields is None:
+                  broken.append((name, 'no tiene frontmatter (--- al principio del archivo)'))
+              elif not fields.get('description'):
+                  broken.append((name, 'el frontmatter no tiene \`description\`, así que el modelo no sabe cuándo usarlo'))
+              else:
+                  found.append(name)
+
+          print('Skills disponibles para este run: %s' % (', '.join(found) if found else 'ninguno'))
+          for name, problem in broken:
+              print('::warning::skill %s ignorado: %s' % (name, problem))
+
+          if broken:
+              detail = '\\n'.join('- \`%s\`: %s' % (name, problem) for name, problem in broken)
+              try:
+                  call('pulse_comment_issue', {
+                      'identifier': IDENTIFIER,
+                      'body': ('**Skills ignorados en este run** — están en \`.claude/skills/\` pero no se pudieron cargar:'
+                               '\\n\\n' + detail + '\\n\\nEl run siguió sin ellos.'),
+                  })
+              except Exception as comment_error:
+                  print('::warning::no se pudo avisar de los skills rotos: %s' % comment_error)
 
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
               out.write('prompt<<PULSE_EOF_PROMPT\\n%s\\nPULSE_EOF_PROMPT\\n' % config['prompt'])

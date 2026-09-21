@@ -10,7 +10,7 @@
  */
 import { RUN_CONFIG_CLAUDE_ARGS, runConfigStep } from './run-config-step';
 
-export const QA_WORKFLOW_VERSION = 4;
+export const QA_WORKFLOW_VERSION = 5;
 
 export const QA_WORKFLOW_PATH = '.github/workflows/pulse-qa.yml';
 

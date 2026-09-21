@@ -218,6 +218,27 @@ construye el canal; el contenido lo llenan M3 (skills del repo del cliente) y M4
 (skills gestionados en Pulse), y cuando lo hagan **no hace falta tocar ningún
 repo**.
 
+### Skills del repo del cliente (TES-230 / M3)
+
+Un run usa los skills que el cliente tenga versionados en **su** repo, en
+`.claude/skills/<nombre>/SKILL.md`. Pulse no los gestiona ni los copia: los
+habilita (`Skill` está en las tools desde M1) y los inventaria.
+
+El mismo paso que resuelve la configuración recorre `.claude/skills/*/SKILL.md`,
+valida que cada uno tenga frontmatter con `description` —sin eso el modelo no
+sabe cuándo usarlo— e imprime la lista de los que quedaron disponibles. Los que
+no pasan se reportan **como comentario en el issue**, no sólo en el log: un
+skill que no se carga no cambia nada visible, y el run sale distinto sin que
+nadie entienda por qué.
+
+Cuando M4 (TES-231) agregue skills gestionados en Pulse, se materializan en el
+mismo directorio, y **un skill del repo con el mismo nombre gana**: es la fuente
+que el cliente controla más de cerca, y pisarle un archivo versionado sería una
+sorpresa desagradable.
+
+Limitación del entorno, no de Pulse: un skill que despacha subagentes no
+funciona acá, porque `Agent`/`Task` están prohibidas en todos los runs (TES-132).
+
 ## Trabajo pendiente que ningún run puede hacer (TES-219)
 
 Un run que no puede terminar algo tiene dos salidas, y son distintas:
