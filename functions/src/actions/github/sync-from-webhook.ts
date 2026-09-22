@@ -6,6 +6,7 @@ import { findIssue } from '../../mcp/tools/read';
 import { identifierFromBranch, identifierFromClosesKeyword } from '../../common/utils/issue-refs';
 import { upsertGitRef, statusFromGitRefs } from '../../common/utils/project-repos';
 import { orphanPendingWork, uncoveredNotMetCriteria } from '../../common/utils/pending-work';
+import { openBlockerFindings } from '../../common/utils/review-findings';
 import { MANUAL_WORK_LABEL, MANUAL_WORK_LABEL_COLOR, ensureLabel, withLabel } from '../../common/utils/labels';
 import { resolveReviewLead } from '../../common/utils/review-escalation';
 import { createNotification } from '../../common/utils/notifications';
@@ -141,23 +142,40 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
     const afterRepoWork =
       nextPending.length > 0 && (computed === 'in_review' || computed === 'done') ? 'in_progress' : computed;
 
-    // Invariante de TES-219: un merge no cierra un issue que dejó trabajo
-    // declarado sin dueño. Dos casos, los dos con el mismo desenlace — el
-    // issue se queda en `in_review` etiquetado, en vez de irse a `done` con el
-    // pendiente enterrado en el cuerpo del PR (que es exactamente lo que pasó
-    // con TES-218):
+    // Un merge no cierra un issue que dejó trabajo declarado sin dueño
+    // (TES-219) ni uno cuya revisión dijo que lo hecho está mal (D23/TES-271).
+    // Tres casos, los tres con el mismo desenlace — el issue se queda en
+    // `in_review` etiquetado, en vez de irse a `done` con el problema
+    // enterrado en el cuerpo del PR (que es exactamente lo que pasó con
+    // TES-218, y de nuevo con TES-251 y TES-269):
     //  - un criterio que el dev declaró `not_met` y que ningún follow-up hereda;
-    //  - un pendiente declarado cuyo issue de seguimiento no se llegó a crear.
+    //  - un pendiente declarado cuyo issue de seguimiento no se llegó a crear;
+    //  - un finding `blocker` del QA que sigue abierto.
     //
-    // Lo que NO bloquea: un criterio `not_met` que ya tiene su follow-up. Esa
-    // es la decisión de diseño de la historia — el pendiente sobrevive en un
-    // issue propio y el padre puede cerrar, porque hay trabajo (credenciales
-    // de producción, una decisión de producto) que este issue no va a poder
-    // terminar nunca y dejarlo abierto para siempre solo agrega ruido.
+    // Las dos primeras son "falta trabajo en otro lado"; la tercera es "esto
+    // está mal". Por eso la salida es distinta: a las primeras se les crea el
+    // follow-up, a la tercera se la arregla, se la disputa o se la descarta
+    // desde el panel (`reviews.dismissFinding`, que pide ser miembro del
+    // workspace y no está expuesto por MCP — un agente no descarta sus
+    // propios findings).
+    //
+    // Lo que NO bloquea:
+    //  - un criterio `not_met` que ya tiene su follow-up. Es la decisión de
+    //    diseño de TES-219: el pendiente sobrevive en un issue propio y el
+    //    padre puede cerrar, porque hay trabajo (credenciales de producción,
+    //    una decisión de producto) que este issue no va a terminar nunca y
+    //    dejarlo abierto para siempre solo agrega ruido;
+    //  - un finding `major`, `minor` o `nit`, abierto o no. Si `major`
+    //    también trabara, cada cierre se vuelve una negociación y descartar
+    //    findings pasa a ser trámite;
+    //  - un finding `disputed`: el dev ya dejó por escrito por qué no está de
+    //    acuerdo, y eso es una conversación entre personas, no un candado.
     const uncovered = uncoveredNotMetCriteria(issue);
     const orphans = orphanPendingWork(issue);
-    const blockedByPendingWork = afterRepoWork === 'done' && (uncovered.length > 0 || orphans.length > 0);
-    const desiredStatus = blockedByPendingWork ? 'in_review' : afterRepoWork;
+    const openBlockers = openBlockerFindings(issue);
+    const blockedFromClosing =
+      afterRepoWork === 'done' && (uncovered.length > 0 || orphans.length > 0 || openBlockers.length > 0);
+    const desiredStatus = blockedFromClosing ? 'in_review' : afterRepoWork;
 
     // Manual-override guard: if a human moved the status away from the
     // status *we* last set via sync, a webhook event shouldn't silently
@@ -210,7 +228,7 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
       updates['review.attempt'] = 0;
     }
 
-    if (blockedByPendingWork) {
+    if (blockedFromClosing) {
       const labelId = await ensureLabel(
         db,
         issue.workspaceId,
@@ -224,24 +242,45 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
 
     await issueDoc.ref.update(updates);
 
-    if (blockedByPendingWork) {
-      await this.notifyBlockedClose(db, issue, issueDoc.id, uncovered, orphans.length);
+    if (blockedFromClosing) {
+      await this.notifyBlockedClose(db, issue, issueDoc.id, uncovered, orphans.length, openBlockers.length);
     }
 
     if (input.event === 'pull_request' && input.prAction === 'closed') {
       await this.recordQaCalibration(db, workspaceId, issueDoc.id, issue, input);
     }
 
-    if (blockedByPendingWork) {
-      const detail = uncovered.length
-        ? `hay ${uncovered.length} criterio(s) declarado(s) \`not_met\` sin un issue de seguimiento que los herede`
-        : `hay ${orphans.length} pendiente(s) declarado(s) sin issue de seguimiento`;
+    if (blockedFromClosing) {
+      // Cada causa tiene una salida distinta, así que el comentario dice la
+      // suya en vez de un texto genérico: un finding no se resuelve creando
+      // un follow-up, ni un pendiente se resuelve descartando nada.
+      const reasons: string[] = [];
+      if (openBlockers.length) {
+        reasons.push(
+          `la revisión de QA dejó ${openBlockers.length} finding(s) **bloqueante(s)** sin resolver. ` +
+            'Arreglalos y volvé a pasar por revisión, o resolvelos desde el panel del issue ' +
+            '("Descartar finding", si el finding no corresponde — queda registrado quién lo descartó)'
+        );
+      }
+      if (uncovered.length) {
+        reasons.push(
+          `hay ${uncovered.length} criterio(s) declarado(s) \`not_met\` sin un issue de seguimiento que los herede. ` +
+            'Creá el seguimiento con `pulse_report_pending_work` (o a mano)'
+        );
+      }
+      if (orphans.length) {
+        reasons.push(
+          `hay ${orphans.length} pendiente(s) declarado(s) sin issue de seguimiento. ` +
+            'Creá el seguimiento con `pulse_report_pending_work` (o a mano)'
+        );
+      }
       await this.postComment(
         db,
         workspaceId,
         issueDoc.id,
-        `GitHub: ${this.describeEvent(input)}, pero el issue **no se cerró**: ${detail}. ` +
-          'Creá el seguimiento con `pulse_report_pending_work` (o a mano) y movelo a `done` cuando el pendiente tenga dueño.'
+        `GitHub: ${this.describeEvent(input)}, pero el issue **no se cerró**.\n\n` +
+          reasons.map((r) => `- ${r}.`).join('\n') +
+          '\n\nMovelo a `done` cuando no quede ninguno.'
       );
     } else if (statusChanged) {
       await this.postComment(
@@ -290,20 +329,28 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
     issue: FirebaseFirestore.DocumentData,
     issueId: string,
     uncovered: string[],
-    orphanCount: number
+    orphanCount: number,
+    blockerCount: number
   ): Promise<void> {
     const responsibleId = await resolveReviewLead(db, issue);
     if (!responsibleId) return;
-    const body = uncovered.length
-      ? `El PR se mergeó pero ${uncovered.length} criterio(s) siguen declarados como no cumplidos y nadie los heredó.`
-      : `El PR se mergeó pero ${orphanCount} pendiente(s) declarado(s) no llegaron a tener issue de seguimiento.`;
+    // Los findings van primero: "la revisión dijo que esto está mal" es una
+    // señal más fuerte que "falta trabajo en otro lado", y es la que hay que
+    // leer primero si se dan las dos juntas.
+    const body = blockerCount
+      ? `El PR se mergeó pero la revisión de QA dejó ${blockerCount} finding(s) bloqueante(s) sin resolver.`
+      : uncovered.length
+        ? `El PR se mergeó pero ${uncovered.length} criterio(s) siguen declarados como no cumplidos y nadie los heredó.`
+        : `El PR se mergeó pero ${orphanCount} pendiente(s) declarado(s) no llegaron a tener issue de seguimiento.`;
     await createNotification(db, {
       workspaceId: issue.workspaceId,
       userId: responsibleId,
       actorId: 'github',
       issueId,
       type: 'needs_human',
-      title: `${issue.identifier} no se cerró: quedó trabajo sin dueño`,
+      title: blockerCount
+        ? `${issue.identifier} no se cerró: quedaron findings bloqueantes`
+        : `${issue.identifier} no se cerró: quedó trabajo sin dueño`,
       body,
     });
   }
