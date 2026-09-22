@@ -57,3 +57,23 @@ export function normalizeCriteriaResults(input: unknown): ReviewCriterionResult[
       return criterionResult;
     });
 }
+
+/**
+ * Findings `blocker` que siguen abiertos en la revisión vigente del issue.
+ *
+ * Es la tercera condición que frena el cierre automático, junto con los
+ * criterios `not_met` sin dueño y los pendientes sin follow-up (D23/TES-271).
+ *
+ * Solo `blocker`. `major` avisa pero no frena a propósito: si también
+ * trabara el merge, cada cierre se vuelve una negociación y la salida
+ * natural pasa a ser descartar findings por trámite — que es peor que no
+ * tenerlos, porque deja el registro diciendo que alguien los evaluó.
+ *
+ * `disputed` tampoco frena: el dev ya dejó por escrito por qué no está de
+ * acuerdo y eso queda en el historial. Si el QA insiste, es una conversación
+ * entre personas, no un candado.
+ */
+export function openBlockerFindings(issue: FirebaseFirestore.DocumentData): ReviewFinding[] {
+  const findings: ReviewFinding[] = issue.review?.findings || [];
+  return findings.filter((f) => f?.status === 'open' && f?.severity === 'blocker');
+}
