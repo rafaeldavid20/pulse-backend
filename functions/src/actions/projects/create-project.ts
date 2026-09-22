@@ -3,6 +3,8 @@ import { nanoid } from 'nanoid';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { cleanUndefined } from '../../common/utils/clean';
+import { normalizeProjectKind } from '../../common/utils/project-fields';
+import { normalizeDefinitionOfDone } from '../../common/utils/definition-of-done';
 
 export class CreateProjectAction extends PlatformActionHandler {
   private workspaceId?: string;
@@ -33,9 +35,14 @@ export class CreateProjectAction extends PlatformActionHandler {
       name: data.name.trim(),
       description: (data.description || '').trim(),
       status: data.status || 'in_progress',
+      kind: normalizeProjectKind(data.kind),
       leadId: data.leadId || null,
       color: data.color || '#5E6AD2',
       targetDate: data.targetDate || null,
+      // El modal los manda al crear y antes se descartaban en silencio: sólo
+      // quedaban guardados si después se editaba el proyecto.
+      repoFullNames: Array.isArray(data.repoFullNames) ? data.repoFullNames.filter((r: unknown) => typeof r === 'string') : undefined,
+      definitionOfDone: normalizeDefinitionOfDone(data.definitionOfDone),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };

@@ -306,6 +306,7 @@ export function registerWriteTools(server: McpServer, principal: McpPrincipal) {
       name: z.string(),
       description: z.string().optional(),
       status: z.enum(['planned', 'in_progress', 'paused', 'completed', 'canceled']).optional(),
+      kind: z.enum(['generic', 'salesforce']).optional().describe('"salesforce" enables Salesforce orgs/environments for the workspace. Default "generic".'),
       color: z.string().optional(),
       targetDate: z.string().optional(),
     },

@@ -5,7 +5,7 @@
 // dominio de Pulse. Para cambiar algo de acá, editá ese archivo y corré
 // `npm run sync:types` desde `pulse-app`.
 //
-// SOURCE_HASH: 1cc7b824539d3163
+// SOURCE_HASH: 39a78c2e05755118
 // ============================================================
 
 /**
@@ -155,12 +155,25 @@ export interface Label {
   color: string;
 }
 
+/**
+ * Qué clase de proyecto es (O15/TES-270). Decide qué superficie específica
+ * aparece: un workspace ve la configuración de Salesforce (entornos, orgs,
+ * tools `pulse_sf_*`) sólo si tiene al menos un proyecto `salesforce`. Es un
+ * `kind` y no un booleano porque el mismo campo va a elegir la plantilla de
+ * estados (épica N) y los skills del agente (épica M).
+ */
+export type ProjectKind = 'generic' | 'salesforce';
+
+export const PROJECT_KINDS: readonly ProjectKind[] = ['generic', 'salesforce'];
+
 export interface Project {
   id: string;
   teamId: string;
   name: string;
   description: string;
   status: ProjectStatus;
+  /** Ausente en los proyectos anteriores a TES-270: se lee como `'generic'`. */
+  kind?: ProjectKind;
   /**
    * Repos en los que se puede trabajar este proyecto. Es el límite: al crear una
    * rama, tanto una persona como un agente eligen libremente *dentro* de este
@@ -1139,6 +1152,7 @@ export const PROJECT_WRITABLE_FIELDS = [
   'name',
   'description',
   'status',
+  'kind',
   'repoFullNames',
   'leadId',
   'color',
