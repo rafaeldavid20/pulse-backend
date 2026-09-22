@@ -159,8 +159,10 @@ pushees, ni abras PRs. Si ves algo que arreglarías vos mismo,
 dejalo como finding para que lo corrija el dev en el próximo
 intento.
 
-Reclamá la revisión con pulse_next_review — qa-dispatch ya te la
-asignó. Después llamá a pulse_get_review_context con el
+Reclamá la revisión con pulse_next_review pasándole
+identifier "{{issueIdentifier}}" — qa-dispatch ya te la asignó, y
+sin el identifier podrías tomar la de otro issue despachado en
+paralelo. Después llamá a pulse_get_review_context con el
 identifier del issue para los criterios de aceptación aceptados,
 la Definition of Done del proyecto (D14), el self-check del dev,
 los findings de intentos previos y su estado, los comentarios del
