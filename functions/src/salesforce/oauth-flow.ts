@@ -4,6 +4,7 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { mcpKeyPepper, salesforceTokenKey } from '../common/secrets';
 import { PULSE_APP_URL } from '../common/app-url';
 import { signShortJwt, verifyShortJwt } from '../common/utils/short-jwt';
+import { cleanUndefined } from '../common/utils/clean';
 import { nanoid } from 'nanoid';
 import {
   authHost,
@@ -97,18 +98,26 @@ export async function beginSalesforceConnect(
   const { verifier, challenge } = pkcePair();
   const stateId = `sfst-${nanoid(16)}`;
 
+  // `cleanUndefined` no es decorativo acá: en el caso más común —conectar un
+  // sandbox por primera vez— `config.customDomain` y `config.environmentId`
+  // existen como propiedades con valor `undefined`, y el Admin SDK rechaza el
+  // write entero ("Cannot use 'undefined' as a Firestore value"). Sin esto,
+  // `environments.create` falla antes de devolver la URL y el navegador nunca
+  // llega a Salesforce.
   await getFirestore()
     .collection('salesforce_oauth_states')
     .doc(stateId)
-    .set({
-      stateId,
-      workspaceId,
-      uid,
-      config,
-      codeVerifier: verifier,
-      createdAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + STATE_TTL_SECONDS * 1000).toISOString(),
-    });
+    .set(
+      cleanUndefined({
+        stateId,
+        workspaceId,
+        uid,
+        config,
+        codeVerifier: verifier,
+        createdAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + STATE_TTL_SECONDS * 1000).toISOString(),
+      })
+    );
 
   const state = signShortJwt<ConnectState>({ stateId, workspaceId, uid }, mcpKeyPepper.value(), STATE_TTL_SECONDS);
   const host = authHost(config.loginHost, config.customDomain);
@@ -222,7 +231,7 @@ export const salesforceCallback = onRequest(
         .collection('environments')
         .doc(environmentId)
         .set(
-          {
+          cleanUndefined({
             id: environmentId,
             workspaceId: claims.workspaceId,
             key: config.key,
@@ -261,7 +270,7 @@ export const salesforceCallback = onRequest(
             ...(existing.exists && (existing.data()!.connectedRepos || []).length > 0
               ? { repoSecretsStale: true }
               : {}),
-          },
+          }),
           { merge: true }
         );
 
