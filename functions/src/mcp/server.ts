@@ -1,5 +1,6 @@
 import type { McpPrincipal } from './auth';
 import { TOOL_SCOPES } from './scopes';
+import { NO_SALESFORCE_PROJECT_MESSAGE, SALESFORCE_TOOL_PREFIX, workspaceHasSalesforceProject } from '../salesforce/gate';
 
 /**
  * Wraps `server.tool`/`server.registerTool` so every tool registered by
@@ -21,6 +22,16 @@ function enforceScopes(server: any, principal: McpPrincipal) {
         if (required && !principal.scopes.includes(required)) {
           return {
             content: [{ type: 'text' as const, text: JSON.stringify({ error: `scope '${required}' requerido` }, null, 2) }],
+            isError: true,
+          };
+        }
+        // TES-270: toda tool `pulse_sf_*` responde con un mensaje accionable si
+        // el workspace no tiene proyectos Salesforce. Va acá, junto a los
+        // scopes, para que ninguna tool nueva pueda olvidarlo. No es un control
+        // de seguridad: lo es el `workspaceId` del principal.
+        if (name.startsWith(SALESFORCE_TOOL_PREFIX) && !(await workspaceHasSalesforceProject(principal.workspaceId))) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: NO_SALESFORCE_PROJECT_MESSAGE }, null, 2) }],
             isError: true,
           };
         }

@@ -27,5 +27,8 @@ export async function workspaceHasSalesforceProject(workspaceId: string): Promis
   return !snap.empty;
 }
 
+/** Prefijo de las tools MCP de Salesforce; `mcp/server.ts` les aplica este gate a todas. */
+export const SALESFORCE_TOOL_PREFIX = 'pulse_sf_';
+
 export const NO_SALESFORCE_PROJECT_MESSAGE =
   'Este workspace no tiene proyectos Salesforce. Marcá un proyecto con tipo "Salesforce" en Pulse (editar proyecto → Tipo de proyecto) y conectá la org desde Configuración → Salesforce.';
