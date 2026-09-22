@@ -42,6 +42,7 @@ const DEV_SCOPES = [
   'reviews:read',
   'runs:write',
   'runs:read',
+  'salesforce:read',
 ];
 const QA_SCOPES = [
   'issues:read',
@@ -51,8 +52,10 @@ const QA_SCOPES = [
   'reviews:write',
   'runs:write',
   'runs:read',
+  'salesforce:read',
 ];
-const NEW_READ_SCOPES = ['comments:read', 'runs:read'];
+// `salesforce:read` se sumó en O2/TES-252.
+const NEW_READ_SCOPES = ['comments:read', 'runs:read', 'salesforce:read'];
 
 initializeApp({ credential: applicationDefault(), projectId: PROJECT_ID });
 const db = getFirestore();

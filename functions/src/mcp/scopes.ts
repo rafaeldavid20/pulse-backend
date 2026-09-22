@@ -12,7 +12,8 @@ export type McpScope =
   | 'reviews:read'
   | 'reviews:write'
   | 'runs:write'
-  | 'runs:read';
+  | 'runs:read'
+  | 'salesforce:read';
 
 /** Perfil de una key de agente `role: 'dev'` conectada vía `agents.connectRepo`. */
 export const DEV_SCOPES: McpScope[] = [
@@ -24,6 +25,7 @@ export const DEV_SCOPES: McpScope[] = [
   'reviews:read',
   'runs:write',
   'runs:read',
+  'salesforce:read',
 ];
 
 /**
@@ -39,6 +41,9 @@ export const QA_SCOPES: McpScope[] = [
   'reviews:write',
   'runs:write',
   'runs:read',
+  // El QA necesita la org tanto como el dev: verificar que un campo existe o
+  // que un flow quedó activo es parte de revisar.
+  'salesforce:read',
 ];
 
 /**
@@ -90,6 +95,13 @@ export const TOOL_SCOPES: Record<string, McpScope> = {
   pulse_report_review_incomplete: 'reviews:write',
 
   pulse_report_run: 'runs:write',
+
+  // Lectura de una org de Salesforce (O2/TES-252), en `tools/salesforce.ts`.
+  pulse_sf_list_orgs: 'salesforce:read',
+  pulse_sf_query: 'salesforce:read',
+  pulse_sf_tooling_query: 'salesforce:read',
+  pulse_sf_describe: 'salesforce:read',
+  pulse_sf_limits: 'salesforce:read',
 };
 
 /**

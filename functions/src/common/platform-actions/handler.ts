@@ -94,6 +94,19 @@ export abstract class PlatformActionHandler {
   }
 
   /**
+   * Lo que se guarda como `response` en el doc de `platform_actions`. Por
+   * defecto, la respuesta entera. Una acción que devuelve datos de un sistema
+   * externo (registros de una org de Salesforce, un describe de cientos de KB)
+   * lo pisa con un resumen: el audit trail no es un lugar para copiar datos de
+   * un cliente, y un doc de Firestore tiene tope de 1 MB. Consecuencia: el
+   * short-circuit de idempotencia de `run()` devuelve ese resumen, no la
+   * respuesta original.
+   */
+  protected auditResponse(response: Record<string, any>): Record<string, any> {
+    return response;
+  }
+
+  /**
    * Abstract core execution method implemented by each specific Platform Action
    */
   protected abstract handleAction(): Promise<Record<string, any>>;
@@ -145,7 +158,7 @@ export abstract class PlatformActionHandler {
         ...this.action,
         status: 'completed',
         completedTime: Timestamp.now(),
-        response: responseData,
+        response: this.auditResponse(responseData),
       };
 
       await this.actionDR.set(cleanUndefined(completedAction), { merge: true });

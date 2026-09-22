@@ -36,6 +36,10 @@ import { ListEnvironmentsAction } from '../actions/environments/list-environment
 import { UpdateEnvironmentAction } from '../actions/environments/update-environment';
 import { VerifyEnvironmentAction } from '../actions/environments/verify-environment';
 import { DisconnectEnvironmentAction } from '../actions/environments/disconnect-environment';
+import { SalesforceQueryAction } from '../actions/salesforce/query';
+import { SalesforceToolingQueryAction } from '../actions/salesforce/tooling-query';
+import { SalesforceDescribeAction } from '../actions/salesforce/describe';
+import { SalesforceLimitsAction } from '../actions/salesforce/limits';
 import { CreateLabelAction } from '../actions/labels/create-label';
 import { CreateCycleAction } from '../actions/cycles/create-cycle';
 import { UpdateCycleAction } from '../actions/cycles/update-cycle';
@@ -148,6 +152,15 @@ export async function dispatchPlatformAction(
       return new VerifyEnvironmentAction(request, callerUid, callerEmail).run();
     case 'environments.disconnect':
       return new DisconnectEnvironmentAction(request, callerUid, callerEmail).run();
+
+    case 'salesforce.query':
+      return new SalesforceQueryAction(request, callerUid, callerEmail).run();
+    case 'salesforce.toolingQuery':
+      return new SalesforceToolingQueryAction(request, callerUid, callerEmail).run();
+    case 'salesforce.describe':
+      return new SalesforceDescribeAction(request, callerUid, callerEmail).run();
+    case 'salesforce.limits':
+      return new SalesforceLimitsAction(request, callerUid, callerEmail).run();
 
     case 'labels.create':
       return new CreateLabelAction(request, callerUid, callerEmail).run();

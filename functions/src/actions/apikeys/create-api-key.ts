@@ -10,7 +10,17 @@ import { mcpKeyPepper } from '../../common/secrets';
 // runs igual que un agente — sin esto, una key nueva ya nace sin acceso a
 // `pulse_list_comments`/`pulse_list_runs`. Ver `scripts/migrate-api-key-scopes.mjs`
 // para las keys creadas antes de este cambio.
-const DEFAULT_SCOPES = ['issues:read', 'issues:write', 'projects:write', 'comments:write', 'comments:read', 'runs:read'];
+// `salesforce:read` (O2/TES-252): cualquier miembro ya puede llamar
+// `salesforce.query` por la acción; la key no le da más de lo que tiene.
+const DEFAULT_SCOPES = [
+  'issues:read',
+  'issues:write',
+  'projects:write',
+  'comments:write',
+  'comments:read',
+  'runs:read',
+  'salesforce:read',
+];
 
 export class CreateApiKeyAction extends PlatformActionHandler {
   private workspaceId?: string;
