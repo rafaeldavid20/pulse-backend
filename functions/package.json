@@ -15,6 +15,7 @@
     "migrate:hierarchy": "node scripts/migrate-hierarchy.mjs",
     "migrate:agent-roles": "node scripts/migrate-agent-roles.mjs",
     "migrate:api-key-scopes": "node scripts/migrate-api-key-scopes.mjs",
+    "migrate:label-ids": "node scripts/migrate-label-ids.mjs",
     "seed:mvp-dod": "node scripts/seed-mvp-definition-of-done.mjs"
   },
   "engines": {
