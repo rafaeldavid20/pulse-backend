@@ -1,6 +1,6 @@
 name: Pulse QA
 
-# GENERADO POR PULSE — pulse-qa-workflow-version: 5
+# GENERADO POR PULSE — pulse-qa-workflow-version: 6
 #
 # Lo escribe la acción `agents.connectRepo` al conectar un agente QA
 # (`role: 'qa'`) a este repo. Editalo desde Pulse, no a mano: una
@@ -49,21 +49,45 @@ jobs:
         with:
           node-version: 20
 
+      # El lockfile no siempre está en la raíz: en pulse-backend vive en
+      # `functions/`. La versión anterior gateaba con
+      # `hashFiles('package-lock.json')`, que sólo mira la raíz, así que en
+      # ese repo nunca instalaba nada — y como un paso salteado no es un
+      # fallo, el build corría igual, sin `node_modules`, resolviendo
+      # `tsc` al TypeScript global del runner. Resultado: `build: failure`
+      # por errores de `tsconfig.json` ajenos al PR, y un finding blocker
+      # automático en cada revisión (TES-269).
       - name: Instalar dependencias
         id: install
-        if: hashFiles('package-lock.json') != ''
-        run: npm ci
         continue-on-error: true
+        run: |
+          mapfile -t lockfiles < <(find . -maxdepth 3 -name package-lock.json -not -path '*/node_modules/*' | sort)
+          if [ ${#lockfiles[@]} -eq 0 ]; then
+            echo "No hay package-lock.json en el repo: no hay nada que instalar."
+            echo "installed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          for lock in "${lockfiles[@]}"; do
+            dir="$(dirname "$lock")"
+            echo "::group::npm ci en $dir"
+            (cd "$dir" && npm ci)
+            echo "::endgroup::"
+          done
+          echo "installed=true" >> "$GITHUB_OUTPUT"
 
+      # Correr el build sin dependencias no informa nada: falla siempre, y esa
+      # falla es indistinguible de una real para quien revisa. Si no se instaló
+      # nada, estos tres quedan `skipped` — que el prompt de QA no trata como
+      # bloqueante, a diferencia de `failure`.
       - name: Build
         id: build
-        if: steps.install.outcome != 'failure'
+        if: steps.install.outputs.installed == 'true'
         run: npm run build --if-present
         continue-on-error: true
 
       - name: Lint
         id: lint
-        if: steps.install.outcome != 'failure'
+        if: steps.install.outputs.installed == 'true'
         run: npm run lint --if-present
         continue-on-error: true
 
@@ -72,7 +96,7 @@ jobs:
         # J4: no hay suite de tests todavía en los repos conectados — este
         # paso queda listo para cuando la haya, sin bloquear nada mientras
         # tanto (`--if-present` lo vuelve un no-op si no existe el script).
-        if: steps.install.outcome != 'failure'
+        if: steps.install.outputs.installed == 'true'
         run: npm run test --if-present
         continue-on-error: true
 
@@ -82,7 +106,7 @@ jobs:
         run: |
           {
             echo "### Resultado de `verify` (PR #${{ github.event.client_payload.prNumber }})"
-            echo "- install: ${{ steps.install.outcome }}"
+            echo "- install: ${{ steps.install.outcome }} (dependencias instaladas: ${{ steps.install.outputs.installed || 'false' }})"
             echo "- build: ${{ steps.build.outcome }}"
             echo "- lint: ${{ steps.lint.outcome }}"
             echo "- test: ${{ steps.test.outcome }}"
