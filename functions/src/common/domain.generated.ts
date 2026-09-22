@@ -5,7 +5,7 @@
 // dominio de Pulse. Para cambiar algo de acá, editá ese archivo y corré
 // `npm run sync:types` desde `pulse-app`.
 //
-// SOURCE_HASH: 3accc8ad51e018ed
+// SOURCE_HASH: 1cc7b824539d3163
 // ============================================================
 
 /**
@@ -314,6 +314,117 @@ export interface Agent {
   /** Solo relevante para `role: 'qa'` (D17). Ausente se trata como `'shadow'`. */
   qaMode?: AgentQaMode;
 }
+
+/**
+ * Proveedor del entorno. Hoy solo Salesforce (épica O), pero el modelo es
+ * genérico a propósito: agregar Heroku o un cluster es agregar un sub-objeto
+ * como `salesforce` abajo, no una colección nueva.
+ */
+export type EnvProvider = 'salesforce';
+
+/**
+ * Estado de la credencial del entorno. `expired` lo escribe el cliente cuando
+ * Salesforce devuelve `invalid_grant` al refrescar: el refresh token murió
+ * (revocado, o caducado por política de sesión de la org) y hace falta volver
+ * a conectar. No se reintenta solo — reintentar un `invalid_grant` en loop es
+ * cómo se llega a un bloqueo de la org.
+ */
+export type EnvConnectionState = 'connected' | 'expired' | 'revoked' | 'error';
+
+/** Nivel de tests de Apex que corre un deploy. Son los cuatro del CLI de Salesforce. */
+export type SalesforceTestLevel =
+  | 'NoTestRun'
+  | 'RunLocalTests'
+  | 'RunAllTestsInOrg'
+  | 'RunSpecifiedTests';
+
+/** Contra qué host se autentica la org. Un sandbox usa `test`, una My Domain propia usa `custom`. */
+export type SalesforceLoginHost = 'login' | 'test' | 'custom';
+
+/** Datos de la org de Salesforce detrás de un entorno, resueltos al conectar. */
+export interface SalesforceOrgInfo {
+  /** Id de 18 caracteres de la org. */
+  orgId: string;
+  /** Host contra el que se hacen las llamadas a la API, p. ej. `https://acme--uat.sandbox.my.salesforce.com`. */
+  instanceUrl: string;
+  loginHost: SalesforceLoginHost;
+  isSandbox: boolean;
+  /** Usuario con el que se autorizó. Todo lo que Pulse haga queda auditado en la org como este usuario. */
+  username: string;
+  /** Versión de la API REST que usa el cliente, p. ej. `'62.0'`. */
+  apiVersion: string;
+}
+
+/**
+ * Un repo al que `environments.connectRepo` le escribió la credencial de este
+ * entorno (épica O, O3). Mismo criterio que `AgentRepoConnection`: se guarda
+ * lo que efectivamente se escribió, para poder limpiar exactamente eso al
+ * desconectar. Una entrada por `repoFullName`.
+ */
+export interface EnvRepoConnection {
+  repoFullName: string;
+  /** Nombre del secret del repo, `PULSE_SF_AUTH_<KEY>`. */
+  secretName: string;
+  workflowPath: string;
+  workflowVersion: number;
+  connectedAt: string;
+}
+
+/**
+ * Un entorno de ejecución del workspace: una org de Salesforce, con la rama
+ * de git cuyo HEAD representa lo que está desplegado ahí.
+ *
+ * Vive en `environments/{envId}`, **Admin SDK only**: el doc guarda el refresh
+ * token cifrado en un campo `auth` que esta interfaz deliberadamente no
+ * declara, para que no llegue al frontend ni por accidente. El frontend ve
+ * esto por la acción `environments.list`, igual que ve la instalación de
+ * GitHub por `github.status`.
+ */
+export interface Environment {
+  id: string;
+  workspaceId: string;
+  /** Clave corta y única por workspace (`dev`, `demo`, `uat`, `prod`). Va en el nombre del secret del repo. */
+  key: string;
+  displayName: string;
+  provider: EnvProvider;
+  /** Posición en la cadena de promoción: dev=0, demo=1, uat=2, prod=3. Ordena el pipeline y define qué promueve a qué. */
+  position: number;
+  /** La rama cuyo HEAD es lo que está desplegado acá. Un push a esta rama despliega. */
+  trackingBranch: string;
+  repoFullName: string;
+  isProduction: boolean;
+  /** Si es true, un deploy a este entorno espera aprobación humana explícita antes de tocar nada. */
+  requiresApproval: boolean;
+  defaultTestLevel: SalesforceTestLevel;
+  /**
+   * Habilita escritura directa contra la org (Tooling API, Apex anónimo) sin
+   * pasar por git. El backend lo fuerza a `false` cuando `isProduction`, así
+   * que no alcanza con no mostrarlo en la UI.
+   */
+  allowDirectWrites: boolean;
+  connectionState: EnvConnectionState;
+  lastVerifiedAt?: string;
+  /** Último sha desplegado con éxito. Es la base desde la que se calcula el delta del próximo deploy. */
+  deployedSha?: string;
+  deployedAt?: string;
+  salesforce?: SalesforceOrgInfo;
+  connectedRepos?: EnvRepoConnection[];
+  createdAt: string;
+  /** Uid de quien autorizó la conexión. */
+  connectedBy: string;
+}
+
+/** Campos de un `Environment` que `environments.update` acepta modificar. */
+export const ENVIRONMENT_WRITABLE_FIELDS = [
+  'displayName',
+  'position',
+  'trackingBranch',
+  'requiresApproval',
+  'defaultTestLevel',
+  'allowDirectWrites',
+] as const;
+
+export type EnvironmentWritableField = (typeof ENVIRONMENT_WRITABLE_FIELDS)[number];
 
 /**
  * Un cierre humano (merge o close sin merge) del PR de un issue con veredicto

@@ -31,6 +31,11 @@ import { GithubStatusAction } from '../actions/github/github-status';
 import { CreateBranchAction } from '../actions/github/create-branch';
 import { LinkPrAction } from '../actions/github/link-pr';
 import { SyncFromWebhookAction } from '../actions/github/sync-from-webhook';
+import { CreateEnvironmentAction } from '../actions/environments/create-environment';
+import { ListEnvironmentsAction } from '../actions/environments/list-environments';
+import { UpdateEnvironmentAction } from '../actions/environments/update-environment';
+import { VerifyEnvironmentAction } from '../actions/environments/verify-environment';
+import { DisconnectEnvironmentAction } from '../actions/environments/disconnect-environment';
 import { CreateLabelAction } from '../actions/labels/create-label';
 import { CreateCycleAction } from '../actions/cycles/create-cycle';
 import { UpdateCycleAction } from '../actions/cycles/update-cycle';
@@ -132,6 +137,17 @@ export async function dispatchPlatformAction(
       return new LinkPrAction(request, callerUid, callerEmail).run();
     case 'github.syncFromWebhook':
       return new SyncFromWebhookAction(request, callerUid, callerEmail).run();
+
+    case 'environments.create':
+      return new CreateEnvironmentAction(request, callerUid, callerEmail).run();
+    case 'environments.list':
+      return new ListEnvironmentsAction(request, callerUid, callerEmail).run();
+    case 'environments.update':
+      return new UpdateEnvironmentAction(request, callerUid, callerEmail).run();
+    case 'environments.verify':
+      return new VerifyEnvironmentAction(request, callerUid, callerEmail).run();
+    case 'environments.disconnect':
+      return new DisconnectEnvironmentAction(request, callerUid, callerEmail).run();
 
     case 'labels.create':
       return new CreateLabelAction(request, callerUid, callerEmail).run();

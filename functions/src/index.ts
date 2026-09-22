@@ -3,12 +3,20 @@ import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { z } from 'zod';
 import { PlatformActionRequest } from './common/platform-actions/interfaces';
 import { dispatchPlatformAction } from './router/platform-actions-router';
-import { mcpKeyPepper, githubAppId, githubAppPrivateKeyB64, githubAppSlug, pulseArgusDsn } from './common/secrets';
+import {
+  mcpKeyPepper,
+  githubAppId,
+  githubAppPrivateKeyB64,
+  githubAppSlug,
+  pulseArgusDsn,
+  salesforceTokenKey,
+} from './common/secrets';
 import { capturePulseException } from './common/observability/argus';
 import { checkClientTelemetryRateLimit } from './common/observability/client-telemetry-rate-limit';
 export { pulseMcp } from './mcp';
 export { githubSetup, githubCallback } from './github/install-flow';
 export { githubWebhook } from './github/webhook';
+export { salesforceCallback } from './salesforce/oauth-flow';
 export { agentDispatchTrigger } from './triggers/agent-dispatch';
 export { qaDispatchTrigger } from './triggers/qa-dispatch';
 export { issueNotificationsTrigger } from './triggers/notify-on-issue-write';
@@ -81,7 +89,18 @@ export const pulsePlatformAction = onCall(
   {
     cors: true,
     region: 'us-east4',
-    secrets: [mcpKeyPepper, githubAppId, githubAppPrivateKeyB64, githubAppSlug, pulseArgusDsn],
+    // Regla del repo: una función declara todo secret que su call graph
+    // alcance. `salesforceTokenKey` entra por environments.* — create cifra
+    // el secret de la app, y verify/disconnect descifran para resolver un
+    // access token.
+    secrets: [
+      mcpKeyPepper,
+      githubAppId,
+      githubAppPrivateKeyB64,
+      githubAppSlug,
+      pulseArgusDsn,
+      salesforceTokenKey,
+    ],
   },
   async (request) => {
     const callerUid = request.auth?.uid;

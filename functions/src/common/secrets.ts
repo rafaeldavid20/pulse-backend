@@ -35,3 +35,20 @@ export const githubAppClientId = defineSecret('GITHUB_APP_CLIENT_ID');
 export const githubAppClientSecret = defineSecret('GITHUB_APP_CLIENT_SECRET');
 export const githubWebhookSecret = defineSecret('GITHUB_WEBHOOK_SECRET');
 export const githubAppSlug = defineSecret('GITHUB_APP_SLUG');
+
+// Salesforce (épica O).
+//
+// No hay un client id/secret global: Salesforce deshabilitó la creación de
+// Connected Apps en Spring '26, y su reemplazo —una External Client App con
+// Distribution State `Local`— sólo funciona en la org donde se creó. Así que
+// cada org trae su propia ECA y sus credenciales viajan cifradas en el doc
+// del entorno. Una app única volvería a ser posible empaquetando una ECA en
+// un 2GP, y ahí sí harían falta secrets globales.
+/**
+ * Clave de cifrado de los refresh tokens de Salesforce: 32 bytes en base64.
+ * A diferencia de `mcpKeyPepper`, que se usa para *hashear* (one-way), acá
+ * hace falta recuperar el token para refrescar el access token, así que es
+ * cifrado simétrico reversible (AES-256-GCM) y la clave tiene que ser suya:
+ * reusar el pepper mezclaría un secreto de verificación con uno de descifrado.
+ */
+export const salesforceTokenKey = defineSecret('SALESFORCE_TOKEN_KEY');

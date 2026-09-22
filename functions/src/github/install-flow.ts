@@ -3,8 +3,7 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { mcpKeyPepper, githubAppId, githubAppPrivateKeyB64 } from '../common/secrets';
 import { signShortJwt, verifyShortJwt } from '../common/utils/short-jwt';
 import { getInstallation, listInstallationRepos } from './client';
-
-const PULSE_APP_URL = 'https://pulse-app--pulse-app-93.us-east4.hosted.app';
+import { PULSE_APP_URL } from '../common/app-url';
 
 interface InstallState {
   workspaceId: string;
