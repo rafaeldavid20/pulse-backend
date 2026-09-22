@@ -2,6 +2,7 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { beginSalesforceConnect, PendingEnvironmentConfig } from '../../salesforce/oauth-flow';
+import { encryptToken } from '../../salesforce/crypto';
 import { ENV_KEY_PATTERN, VALID_LOGIN_HOSTS, VALID_TEST_LEVELS } from './shared';
 
 /**
@@ -42,6 +43,17 @@ export class CreateEnvironmentAction extends PlatformActionHandler {
     if (!data.repoFullName) throw new Error('Parámetro requerido faltante: repoFullName.');
     if (!data.trackingBranch) throw new Error('Parámetro requerido faltante: trackingBranch.');
 
+    // Credenciales de la External Client App de esta org. No hay una app
+    // global: Salesforce deshabilitó la creación de Connected Apps en Spring
+    // '26, y una ECA `Local` sólo vale en la org donde se creó.
+    const clientId: string = (data.clientId || '').trim();
+    const clientSecret: string = (data.clientSecret || '').trim();
+    if (!clientId || !clientSecret) {
+      throw new Error(
+        'Faltan el Consumer Key y el Consumer Secret de la External Client App de esta org.'
+      );
+    }
+
     const loginHost: string = data.loginHost || 'login';
     if (!VALID_LOGIN_HOSTS.includes(loginHost)) {
       throw new Error(`loginHost inválido: '${loginHost}'. Usá login, test o custom.`);
@@ -80,6 +92,11 @@ export class CreateEnvironmentAction extends PlatformActionHandler {
 
     const isProduction = !!data.isProduction;
     const config: PendingEnvironmentConfig = {
+      clientId,
+      // Se cifra ya acá: el doc de estado es Admin-only, pero el secret no
+      // tiene por qué existir en claro en ningún lado, ni siquiera diez
+      // minutos.
+      clientSecretEnc: encryptToken(clientSecret),
       key,
       displayName: (data.displayName || key).trim(),
       position: typeof data.position === 'number' ? data.position : 0,

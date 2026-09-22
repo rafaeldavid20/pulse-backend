@@ -1,5 +1,4 @@
 import { getFirestore } from 'firebase-admin/firestore';
-import { salesforceClientId, salesforceClientSecret } from '../common/secrets';
 import { decryptToken } from './crypto';
 
 /**
@@ -74,18 +73,27 @@ async function tokenRequest(host: string, params: Record<string, string>): Promi
   return (await res.json()) as TokenResponse;
 }
 
-/** Canjea el `code` del redirect por access + refresh token. */
+/**
+ * Canjea el `code` del redirect por access + refresh token.
+ *
+ * Las credenciales de la app vienen por parámetro y no de un secret global:
+ * desde Spring '26 Salesforce no deja crear Connected Apps, y una External
+ * Client App `Local` sólo vale en la org donde se creó. O sea que cada org
+ * trae su propia External Client App, con su propio consumer key.
+ */
 export async function exchangeAuthorizationCode(
   host: string,
   code: string,
   redirectUri: string,
-  codeVerifier: string
+  codeVerifier: string,
+  clientId: string,
+  clientSecret: string
 ): Promise<TokenResponse> {
   return tokenRequest(host, {
     grant_type: 'authorization_code',
     code,
-    client_id: salesforceClientId.value(),
-    client_secret: salesforceClientSecret.value(),
+    client_id: clientId,
+    client_secret: clientSecret,
     redirect_uri: redirectUri,
     code_verifier: codeVerifier,
   });
@@ -155,6 +163,9 @@ const ASSUMED_TOKEN_TTL_MS = 55 * 60 * 1000;
 const REFRESH_MARGIN_MS = 5 * 60 * 1000;
 
 interface EnvAuth {
+  /** Consumer key de la External Client App de *esta* org. */
+  clientId: string;
+  clientSecretEnc: string;
   refreshTokenEnc: string;
   accessTokenCache?: CachedToken;
 }
@@ -181,7 +192,7 @@ async function markExpired(environmentId: string, reason: string): Promise<void>
 async function refreshAccessToken(environmentId: string): Promise<string> {
   const { ref, data } = await loadEnvironment(environmentId);
   const auth = data.auth as EnvAuth | undefined;
-  if (!auth?.refreshTokenEnc) {
+  if (!auth?.refreshTokenEnc || !auth.clientId || !auth.clientSecretEnc) {
     throw new Error(`El entorno '${environmentId}' no tiene credenciales; volvé a conectarlo.`);
   }
 
@@ -191,8 +202,8 @@ async function refreshAccessToken(environmentId: string): Promise<string> {
     body = await tokenRequest(host, {
       grant_type: 'refresh_token',
       refresh_token: decryptToken(auth.refreshTokenEnc),
-      client_id: salesforceClientId.value(),
-      client_secret: salesforceClientSecret.value(),
+      client_id: auth.clientId,
+      client_secret: decryptToken(auth.clientSecretEnc),
     });
   } catch (error) {
     const code = error instanceof SalesforceApiError ? error.errorCode : undefined;

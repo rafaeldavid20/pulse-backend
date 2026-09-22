@@ -9,8 +9,6 @@ import {
   githubAppPrivateKeyB64,
   githubAppSlug,
   pulseArgusDsn,
-  salesforceClientId,
-  salesforceClientSecret,
   salesforceTokenKey,
 } from './common/secrets';
 import { capturePulseException } from './common/observability/argus';
@@ -92,17 +90,15 @@ export const pulsePlatformAction = onCall(
     cors: true,
     region: 'us-east4',
     // Regla del repo: una función declara todo secret que su call graph
-    // alcance. Los de Salesforce entran por environments.* (create firma el
-    // state y arma la URL de autorización; verify/disconnect resuelven un
-    // access token, que descifra el refresh token).
+    // alcance. `salesforceTokenKey` entra por environments.* — create cifra
+    // el secret de la app, y verify/disconnect descifran para resolver un
+    // access token.
     secrets: [
       mcpKeyPepper,
       githubAppId,
       githubAppPrivateKeyB64,
       githubAppSlug,
       pulseArgusDsn,
-      salesforceClientId,
-      salesforceClientSecret,
       salesforceTokenKey,
     ],
   },

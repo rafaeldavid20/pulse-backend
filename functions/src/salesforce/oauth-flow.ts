@@ -1,12 +1,7 @@
 import { createHash, randomBytes } from 'crypto';
 import { onRequest } from 'firebase-functions/v2/https';
 import { getFirestore } from 'firebase-admin/firestore';
-import {
-  mcpKeyPepper,
-  salesforceClientId,
-  salesforceClientSecret,
-  salesforceTokenKey,
-} from '../common/secrets';
+import { mcpKeyPepper, salesforceTokenKey } from '../common/secrets';
 import { PULSE_APP_URL } from '../common/app-url';
 import { signShortJwt, verifyShortJwt } from '../common/utils/short-jwt';
 import { nanoid } from 'nanoid';
@@ -18,7 +13,7 @@ import {
   LoginHost,
   SalesforceApiError,
 } from './client';
-import { encryptToken } from './crypto';
+import { decryptToken, encryptToken } from './crypto';
 
 const FUNCTIONS_BASE = 'https://us-east4-pulse-app-93.cloudfunctions.net';
 export const SALESFORCE_REDIRECT_URI = `${FUNCTIONS_BASE}/salesforceCallback`;
@@ -51,6 +46,17 @@ interface ConnectState {
 
 /** Configuración del entorno que se elige antes de ir a Salesforce y se aplica al volver. */
 export interface PendingEnvironmentConfig {
+  /**
+   * Consumer key de la External Client App de esta org, y su secret cifrado.
+   *
+   * Son por entorno y no globales porque desde Spring '26 Salesforce no deja
+   * crear Connected Apps, y una External Client App `Local` sólo funciona en
+   * la org donde se creó: usarla contra otra falla con "Cross-org OAuth flows
+   * are not supported". Una app global volvería a ser posible empaquetando una
+   * ECA en un 2GP, que es otro proyecto.
+   */
+  clientId: string;
+  clientSecretEnc: string;
   key: string;
   displayName: string;
   position: number;
@@ -109,7 +115,7 @@ export async function beginSalesforceConnect(
 
   const params = new URLSearchParams({
     response_type: 'code',
-    client_id: salesforceClientId.value(),
+    client_id: config.clientId,
     redirect_uri: SALESFORCE_REDIRECT_URI,
     scope: OAUTH_SCOPES,
     state,
@@ -133,10 +139,7 @@ function redirectWithError(res: any, code: string): void {
  * `state` firmado; es donde se escribe `environments/{envId}`.
  */
 export const salesforceCallback = onRequest(
-  {
-    region: 'us-east4',
-    secrets: [mcpKeyPepper, salesforceClientId, salesforceClientSecret, salesforceTokenKey],
-  },
+  { region: 'us-east4', secrets: [mcpKeyPepper, salesforceTokenKey] },
   async (req, res) => {
     const db = getFirestore();
 
@@ -189,7 +192,14 @@ export const salesforceCallback = onRequest(
 
     try {
       const host = authHost(config.loginHost, config.customDomain);
-      const tokens = await exchangeAuthorizationCode(host, code, SALESFORCE_REDIRECT_URI, stateDoc.codeVerifier);
+      const tokens = await exchangeAuthorizationCode(
+        host,
+        code,
+        SALESFORCE_REDIRECT_URI,
+        stateDoc.codeVerifier,
+        config.clientId,
+        decryptToken(config.clientSecretEnc)
+      );
 
       if (!tokens.refresh_token) {
         // Sin refresh token la conexión sirve para una sesión y después se
@@ -238,7 +248,11 @@ export const salesforceCallback = onRequest(
               username: identity.username,
               apiVersion,
             },
-            auth: { refreshTokenEnc: encryptToken(tokens.refresh_token) },
+            auth: {
+              clientId: config.clientId,
+              clientSecretEnc: config.clientSecretEnc,
+              refreshTokenEnc: encryptToken(tokens.refresh_token),
+            },
             createdAt: existing.exists ? existing.data()!.createdAt : now,
             connectedBy: claims.uid,
             // Una reconexión invalida el SFDX_AUTH_URL escrito en los repos,
