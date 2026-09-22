@@ -50,12 +50,14 @@ export async function buildMcpTransport(principal: McpPrincipal) {
   const { registerReadTools } = await import('./tools/read');
   const { registerWriteTools } = await import('./tools/write');
   const { registerSalesforceTools } = await import('./tools/salesforce');
+  const { registerDeploymentTools } = await import('./tools/deployments');
 
   const server = new McpServer({ name: 'pulse-mcp', version: '0.1.0' });
   enforceScopes(server, principal);
   registerReadTools(server, principal);
   registerWriteTools(server, principal);
   registerSalesforceTools(server, principal);
+  registerDeploymentTools(server, principal);
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
