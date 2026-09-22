@@ -11,7 +11,6 @@ import { SalesforceQueryAction } from '../../actions/salesforce/query';
 import { SalesforceToolingQueryAction } from '../../actions/salesforce/tooling-query';
 import { SalesforceDescribeAction } from '../../actions/salesforce/describe';
 import { SalesforceLimitsAction } from '../../actions/salesforce/limits';
-import { NO_SALESFORCE_PROJECT_MESSAGE, workspaceHasSalesforceProject } from '../../salesforce/gate';
 import { MAX_ROWS } from '../../salesforce/read';
 
 type SalesforceActionCode = 'salesforce.query' | 'salesforce.toolingQuery' | 'salesforce.describe' | 'salesforce.limits';
@@ -37,19 +36,12 @@ const environmentParam = z
  * workspace da "no existe", igual que uno inventado. Es la misma regla que
  * protege `workspaceId` en `write.ts`.
  *
- * Además, si el workspace no tiene ningún proyecto Salesforce las tools lo
- * dicen en vez de fallar raro (TES-270). Ese chequeo **no** es de seguridad;
- * lo es el de arriba.
+ * Si el workspace no tiene ningún proyecto Salesforce, el wrapper de
+ * `mcp/server.ts` responde por todas las `pulse_sf_*` antes de llegar acá
+ * (TES-270). Ese chequeo **no** es de seguridad; lo es el de arriba.
  */
 export function registerSalesforceTools(server: McpServer, principal: McpPrincipal) {
   const actorUid = principal.agentId ?? principal.createdBy;
-
-  async function gated<T>(run: () => Promise<T>) {
-    if (!(await workspaceHasSalesforceProject(principal.workspaceId))) {
-      return textResult({ error: NO_SALESFORCE_PROJECT_MESSAGE });
-    }
-    return run();
-  }
 
   async function runAction(actionCode: SalesforceActionCode, data: Record<string, any>) {
     const ActionClass = ACTIONS[actionCode];
@@ -65,45 +57,44 @@ export function registerSalesforceTools(server: McpServer, principal: McpPrincip
     'pulse_sf_list_orgs',
     'Lists the Salesforce orgs (environments) connected to this workspace: key, org, sandbox or production, connection state, and the git branch that tracks what is deployed there. Start here before querying an org.',
     {},
-    async () =>
-      gated(async () => {
-        const snap = await getFirestore().collection('environments').where('workspaceId', '==', principal.workspaceId).get();
-        const orgs = snap.docs
-          .map((d) => sanitizeEnvironment(d.data()))
-          .sort((a, b) => a.position - b.position)
-          .map((e) => ({
-            id: e.id,
-            key: e.key,
-            displayName: e.displayName,
-            isProduction: e.isProduction,
-            allowDirectWrites: e.allowDirectWrites,
-            connectionState: e.connectionState,
-            trackingBranch: e.trackingBranch,
-            repoFullName: e.repoFullName,
-            orgId: e.salesforce?.orgId,
-            instanceUrl: e.salesforce?.instanceUrl,
-            isSandbox: e.salesforce?.isSandbox,
-            apiVersion: e.salesforce?.apiVersion,
-          }));
-        return textResult({
-          orgs,
-          ...(orgs.length === 0 ? { note: 'No hay orgs conectadas. Se conectan desde Configuración → Salesforce.' } : {}),
-        });
-      })
+    async () => {
+      const snap = await getFirestore().collection('environments').where('workspaceId', '==', principal.workspaceId).get();
+      const orgs = snap.docs
+        .map((d) => sanitizeEnvironment(d.data()))
+        .sort((a, b) => a.position - b.position)
+        .map((e) => ({
+          id: e.id,
+          key: e.key,
+          displayName: e.displayName,
+          isProduction: e.isProduction,
+          allowDirectWrites: e.allowDirectWrites,
+          connectionState: e.connectionState,
+          trackingBranch: e.trackingBranch,
+          repoFullName: e.repoFullName,
+          orgId: e.salesforce?.orgId,
+          instanceUrl: e.salesforce?.instanceUrl,
+          isSandbox: e.salesforce?.isSandbox,
+          apiVersion: e.salesforce?.apiVersion,
+        }));
+      return textResult({
+        orgs,
+        ...(orgs.length === 0 ? { note: 'No hay orgs conectadas. Se conectan desde Configuración → Salesforce.' } : {}),
+      });
+    }
   );
 
   server.tool(
     'pulse_sf_query',
     `Runs a read-only SOQL query against a connected org (Data API). Returns at most ${MAX_ROWS} rows, without the "attributes" metadata. A query without LIMIT on a large object is rejected — add LIMIT, filter with WHERE, or use SELECT COUNT().`,
     { environment: environmentParam, soql: z.string().describe('A SOQL SELECT statement.') },
-    async ({ environment, soql }) => gated(() => runAction('salesforce.query', { environment, soql }))
+    async ({ environment, soql }) => runAction('salesforce.query', { environment, soql })
   );
 
   server.tool(
     'pulse_sf_tooling_query',
     `Runs a read-only SOQL query against the Tooling API of a connected org — metadata already in the org: ApexClass, ApexTrigger, CustomField, FlowDefinitionView, ValidationRule, LightningComponentBundle… Returns at most ${MAX_ROWS} rows.`,
     { environment: environmentParam, soql: z.string().describe('A Tooling API SOQL SELECT statement.') },
-    async ({ environment, soql }) => gated(() => runAction('salesforce.toolingQuery', { environment, soql }))
+    async ({ environment, soql }) => runAction('salesforce.toolingQuery', { environment, soql })
   );
 
   server.tool(
@@ -114,13 +105,13 @@ export function registerSalesforceTools(server: McpServer, principal: McpPrincip
       sobject: z.string().optional().describe('API name, e.g. "Account" or "Invoice__c". Omit to list objects.'),
       tooling: z.boolean().optional().describe('Describe Tooling API objects instead of data objects.'),
     },
-    async ({ environment, sobject, tooling }) => gated(() => runAction('salesforce.describe', { environment, sobject, tooling }))
+    async ({ environment, sobject, tooling }) => runAction('salesforce.describe', { environment, sobject, tooling })
   );
 
   server.tool(
     'pulse_sf_limits',
     'Returns the org limits (DailyApiRequests, DataStorageMB, …) as { max, remaining } — check before a data load or a heavy deploy.',
     { environment: environmentParam },
-    async ({ environment }) => gated(() => runAction('salesforce.limits', { environment }))
+    async ({ environment }) => runAction('salesforce.limits', { environment })
   );
 }
