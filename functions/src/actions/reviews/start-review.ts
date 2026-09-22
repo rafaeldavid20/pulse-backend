@@ -48,7 +48,12 @@ export class ReviewsStartAction extends PlatformActionHandler {
 
       const candidates = snap.docs
         .map((d) => ({ ref: d.ref, issue: d.data() }))
-        .filter(({ issue }) => {
+        .filter(({ ref, issue }) => {
+          // TES-276: con dos revisiones despachadas en paralelo al mismo agente,
+          // sin esto cada run toma la primera que encuentra — y como una
+          // revisión `running` de este mismo agente cuenta como "retomar", el
+          // run de un issue terminaba revisando el del otro.
+          if (data.issueId && ref.id !== data.issueId) return false;
           const review = issue.review as IssueReview | undefined;
           if (review?.dispatchedTo !== actorUid) return false;
           if (review.state === 'needs_human') return false;
