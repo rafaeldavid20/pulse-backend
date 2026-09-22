@@ -23,11 +23,17 @@ interface ReviewablePr {
 }
 
 /**
- * Los PRs del issue, si TODOS están en condiciones de revisarse: cada rama
- * tiene un PR abierto (ni sin abrir, ni draft, ni cerrado) y no queda ningún
- * traspaso a otro repo sin cerrar (K9/TES-202) — lo mismo que exige
+ * Los PRs del issue, si el conjunto está en condiciones de revisarse: cada
+ * rama tiene PR, ninguno quedó en draft ni cerrado sin mergear, y no queda
+ * ningún traspaso a otro repo sin cerrar (K9/TES-202) — lo mismo que exige
  * `statusFromGitRefs` para dejar entrar el issue a `in_review`, revalidado acá
  * por si algo más lo empujó a este estado.
+ *
+ * Un PR **ya mergeado no impide revisar el resto** (TES-274). Antes se exigía
+ * que todos estuvieran abiertos, y eso dejaba sin revisión a cualquier issue
+ * multi-repo cuyos PRs no coincidieran abiertos al mismo tiempo. El diff de un
+ * PR mergeado sigue siendo legible y sigue siendo parte del trabajo del issue,
+ * así que entra en el contexto de la revisión como cualquier otro.
  *
  * `null` cuando el conjunto no es revisable todavía.
  */
@@ -42,7 +48,10 @@ function reviewablePrs(issue: FirebaseFirestore.DocumentData): ReviewablePr[] | 
         : [];
 
   if (refs.length === 0) return null;
-  if (!refs.every((r) => r?.prNumber !== undefined && r.prState === 'open')) return null;
+  if (!refs.every((r) => r?.prNumber !== undefined)) return null;
+  if (refs.some((r) => r.prState === 'draft' || r.prState === 'closed')) return null;
+  // Todos mergeados es un issue cerrado, no uno para revisar.
+  if (refs.every((r) => r.prState === 'merged')) return null;
 
   return refs.map((r) => ({ repoFullName: r.repoFullName, prNumber: r.prNumber, branch: r.branch }));
 }

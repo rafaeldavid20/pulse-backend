@@ -90,9 +90,24 @@ export function statusFromGitRefs(refs: any[] | undefined): string | null {
   if (withPr.length < refs.length) return 'in_progress';
 
   if (withPr.every((r) => r.prState === 'merged')) return 'done';
-  if (withPr.every((r) => r.prState === 'open')) return 'in_review';
-  if (withPr.some((r) => r.prState === 'closed' && !r.merged)) return 'in_progress';
 
-  // Mezcla de abiertos y mergeados, o algún draft: sigue habiendo trabajo.
-  return 'in_progress';
+  // Un PR cerrado sin mergear es trabajo rechazado: vuelve a desarrollo.
+  // (`prState` representa lo mergeado con su propio valor, así que `closed`
+  // ya significa cerrado-sin-mergear.)
+  if (withPr.some((r) => r.prState === 'closed')) return 'in_progress';
+
+  // Un draft es trabajo que todavía se está escribiendo.
+  if (withPr.some((r) => r.prState === 'draft')) return 'in_progress';
+
+  // Lo que queda son PRs abiertos, o una mezcla de abiertos y mergeados. En
+  // los dos casos el trabajo está entregado y lo que falta es revisión, no
+  // desarrollo.
+  //
+  // La mezcla solía caer acá en `in_progress` (TES-274), y eso tenía dos
+  // consecuencias feas: mergear uno de varios PRs mandaba el issue *para
+  // atrás* en el board justo cuando parte del trabajo se aceptaba, y —peor—
+  // un issue multi-repo cuyos PRs no coincidían abiertos al mismo tiempo no
+  // entraba nunca a `in_review`, así que el QA no corría y el issue cerraba
+  // sin revisión y sin ninguna señal de que eso pasó.
+  return 'in_review';
 }
