@@ -160,6 +160,8 @@ function stripAttributes(value: unknown): unknown {
 }
 
 export interface QueryResult {
+  /** Sólo en `SELECT COUNT()`: la cuenta. Salesforce la devuelve en `totalSize`, sin filas. */
+  count?: number;
   totalSize: number;
   returned: number;
   truncated: boolean;
@@ -198,6 +200,13 @@ export async function runSoql(
     // después se descartan acá.
     { headers: { 'Sforce-Query-Options': `batchSize=${MAX_ROWS}` } }
   );
+
+  // `SELECT COUNT()` no trae filas: la respuesta es `totalSize`. Sin este caso
+  // salía como "truncada, 0 de 13", que le dice al modelo lo contrario (TES-279).
+  if (shape.isPlainCount) {
+    const count = res?.totalSize ?? 0;
+    return { count, totalSize: count, returned: 0, truncated: false, records: [] };
+  }
 
   const all = res?.records ?? [];
   const records = all.slice(0, MAX_ROWS).map(stripAttributes);
