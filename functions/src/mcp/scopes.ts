@@ -114,6 +114,9 @@ export const TOOL_SCOPES: Record<string, McpScope> = {
 
   // Workflow de deploy (O3/TES-253), en `tools/deployments.ts`.
   pulse_start_deployment: 'deploy:write',
+  // Lectura de la evidencia de deploy/validación: la necesitan dev y QA, que
+  // tienen `issues:read`; la key del workflow no.
+  pulse_get_deployment: 'issues:read',
   pulse_report_deployment: 'deploy:write',
 };
 

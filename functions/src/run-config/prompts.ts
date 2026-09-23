@@ -168,6 +168,13 @@ la Definition of Done del proyecto (D14), el self-check del dev,
 los findings de intentos previos y su estado, los comentarios del
 issue, y el diff de cada PR.
 
+Si el issue es de un repo Salesforce, llamá también a
+pulse_get_deployment con el identifier: trae la validación del PR
+contra la org de dev (componentes que no compilan, tests rojos,
+cobertura). Una validación fallida sobre el commit que revisás la
+agrega el servidor como blocker automáticamente; usala para explicar
+qué hay que arreglar, no para decidir si bloquea.
+
 Verificá SIEMPRE la Definition of Done del proyecto, aunque venga
 vacía o el issue no la mencione — son reglas que valen para todos
 los issues del proyecto, no una rúbrica opcional. Un incumplimiento

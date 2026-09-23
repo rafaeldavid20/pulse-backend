@@ -142,13 +142,18 @@ export class ConnectEnvironmentRepoAction extends PlatformActionHandler {
         .map((e) => e.trackingBranch)
         .filter(Boolean),
     ];
-    const file = await putRepoFile(
-      installation.installationId,
-      repoFullName,
-      DEPLOY_WORKFLOW_PATH,
-      renderDeployWorkflow(branches),
-      `chore: atar el entorno ${env.key} de Pulse a este repo`
-    );
+    let file: { sha: string; created: boolean };
+    try {
+      file = await putRepoFile(
+        installation.installationId,
+        repoFullName,
+        DEPLOY_WORKFLOW_PATH,
+        renderDeployWorkflow(branches),
+        `chore: atar el entorno ${env.key} de Pulse a este repo`
+      );
+    } catch (error) {
+      throw new Error(`No se pudo commitear ${DEPLOY_WORKFLOW_PATH} en '${repoFullName}': ${(error as Error).message}. ${permissionHint}`);
+    }
 
     const connection = {
       repoFullName,

@@ -1,8 +1,9 @@
 /**
  * Workflow que `environments.connectRepo` commitea en el repo de un proyecto
  * Salesforce (O3/TES-253): un push a la `trackingBranch` de un entorno
- * despliega el delta a su org, y un `repository_dispatch` `pulse_deploy`
- * corre validaciones y quick deploys (O4/O5).
+ * despliega el delta a su org, un PR se valida check-only contra el primer
+ * entorno de la cadena (O5/TES-255), y un `repository_dispatch`
+ * `pulse_deploy` corre validaciones y quick deploys (O4).
  *
  * Mismo contrato de versionado que `github/templates/pulse-agent-workflow.ts`:
  * `DEPLOY_WORKFLOW_VERSION` va estampada en el archivo; si cambia, los repos ya
@@ -17,7 +18,8 @@
  *   a un `pulseMcp` frío puede fallar.
  */
 
-export const DEPLOY_WORKFLOW_VERSION = 1;
+// v2 (TES-255): validación de PRs, login sin salida y 403 legible al commitear.
+export const DEPLOY_WORKFLOW_VERSION = 2;
 
 export const DEPLOY_WORKFLOW_PATH = '.github/workflows/pulse-deploy.yml';
 
@@ -62,13 +64,17 @@ export function renderDeployWorkflow(trackingBranches: string[]): string {
 on:
   push:
     branches: [${branchList}]
+  pull_request:
+    types: [opened, synchronize, reopened]
   repository_dispatch:
     types: [pulse_deploy]
 
-# Un deploy por entorno a la vez; el siguiente espera en vez de pisarlo.
+# Un deploy por entorno a la vez: el siguiente espera en vez de pisarlo. Una
+# validación de PR, en cambio, se cancela si llega un push nuevo al mismo PR:
+# el Deployment se reutiliza y la validación que importa es la del último commit.
 concurrency:
-  group: pulse-deploy-\${{ github.event.client_payload.environment || github.ref_name }}
-  cancel-in-progress: false
+  group: \${{ github.event_name == 'pull_request' && format('pulse-validate-{0}', github.event.pull_request.number) || format('pulse-deploy-{0}', github.event.client_payload.environment || github.ref_name) }}
+  cancel-in-progress: \${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -81,7 +87,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: \${{ github.event.client_payload.sha || github.sha }}
+          ref: \${{ github.event.pull_request.head.sha || github.event.client_payload.sha || github.sha }}
 
       - name: Pedir el entorno a Pulse
         id: start
@@ -89,6 +95,8 @@ jobs:
           ${DEPLOY_MCP_SECRET_NAME}: \${{ secrets.${DEPLOY_MCP_SECRET_NAME} }}
           EVENT: \${{ github.event_name }}
           BRANCH: \${{ github.ref_name }}
+          PR_NUMBER: \${{ github.event.pull_request.number }}
+          PR_HEAD_REF: \${{ github.head_ref }}
           P_ENV: \${{ github.event.client_payload.environment }}
           P_MODE: \${{ github.event.client_payload.mode }}
           P_TRIGGER: \${{ github.event.client_payload.trigger }}
@@ -100,6 +108,14 @@ jobs:
           ${PY_CALL.trim()}
 
           dispatch = os.environ.get('EVENT') == 'repository_dispatch'
+          pr = os.environ.get('EVENT') == 'pull_request'
+          out = open(os.environ['GITHUB_OUTPUT'], 'a')
+          if pr and not KEY:
+              # PR desde un fork: GitHub no le pasa los secrets. No hay nada que
+              # validar sin credencial, y no es un error del PR.
+              out.write('proceed=false' + chr(10))
+              print('PR sin acceso a los secrets del repo (¿fork?): no se valida contra la org.')
+              raise SystemExit(0)
           args = {
               'repoFullName': os.environ.get('GITHUB_REPOSITORY', ''),
               'sha': os.popen('git rev-parse HEAD').read().strip(),
@@ -107,7 +123,12 @@ jobs:
               'mode': (os.environ.get('P_MODE') if dispatch else '') or 'deploy',
               'trigger': (os.environ.get('P_TRIGGER') if dispatch else '') or ('manual' if dispatch else 'push'),
           }
-          if dispatch:
+          if pr:
+              args['trigger'] = 'pr_validation'
+              args['mode'] = 'validate'
+              args['branch'] = os.environ.get('PR_HEAD_REF', '')
+              args['prNumber'] = int(os.environ.get('PR_NUMBER') or 0)
+          elif dispatch:
               args['environment'] = os.environ.get('P_ENV', '')
               if os.environ.get('P_DEPLOYMENT'):
                   args['deploymentId'] = os.environ['P_DEPLOYMENT']
@@ -117,7 +138,6 @@ jobs:
               args['branch'] = os.environ.get('BRANCH', '')
 
           res = call('pulse_start_deployment', args)
-          out = open(os.environ['GITHUB_OUTPUT'], 'a')
           if not res or res.get('error'):
               # El mensaje de error de Pulse no trae datos de la org: se puede mostrar.
               print('Pulse no autorizó el deploy: ' + str((res or {}).get('error', 'sin respuesta de Pulse')))
@@ -144,13 +164,20 @@ jobs:
             echo "Falta el secret \${{ steps.start.outputs.secretName }}: volvé a atar el entorno desde Pulse."
             exit 1
           fi
-          echo "$SF_AUTH_URL" | sf org login sfdx-url --sfdx-url-stdin --alias pulse-target --set-default > /dev/null
+          # Sin salida: un error de login del CLI puede traer datos de la org, y
+          # el log del repo puede ser público.
+          if ! echo "$SF_AUTH_URL" | sf org login sfdx-url --sfdx-url-stdin --alias pulse-target --set-default > /dev/null 2>&1; then
+            echo "No se pudo loguear en la org: la credencial del secret puede haber caducado. Reconectá la org y volvé a atar el repo desde Pulse."
+            exit 1
+          fi
 
       - name: Desplegar
         id: deploy
         if: steps.start.outputs.proceed == 'true'
         env:
           FROM_SHA: \${{ steps.start.outputs.fromSha }}
+          IS_PR: \${{ github.event_name == 'pull_request' }}
+          BASE_REF: \${{ github.base_ref }}
           MODE: \${{ steps.start.outputs.mode }}
           TEST_LEVEL: \${{ steps.start.outputs.testLevel }}
           VALIDATION_ID: \${{ steps.start.outputs.validationId }}
@@ -160,6 +187,12 @@ jobs:
           if [ "$MODE" = "quick" ]; then
             sf project deploy quick --job-id "$VALIDATION_ID" --target-org pulse-target --wait 110 --json > "$OUT" 2>/dev/null
             echo "exit=$?" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          # Un PR se valida por lo que cambia: el delta desde el merge-base con la
+          # rama destino, no desde lo que tiene desplegado la org.
+          if [ "$IS_PR" = "true" ]; then
+            FROM_SHA=$(git merge-base "origin/$BASE_REF" HEAD 2>/dev/null)
           fi
 
           TARGET=()
