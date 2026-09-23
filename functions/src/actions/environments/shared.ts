@@ -1,7 +1,12 @@
 import { getFirestore } from 'firebase-admin/firestore';
 import { Environment } from '../../common/domain.generated';
 
-/** Claves de entorno: cortas, en minúsculas, y válidas como sufijo de un secret de GitHub. */
+/**
+ * Claves de entorno: cortas, en minúsculas, y válidas como sufijo de un secret
+ * de GitHub. Únicas por **workspace**, no por proyecto: dos proyectos
+ * Salesforce del mismo workspace comparten el espacio de claves (TES-270 —
+ * un cliente distinto va en un workspace distinto).
+ */
 export const ENV_KEY_PATTERN = /^[a-z][a-z0-9_]{0,23}$/;
 
 export const VALID_TEST_LEVELS = ['NoTestRun', 'RunLocalTests', 'RunAllTestsInOrg', 'RunSpecifiedTests'];

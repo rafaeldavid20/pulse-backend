@@ -2,7 +2,7 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { cleanUndefined } from '../../common/utils/clean';
-import { PROJECT_WRITABLE_FIELDS } from '../../common/utils/project-fields';
+import { PROJECT_WRITABLE_FIELDS, normalizeProjectKind } from '../../common/utils/project-fields';
 import { pickWritableFields } from '../../common/utils/issue-fields';
 import { normalizeDefinitionOfDone } from '../../common/utils/definition-of-done';
 
@@ -51,6 +51,9 @@ export class UpdateProjectAction extends PlatformActionHandler {
     // normalizada (ids estables asignados a los ítems que no traían uno).
     if ('definitionOfDone' in data) {
       updates.definitionOfDone = normalizeDefinitionOfDone(data.definitionOfDone) || [];
+    }
+    if ('kind' in data) {
+      updates.kind = normalizeProjectKind(data.kind);
     }
 
     await projRef.update(cleanUndefined(updates));

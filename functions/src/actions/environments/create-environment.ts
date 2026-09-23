@@ -3,6 +3,7 @@ import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { beginSalesforceConnect, PendingEnvironmentConfig } from '../../salesforce/oauth-flow';
 import { encryptToken } from '../../salesforce/crypto';
+import { workspaceHasSalesforceProject, NO_SALESFORCE_PROJECT_MESSAGE } from '../../salesforce/gate';
 import { ENV_KEY_PATTERN, VALID_LOGIN_HOSTS, VALID_TEST_LEVELS } from './shared';
 
 /**
@@ -35,6 +36,10 @@ export class CreateEnvironmentAction extends PlatformActionHandler {
     const key: string = (data.key || '').trim().toLowerCase();
 
     if (!workspaceId) throw new Error('Parámetro requerido faltante: workspaceId.');
+    // Orden natural: primero hay un proyecto Salesforce, después se le
+    // conectan orgs (TES-270). No es el control de acceso — eso es el
+    // `assertWorkspaceMember(..., 'admin')` de `authorize()`.
+    if (!(await workspaceHasSalesforceProject(workspaceId))) throw new Error(NO_SALESFORCE_PROJECT_MESSAGE);
     if (!ENV_KEY_PATTERN.test(key)) {
       throw new Error(
         'La clave del entorno debe empezar con una letra y usar sólo minúsculas, números y guiones bajos (máx. 24).'

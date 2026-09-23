@@ -162,6 +162,15 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Deploys a una org de Salesforce (O3/TES-253). Patrón A: los miembros los
+    // leen (el panel del issue y el pipeline los van a mostrar en vivo), sólo
+    // el Admin SDK los escribe — deployments.start/report por el MCP, con la
+    // key del workflow. No guardan credenciales: errores y conteos del CLI.
+    match /deployments/{deploymentId} {
+      allow read: if isMember(resource.data.workspaceId);
+      allow write: if false;
+    }
+
     // Calibración del modo sombra de QA (D17/TES-213): un registro por
     // (issue, intento) que compara el veredicto del QA con el desenlace
     // humano del PR (merge o close). Admin SDK only — githubWebhook es el

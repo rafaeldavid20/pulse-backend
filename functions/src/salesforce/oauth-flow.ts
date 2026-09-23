@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from 'crypto';
 import { onRequest } from 'firebase-functions/v2/https';
 import { getFirestore } from 'firebase-admin/firestore';
-import { mcpKeyPepper, salesforceTokenKey } from '../common/secrets';
+import { mcpKeyPepper, salesforceTokenKey, githubAppId, githubAppPrivateKeyB64 } from '../common/secrets';
+import { rewriteConnectedRepoSecrets } from './repo-connection';
 import { PULSE_APP_URL } from '../common/app-url';
 import { signShortJwt, verifyShortJwt } from '../common/utils/short-jwt';
 import { cleanUndefined } from '../common/utils/clean';
@@ -148,7 +149,8 @@ function redirectWithError(res: any, code: string): void {
  * `state` firmado; es donde se escribe `environments/{envId}`.
  */
 export const salesforceCallback = onRequest(
-  { region: 'us-east4', secrets: [mcpKeyPepper, salesforceTokenKey] },
+  // Las de la GitHub App: una reconexión reescribe el secret en los repos atados.
+  { region: 'us-east4', secrets: [mcpKeyPepper, salesforceTokenKey, githubAppId, githubAppPrivateKeyB64] },
   async (req, res) => {
     const db = getFirestore();
 
@@ -264,15 +266,17 @@ export const salesforceCallback = onRequest(
             },
             createdAt: existing.exists ? existing.data()!.createdAt : now,
             connectedBy: claims.uid,
-            // Una reconexión invalida el SFDX_AUTH_URL escrito en los repos,
-            // porque embebe el refresh token. O3 reescribe esos secrets; hasta
-            // entonces queda marcado para que la UI lo muestre.
-            ...(existing.exists && (existing.data()!.connectedRepos || []).length > 0
-              ? { repoSecretsStale: true }
-              : {}),
           }),
           { merge: true }
         );
+
+      // Una reconexión invalida el SFDX_AUTH_URL escrito en los repos, porque
+      // embebe el refresh token: se reescribe en todos los atados (O3). Si
+      // alguno falla, queda marcado para que la UI ofrezca volver a atarlo.
+      if (existing.exists && (existing.data()!.connectedRepos || []).length > 0) {
+        const failed = await rewriteConnectedRepoSecrets(environmentId);
+        await db.collection('environments').doc(environmentId).update({ repoSecretsStale: failed.length > 0 });
+      }
 
       res.redirect(302, `${SETTINGS_URL}?sf=connected&env=${encodeURIComponent(config.key)}`);
     } catch (error) {
