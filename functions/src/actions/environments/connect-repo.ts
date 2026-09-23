@@ -52,8 +52,11 @@ export class ConnectEnvironmentRepoAction extends PlatformActionHandler {
     const environmentId: string = this.action.data.environmentId;
     const workspaceId = this.resolvedWorkspaceId!;
     const env = await loadEnvironmentForWorkspace(environmentId, workspaceId);
+    // Un entorno puede haberse conectado sin repo ni rama (TES-277): se dan acá.
     const repoFullName: string = (this.action.data.repoFullName || env.repoFullName || '').trim();
-    if (!repoFullName) throw new Error('El entorno no tiene repo; indicá repoFullName.');
+    const trackingBranch: string = (this.action.data.trackingBranch || env.trackingBranch || '').trim();
+    if (!repoFullName) throw new Error('Elegí el repo al que se ata este entorno (repoFullName).');
+    if (!trackingBranch) throw new Error('Indicá la rama cuyo push despliega a este entorno (trackingBranch).');
 
     const installSnap = await db.collection('github_installations').where('workspaceId', '==', workspaceId).limit(1).get();
     if (installSnap.empty) throw new Error('Este workspace no tiene GitHub conectado todavía (Configuración → Integraciones).');
@@ -61,6 +64,26 @@ export class ConnectEnvironmentRepoAction extends PlatformActionHandler {
     const authorized: string[] = installation.repositoryFullNames || [];
     if (authorized.length > 0 && !authorized.includes(repoFullName)) {
       throw new Error(`'${repoFullName}' no está entre los repos de esta instalación (${authorized.join(', ')}).`);
+    }
+
+    // Una rama despliega a un solo entorno por repo: si no, `deployments.start`
+    // no sabría a cuál mandar un push. Se valida antes de escribir secrets.
+    const siblings = await db.collection('environments').where('workspaceId', '==', workspaceId).get();
+    const clash = siblings.docs
+      .map((d) => d.data())
+      .find(
+        (e) =>
+          e.id !== environmentId &&
+          e.trackingBranch === trackingBranch &&
+          (e.connectedRepos || []).some((c: any) => c.repoFullName === repoFullName)
+      );
+    if (clash) {
+      throw new Error(`La rama '${trackingBranch}' ya despliega a '${clash.key}' en ${repoFullName}. Elegí otra.`);
+    }
+    if (repoFullName !== env.repoFullName || trackingBranch !== env.trackingBranch) {
+      await db.collection('environments').doc(environmentId).update({ repoFullName, trackingBranch });
+      env.repoFullName = repoFullName;
+      env.trackingBranch = trackingBranch;
     }
 
     const permissionHint =
@@ -111,12 +134,14 @@ export class ConnectEnvironmentRepoAction extends PlatformActionHandler {
     );
 
     // 3. Workflow con las ramas de todos los entornos atados a este repo.
-    const siblings = await db.collection('environments').where('workspaceId', '==', workspaceId).get();
-    const branches = siblings.docs
-      .map((d) => d.data())
-      .filter((e) => e.id === environmentId || (e.connectedRepos || []).some((c: any) => c.repoFullName === repoFullName))
-      .map((e) => e.trackingBranch)
-      .filter(Boolean);
+    const branches = [
+      trackingBranch,
+      ...siblings.docs
+        .map((d) => d.data())
+        .filter((e) => e.id !== environmentId && (e.connectedRepos || []).some((c: any) => c.repoFullName === repoFullName))
+        .map((e) => e.trackingBranch)
+        .filter(Boolean),
+    ];
     const file = await putRepoFile(
       installation.installationId,
       repoFullName,

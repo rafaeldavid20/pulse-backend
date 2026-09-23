@@ -49,7 +49,8 @@ export class StartDeploymentAction extends PlatformActionHandler {
       if (!env) throw new Error(`No existe el entorno '${key}' en este workspace.`);
       return env;
     }
-    const matches = envs.filter((e) => e.trackingBranch === branch);
+    // Un entorno sin rama (TES-277: conectado sin repo) nunca matchea un push.
+    const matches = envs.filter((e) => !!e.trackingBranch && e.trackingBranch === branch);
     const inRepo = matches.filter(
       (e) => (e.connectedRepos || []).some((c: any) => c.repoFullName === repoFullName) || e.repoFullName === repoFullName
     );
