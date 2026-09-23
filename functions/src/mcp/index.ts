@@ -2,7 +2,14 @@ import { Request as ExpressRequest, Response as ExpressResponse } from 'express'
 import { onRequest } from 'firebase-functions/v2/https';
 import { buildMcpTransport } from './server';
 import { authenticateRequest, McpAuthError, McpPrincipal } from './auth';
-import { mcpKeyPepper, githubAppId, githubAppPrivateKeyB64, githubAppSlug, pulseArgusDsn } from '../common/secrets';
+import {
+  mcpKeyPepper,
+  githubAppId,
+  githubAppPrivateKeyB64,
+  githubAppSlug,
+  pulseArgusDsn,
+  salesforceTokenKey,
+} from '../common/secrets';
 import { capturePulseException } from '../common/observability/argus';
 import { OAUTH_PROTECTED_RESOURCE_METADATA_URL } from '../oauth/constants';
 
@@ -58,7 +65,8 @@ export const pulseMcp = onRequest(
     region: 'us-east4',
     memory: '512MiB',
     timeoutSeconds: 60,
-    secrets: [mcpKeyPepper, githubAppId, githubAppPrivateKeyB64, githubAppSlug, pulseArgusDsn],
+    // `salesforceTokenKey`: las tools `pulse_sf_*` descifran el refresh token de la org.
+    secrets: [mcpKeyPepper, githubAppId, githubAppPrivateKeyB64, githubAppSlug, pulseArgusDsn, salesforceTokenKey],
   },
   async (req, res) => {
     for (const [key, value] of Object.entries(CORS_HEADERS)) res.setHeader(key, value);

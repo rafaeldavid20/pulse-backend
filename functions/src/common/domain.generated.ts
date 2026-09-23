@@ -5,7 +5,7 @@
 // dominio de Pulse. Para cambiar algo de acá, editá ese archivo y corré
 // `npm run sync:types` desde `pulse-app`.
 //
-// SOURCE_HASH: 39a78c2e05755118
+// SOURCE_HASH: a3e81e8841cfc95c
 // ============================================================
 
 /**
@@ -380,6 +380,8 @@ export interface EnvRepoConnection {
   secretName: string;
   workflowPath: string;
   workflowVersion: number;
+  /** Key de MCP (`deploy:write`) que el workflow usa para hablar con Pulse. Una por repo. */
+  deployKeyId?: string;
   connectedAt: string;
 }
 
@@ -425,6 +427,69 @@ export interface Environment {
   createdAt: string;
   /** Uid de quien autorizó la conexión. */
   connectedBy: string;
+}
+
+export type DeploymentMode = 'validate' | 'deploy' | 'quick';
+
+/**
+ * `awaiting_approval`: el entorno tiene `requiresApproval` y el deploy no tocó
+ * la org. La aprobación en sí es O8 (TES-258); mientras tanto, un deploy a un
+ * entorno con aprobación queda frenado acá en vez de pasar sin puerta.
+ */
+export type DeploymentStatus = 'running' | 'succeeded' | 'failed' | 'canceled' | 'awaiting_approval';
+
+export type DeploymentTrigger = 'promotion' | 'push' | 'manual' | 'pr_validation';
+
+/** Un error de un deploy, tomado del `--json` del CLI de Salesforce. */
+export interface DeploymentError {
+  kind: 'component' | 'test' | 'general';
+  /** `ApexClass`, `CustomField`… (componentes) o la clase de test. */
+  componentType?: string;
+  /** Nombre del componente, o `Clase.metodo` para un test. */
+  fullName?: string;
+  problem: string;
+  lineNumber?: number;
+  columnNumber?: number;
+}
+
+/**
+ * Un deploy (o validación) contra la org de un entorno (O3/TES-253). Vive en
+ * `deployments/{id}`: lectura por membresía, escritura sólo Admin SDK. Lo crea
+ * el workflow del repo con `pulse_start_deployment` y lo cierra con
+ * `pulse_report_deployment`.
+ */
+export interface Deployment {
+  id: string;
+  workspaceId: string;
+  projectId?: string;
+  environmentId: string;
+  envKey: string;
+  repoFullName: string;
+  branch: string;
+  sha: string;
+  /** Base del delta: el `deployedSha` del entorno al arrancar. Ausente = deploy completo. */
+  fromSha?: string;
+  mode: DeploymentMode;
+  status: DeploymentStatus;
+  issueIds: string[];
+  trigger: DeploymentTrigger;
+  requestedBy: string;
+  approvedBy?: string;
+  approvedAt?: string;
+  runUrl?: string;
+  salesforce?: {
+    deployRequestId?: string;
+    componentsTotal?: number;
+    componentsFailed?: number;
+    testsRun?: number;
+    testsFailed?: number;
+    coveragePercent?: number;
+  };
+  errors?: DeploymentError[];
+  startedAt: string;
+  endedAt?: string;
+  /** `YYYY-MM-DD` (UTC) de `startedAt`, como `AgentRun.date`: agregar por día sin rango. */
+  date: string;
 }
 
 /** Campos de un `Environment` que `environments.update` acepta modificar. */
