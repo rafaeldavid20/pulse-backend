@@ -81,8 +81,13 @@ interface SoqlShape {
   /** Objeto del `FROM` de nivel superior (no el de una subquery). */
   sobject: string;
   hasLimit: boolean;
-  /** `SELECT COUNT() FROM X` sin `GROUP BY`: devuelve una sola fila. */
+  /** `SELECT COUNT() FROM X` sin `GROUP BY`: la cuenta viene en `totalSize`, sin filas. */
   isPlainCount: boolean;
+  /**
+   * Sólo agregados (`COUNT(Id)`, `SUM(Amount) total`…) y sin `GROUP BY`:
+   * una sola fila, así que no necesita `LIMIT` aunque el objeto sea grande.
+   */
+  isSingleRowAggregate: boolean;
 }
 
 /**
@@ -91,11 +96,14 @@ interface SoqlShape {
  * que un `LIMIT` de una subquery no cuente como el de la query principal.
  */
 export function inspectSoql(soql: string): SoqlShape {
-  // `top` es la query con las subqueries y los strings reemplazados por un
-  // espacio: `SELECT COUNT() FROM X WHERE Name = 'LIMIT 5'` queda
-  // `SELECT COUNT  FROM X WHERE Name =  `.
+  // `top` es la query con los strings y el contenido de cada paréntesis
+  // reemplazados por un espacio, salvo un paréntesis vacío, que queda `()`:
+  // `SELECT COUNT() FROM X WHERE Name = 'LIMIT 5'` queda
+  // `SELECT COUNT() FROM X WHERE Name =  `, y `COUNT(Id)` queda `COUNT ` —
+  // distinguirlos importa porque `COUNT(Id)` devuelve filas y `COUNT()` no (TES-279).
   let depth = 0;
   let inString = false;
+  let groupStart = -1;
   let top = '';
   for (let i = 0; i < soql.length; i++) {
     const ch = soql[i];
@@ -108,10 +116,14 @@ export function inspectSoql(soql: string): SoqlShape {
       inString = true;
       if (depth === 0) top += ' ';
     } else if (ch === '(') {
-      if (depth === 0) top += ' ';
+      if (depth === 0) groupStart = i;
       depth++;
     } else if (ch === ')') {
       depth = Math.max(0, depth - 1);
+      if (depth === 0 && groupStart >= 0) {
+        top += soql.slice(groupStart + 1, i).trim() === '' ? '()' : ' ';
+        groupStart = -1;
+      }
     } else if (depth === 0) {
       top += ch;
     }
@@ -127,7 +139,12 @@ export function inspectSoql(soql: string): SoqlShape {
   return {
     sobject,
     hasLimit: /\bLIMIT \d+/.test(upper),
-    isPlainCount: select[1].trim() === 'COUNT' && !/\bGROUP BY\b/.test(upper),
+    isPlainCount: /^COUNT\s*\(\)$/.test(select[1].trim()) && !/\bGROUP BY\b/.test(upper),
+    isSingleRowAggregate:
+      !/\bGROUP BY\b/.test(upper) &&
+      select[1]
+        .split(',')
+        .every((item) => /^(COUNT|COUNT_DISTINCT|SUM|AVG|MIN|MAX)\s*(\(\))?(\s+[A-Z0-9_]+)?$/.test(item.trim())),
   };
 }
 
@@ -160,6 +177,8 @@ function stripAttributes(value: unknown): unknown {
 }
 
 export interface QueryResult {
+  /** Sólo en `SELECT COUNT()`: la cuenta. Salesforce la devuelve en `totalSize`, sin filas. */
+  count?: number;
   totalSize: number;
   returned: number;
   truncated: boolean;
@@ -181,7 +200,7 @@ export async function runSoql(
   const query = (soql || '').trim().replace(/;\s*$/, '');
   const shape = inspectSoql(query);
 
-  if (!opts.tooling && !shape.hasLimit && !shape.isPlainCount) {
+  if (!opts.tooling && !shape.hasLimit && !shape.isPlainCount && !shape.isSingleRowAggregate) {
     const count = await approximateRecordCount(env.id, env.apiVersion, shape.sobject);
     if (count !== null && count > LARGE_OBJECT_ROWS) {
       throw new Error(
@@ -198,6 +217,13 @@ export async function runSoql(
     // después se descartan acá.
     { headers: { 'Sforce-Query-Options': `batchSize=${MAX_ROWS}` } }
   );
+
+  // `SELECT COUNT()` no trae filas: la respuesta es `totalSize`. Sin este caso
+  // salía como "truncada, 0 de 13", que le dice al modelo lo contrario (TES-279).
+  if (shape.isPlainCount) {
+    const count = res?.totalSize ?? 0;
+    return { count, totalSize: count, returned: 0, truncated: false, records: [] };
+  }
 
   const all = res?.records ?? [];
   const records = all.slice(0, MAX_ROWS).map(stripAttributes);
