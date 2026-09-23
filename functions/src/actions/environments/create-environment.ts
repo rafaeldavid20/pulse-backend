@@ -45,8 +45,10 @@ export class CreateEnvironmentAction extends PlatformActionHandler {
         'La clave del entorno debe empezar con una letra y usar sólo minúsculas, números y guiones bajos (máx. 24).'
       );
     }
-    if (!data.repoFullName) throw new Error('Parámetro requerido faltante: repoFullName.');
-    if (!data.trackingBranch) throw new Error('Parámetro requerido faltante: trackingBranch.');
+    // Repo y rama son opcionales (TES-277): leer la org no los usa. Se piden
+    // en `environments.connectRepo`, que es donde se escriben los secrets.
+    const repoFullName: string | undefined = (data.repoFullName || '').trim() || undefined;
+    const trackingBranch: string | undefined = (data.trackingBranch || '').trim() || undefined;
 
     // Credenciales de la External Client App de esta org. No hay una app
     // global: Salesforce deshabilitó la creación de Connected Apps en Spring
@@ -105,8 +107,8 @@ export class CreateEnvironmentAction extends PlatformActionHandler {
       key,
       displayName: (data.displayName || key).trim(),
       position: typeof data.position === 'number' ? data.position : 0,
-      trackingBranch: data.trackingBranch,
-      repoFullName: data.repoFullName,
+      trackingBranch,
+      repoFullName,
       isProduction,
       // Prod arranca protegido salvo que alguien lo desactive a propósito
       // después; al revés sería un default que sorprende en el peor momento.

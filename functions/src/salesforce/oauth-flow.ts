@@ -62,8 +62,8 @@ export interface PendingEnvironmentConfig {
   key: string;
   displayName: string;
   position: number;
-  trackingBranch: string;
-  repoFullName: string;
+  trackingBranch?: string;
+  repoFullName?: string;
   isProduction: boolean;
   requiresApproval: boolean;
   defaultTestLevel: string;
