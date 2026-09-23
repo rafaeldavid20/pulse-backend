@@ -10,10 +10,21 @@ import { ReviewFinding } from '../common/domain.generated';
  * tenga que decidirlo.
  */
 
+/** La rama que el issue ya tiene registrada en este repo (`gitRefs`, o `git` de un solo repo). */
+function registeredBranch(issue: FirebaseFirestore.DocumentData, repoFullName: string): string | undefined {
+  const ref = (issue.gitRefs || []).find((r: any) => r?.repoFullName === repoFullName && r?.branch);
+  if (ref) return ref.branch;
+  if (issue.git?.repoFullName === repoFullName && issue.git?.branch) return issue.git.branch;
+  return undefined;
+}
+
 /**
  * El issue de una rama, con los mismos dos primeros niveles que
  * `sync-from-webhook.ts`: la rama ya registrada en el issue, y si no, la
- * convención `pul/tes-142-slug`. El tercero ("Closes TES-142" en el cuerpo del
+ * convención `pul/tes-142-slug` — con el mismo guard de TES-242: la convención
+ * sólo decide si el issue todavía no tiene otra rama registrada en este repo.
+ * Sin él, una rama que se llama como otro issue le ataría una validación, y si
+ * falla, un blocker automático a una revisión que no tiene nada que ver. El tercero ("Closes TES-142" en el cuerpo del
  * PR) no aplica: el workflow no tiene el texto del PR, y para cuando corre, el
  * webhook ya registró la rama en el issue.
  */
@@ -36,7 +47,10 @@ export async function findIssueIdForBranch(workspaceId: string, repoFullName: st
     .where('identifier', '==', identifier)
     .limit(1)
     .get();
-  return byConvention.empty ? null : byConvention.docs[0].id;
+  if (byConvention.empty) return null;
+  const doc = byConvention.docs[0];
+  const registered = registeredBranch(doc.data(), repoFullName);
+  return !registered || registered === branch ? doc.id : null;
 }
 
 /**
