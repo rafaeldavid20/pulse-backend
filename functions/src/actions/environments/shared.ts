@@ -1,5 +1,6 @@
 import { getFirestore } from 'firebase-admin/firestore';
 import { Environment } from '../../common/domain.generated';
+import { DEPLOY_WORKFLOW_VERSION } from '../../salesforce/templates/pulse-deploy-workflow';
 
 /**
  * Claves de entorno: cortas, en minúsculas, y válidas como sufijo de un secret
@@ -20,7 +21,9 @@ export const VALID_LOGIN_HOSTS = ['login', 'test', 'custom'];
  * Se construye por lista blanca y no borrando `auth`, para que un campo
  * sensible que se agregue después al doc no se filtre por olvido.
  */
-export function sanitizeEnvironment(doc: Record<string, any>): Environment & { repoSecretsStale?: boolean } {
+export function sanitizeEnvironment(
+  doc: Record<string, any>
+): Environment & { repoSecretsStale?: boolean; workflowOutdated?: boolean } {
   return {
     id: doc.id,
     workspaceId: doc.workspaceId,
@@ -52,6 +55,11 @@ export function sanitizeEnvironment(doc: Record<string, any>): Environment & { r
     createdAt: doc.createdAt,
     connectedBy: doc.connectedBy,
     ...(doc.repoSecretsStale ? { repoSecretsStale: true } : {}),
+    // Un repo atado con una versión vieja de `pulse-deploy.yml` no tiene lo
+    // nuevo (p. ej. la validación de PRs de O5) hasta que se vuelve a atar.
+    ...((doc.connectedRepos || []).some((c: any) => (c.workflowVersion ?? 0) < DEPLOY_WORKFLOW_VERSION)
+      ? { workflowOutdated: true }
+      : {}),
   };
 }
 

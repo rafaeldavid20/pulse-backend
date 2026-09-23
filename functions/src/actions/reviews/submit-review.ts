@@ -3,6 +3,7 @@ import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { cleanUndefined } from '../../common/utils/clean';
 import { normalizeFindings, normalizeCriteriaResults } from '../../common/utils/review-findings';
+import { latestValidations, validationFindings } from '../../salesforce/validation';
 import { MAX_FOLLOW_UPS_PER_REVIEW, registerPendingWork } from '../../common/utils/pending-work';
 import { resolveReviewLead, getProjectLeadId, ensureNeedsHumanLabel, notifyNeedsHuman } from '../../common/utils/review-escalation';
 import { createNotification } from '../../common/utils/notifications';
@@ -107,26 +108,6 @@ export class ReviewsSubmitAction extends PlatformActionHandler {
     const criteriaResults = normalizeCriteriaResults(data.criteriaResults);
     const verdict = String(data.verdict).trim();
 
-    const hasBlockingFinding = findings.some((f) => f.status === 'open' && (f.severity === 'blocker' || f.severity === 'major'));
-    const hasFailedCriterion = criteriaResults.some((c) => c.result === 'fail');
-    const hasUnverifiable = criteriaResults.some((c) => c.result === 'unverifiable');
-
-    let outcome: Outcome;
-    let capped = false;
-    if (hasBlockingFinding || hasFailedCriterion) {
-      const maxAttempts = agent.maxReviewAttempts ?? DEFAULT_MAX_REVIEW_ATTEMPTS;
-      if (review.attempt >= maxAttempts) {
-        outcome = 'needs_human';
-        capped = true;
-      } else {
-        outcome = 'changes_requested';
-      }
-    } else if (hasUnverifiable) {
-      outcome = 'needs_human';
-    } else {
-      outcome = 'approved';
-    }
-
     // SHA revisado de cada PR (D3/D10): la fuente de verdad para saber, la
     // próxima vez que el issue entre a `in_review`, si el dev pusheó algo
     // nuevo desde este veredicto.
@@ -146,6 +127,33 @@ export class ReviewsSubmitAction extends PlatformActionHandler {
           }
         }
       }
+    }
+
+    // O5/TES-255: una validación de Salesforce fallida sobre el código revisado
+    // es un blocker aunque el modelo no lo haya puesto. Lo agrega el servidor,
+    // como la regla de más abajo que no confía en un "decision" del modelo.
+    const reviewedShas = new Map(prRefs.map((r) => [r.repoFullName, r.headSha] as [string, string]));
+    const validations = await latestValidations(issue.workspaceId, data.issueId);
+    findings.push(...validationFindings(validations, reviewedShas));
+
+    const hasBlockingFinding = findings.some((f) => f.status === 'open' && (f.severity === 'blocker' || f.severity === 'major'));
+    const hasFailedCriterion = criteriaResults.some((c) => c.result === 'fail');
+    const hasUnverifiable = criteriaResults.some((c) => c.result === 'unverifiable');
+
+    let outcome: Outcome;
+    let capped = false;
+    if (hasBlockingFinding || hasFailedCriterion) {
+      const maxAttempts = agent.maxReviewAttempts ?? DEFAULT_MAX_REVIEW_ATTEMPTS;
+      if (review.attempt >= maxAttempts) {
+        outcome = 'needs_human';
+        capped = true;
+      } else {
+        outcome = 'changes_requested';
+      }
+    } else if (hasUnverifiable) {
+      outcome = 'needs_human';
+    } else {
+      outcome = 'approved';
     }
 
     const now = new Date().toISOString();

@@ -5,6 +5,7 @@ import { PlatformActionRequest } from '../../common/platform-actions/interfaces'
 import { cleanUndefined } from '../../common/utils/clean';
 import { Deployment, DeploymentMode, DeploymentTrigger, SalesforceTestLevel } from '../../common/domain.generated';
 import { envSecretName } from '../../salesforce/repo-connection';
+import { findIssueIdForBranch } from '../../salesforce/validation';
 import { ENV_KEY_PATTERN } from '../environments/shared';
 
 const MODES: DeploymentMode[] = ['validate', 'deploy', 'quick'];
@@ -40,9 +41,18 @@ export class StartDeploymentAction extends PlatformActionHandler {
     return this.isWorkspaceMember(this.workspaceId);
   }
 
-  private async findEnvironment(repoFullName: string, branch?: string, key?: string) {
+  private async findEnvironment(repoFullName: string, branch?: string, key?: string, forPr = false) {
     const snap = await getFirestore().collection('environments').where('workspaceId', '==', this.workspaceId).get();
     const envs = snap.docs.map((d) => d.data());
+    if (forPr) {
+      // Un PR se valida contra el primer entorno de la cadena (dev, posición
+      // 0) atado a este repo: es donde el código va a aterrizar primero.
+      const first = envs
+        .filter((e) => (e.connectedRepos || []).some((c: any) => c.repoFullName === repoFullName))
+        .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))[0];
+      if (!first) throw new Error(`Ningún entorno está atado a ${repoFullName}: no hay contra qué validar el PR.`);
+      return first;
+    }
     if (key) {
       if (!ENV_KEY_PATTERN.test(key)) throw new Error(`Clave de entorno inválida: '${key}'.`);
       const env = envs.find((e) => e.key === key);
@@ -69,13 +79,18 @@ export class StartDeploymentAction extends PlatformActionHandler {
     if (!repoFullName || !sha) throw new Error('Parámetros requeridos faltantes: repoFullName, sha.');
     if (!data.branch && !data.environment) throw new Error('Indicá branch (push) o environment (dispatch).');
 
-    const mode: DeploymentMode = data.mode || 'deploy';
-    if (!MODES.includes(mode)) throw new Error(`Modo inválido: '${mode}'. Usá ${MODES.join(', ')}.`);
     const trigger: DeploymentTrigger = data.trigger || 'push';
     if (!TRIGGERS.includes(trigger)) throw new Error(`Trigger inválido: '${trigger}'.`);
+    const forPr = trigger === 'pr_validation';
+    if (forPr && (typeof data.prNumber !== 'number' || !data.branch)) {
+      throw new Error('Una validación de PR necesita prNumber y branch (la rama del PR).');
+    }
+    // Un PR sólo se valida: check-only, nunca toca la org.
+    const mode: DeploymentMode = forPr ? 'validate' : data.mode || 'deploy';
+    if (!MODES.includes(mode)) throw new Error(`Modo inválido: '${mode}'. Usá ${MODES.join(', ')}.`);
     if (mode === 'quick' && !data.validationId) throw new Error('Un quick deploy necesita el validationId de una validación exitosa.');
 
-    const env = await this.findEnvironment(repoFullName, data.branch, data.environment);
+    const env = await this.findEnvironment(repoFullName, data.branch, data.environment, forPr);
     if (!(env.connectedRepos || []).some((c: any) => c.repoFullName === repoFullName)) {
       throw new Error(`El entorno '${env.key}' no está atado a ${repoFullName}. Atalo desde Configuración → Salesforce.`);
     }
@@ -88,10 +103,23 @@ export class StartDeploymentAction extends PlatformActionHandler {
     let testLevel: SalesforceTestLevel = env.defaultTestLevel || 'NoTestRun';
     if (testLevel === 'RunSpecifiedTests') testLevel = 'RunLocalTests';
     if (env.isProduction && testLevel === 'NoTestRun') testLevel = 'RunLocalTests';
+    // La validación de un PR es la evidencia del QA: sin tests no dice nada
+    // sobre si el cambio rompe algo.
+    if (forPr) testLevel = 'RunLocalTests';
 
     const now = new Date().toISOString();
     let existing: FirebaseFirestore.DocumentData | undefined;
-    if (data.deploymentId) {
+    if (forPr && !data.deploymentId) {
+      // Un push nuevo al PR revalida sobre el mismo Deployment (O5): el issue
+      // tiene una sola validación vigente por PR, no una por commit.
+      const prior = await db
+        .collection('deployments')
+        .where('workspaceId', '==', this.workspaceId)
+        .where('repoFullName', '==', repoFullName)
+        .where('prNumber', '==', data.prNumber)
+        .get();
+      existing = prior.docs.map((d) => d.data()).find((d) => d.trigger === 'pr_validation');
+    } else if (data.deploymentId) {
       const snap = await db.collection('deployments').doc(data.deploymentId).get();
       if (!snap.exists || snap.data()!.workspaceId !== this.workspaceId || snap.data()!.environmentId !== env.id) {
         throw new Error(`No existe el deploy '${data.deploymentId}' para el entorno '${env.key}'.`);
@@ -100,6 +128,7 @@ export class StartDeploymentAction extends PlatformActionHandler {
     }
 
     const needsApproval = mode !== 'validate' && (env.requiresApproval || env.isProduction) && !existing?.approvedAt;
+    const issueId = forPr ? await findIssueIdForBranch(this.workspaceId!, repoFullName, data.branch) : null;
     const deployment: Deployment = cleanUndefined({
       ...(existing || {}),
       id: existing?.id || `dep-${nanoid(10)}`,
@@ -109,13 +138,20 @@ export class StartDeploymentAction extends PlatformActionHandler {
       repoFullName,
       branch: data.branch || existing?.branch || env.trackingBranch,
       sha,
-      fromSha: env.deployedSha || undefined,
+      // En un PR el delta es contra el merge-base con la rama destino, que
+      // calcula el workflow: lo que cambia el PR, no lo que le falta a la org.
+      fromSha: forPr ? undefined : env.deployedSha || undefined,
+      prNumber: forPr ? data.prNumber : existing?.prNumber,
       mode,
       status: needsApproval ? 'awaiting_approval' : 'running',
-      issueIds: existing?.issueIds || [],
+      issueIds: issueId ? [...new Set([...(existing?.issueIds || []), issueId])] : existing?.issueIds || [],
       trigger,
       requestedBy: existing?.requestedBy || this.caller.uid || 'system',
       runUrl: data.runUrl || undefined,
+      // Una revalidación arranca limpia: los errores del commit anterior ya no valen.
+      salesforce: undefined,
+      errors: undefined,
+      endedAt: undefined,
       startedAt: now,
       date: now.slice(0, 10),
     });

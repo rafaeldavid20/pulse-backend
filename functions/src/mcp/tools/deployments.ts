@@ -2,7 +2,9 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 // Static import — ver el comentario de cabecera de `read.ts` sobre TS2589.
 import { z } from 'zod';
 import { McpPrincipal } from '../auth';
-import { textResult } from './read';
+import { findIssue, textResult } from './read';
+import { getFirestore } from 'firebase-admin/firestore';
+import { latestValidations } from '../../salesforce/validation';
 import { StartDeploymentAction } from '../../actions/deployments/start-deployment';
 import { ReportDeploymentAction } from '../../actions/deployments/report-deployment';
 
@@ -26,6 +28,7 @@ export function registerDeploymentTools(server: McpServer, principal: McpPrincip
       trigger: z.enum(['promotion', 'push', 'manual', 'pr_validation']).optional(),
       deploymentId: z.string().optional(),
       validationId: z.string().optional(),
+      prNumber: z.number().int().optional().describe('PR being validated (trigger pr_validation).'),
       runUrl: z.string().optional(),
     },
     async (args) => {
@@ -34,6 +37,48 @@ export function registerDeploymentTools(server: McpServer, principal: McpPrincip
         actorUid
       ).run();
       return textResult(res.success ? res.data : { error: res.error });
+    }
+  );
+
+  server.tool(
+    'pulse_get_deployment',
+    'Salesforce deploy/validation evidence. With identifier: the current PR validation of that issue for each repo (check-only deploy of the PR delta against the dev org) — failed components with file/line, failed Apex tests and coverage. With deploymentId: that deployment. For QA: a failed validation on the reviewed commit is added as a blocker finding automatically when you submit the review; use this to explain it, not to decide it.',
+    {
+      identifier: z.string().optional().describe('Issue identifier ("TES-142").'),
+      deploymentId: z.string().optional(),
+    },
+    async ({ identifier, deploymentId }) => {
+      const view = (d: FirebaseFirestore.DocumentData) => ({
+        id: d.id,
+        environment: d.envKey,
+        repoFullName: d.repoFullName,
+        branch: d.branch,
+        prNumber: d.prNumber,
+        sha: d.sha,
+        mode: d.mode,
+        trigger: d.trigger,
+        status: d.status,
+        salesforce: d.salesforce,
+        errors: d.errors || [],
+        runUrl: d.runUrl,
+        startedAt: d.startedAt,
+        endedAt: d.endedAt,
+      });
+      if (deploymentId) {
+        const snap = await getFirestore().collection('deployments').doc(deploymentId).get();
+        if (!snap.exists || snap.data()!.workspaceId !== principal.workspaceId) return textResult({ found: false });
+        return textResult({ found: true, deployment: view(snap.data()!) });
+      }
+      if (!identifier) return textResult({ error: 'Pasá identifier o deploymentId.' });
+      const doc = await findIssue(principal.workspaceId, identifier);
+      if (!doc) return textResult({ error: `No issue found for '${identifier}'.` });
+      const validations = await latestValidations(principal.workspaceId, doc.id);
+      return textResult({
+        validations: validations.map(view),
+        ...(validations.length === 0
+          ? { note: 'Este issue no tiene validaciones de Salesforce: o su repo no está atado a un entorno, o el workflow todavía no corrió.' }
+          : {}),
+      });
     }
   );
 

@@ -5,7 +5,7 @@
 // dominio de Pulse. Para cambiar algo de acá, editá ese archivo y corré
 // `npm run sync:types` desde `pulse-app`.
 //
-// SOURCE_HASH: 56885b5cdfde4fdc
+// SOURCE_HASH: 1b4ab10913c3e734
 // ============================================================
 
 /**
@@ -471,6 +471,12 @@ export interface Deployment {
   repoFullName: string;
   branch: string;
   sha: string;
+  /**
+   * PR validado (`trigger: 'pr_validation'`, O5/TES-255). Un push nuevo al PR
+   * revalida sobre este mismo `Deployment` en vez de abrir otro, así el issue
+   * tiene una sola validación vigente por PR.
+   */
+  prNumber?: number;
   /** Base del delta: el `deployedSha` del entorno al arrancar. Ausente = deploy completo. */
   fromSha?: string;
   mode: DeploymentMode;
