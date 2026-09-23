@@ -13,7 +13,8 @@ export type McpScope =
   | 'reviews:write'
   | 'runs:write'
   | 'runs:read'
-  | 'salesforce:read';
+  | 'salesforce:read'
+  | 'deploy:write';
 
 /** Perfil de una key de agente `role: 'dev'` conectada vía `agents.connectRepo`. */
 export const DEV_SCOPES: McpScope[] = [
@@ -45,6 +46,14 @@ export const QA_SCOPES: McpScope[] = [
   // que un flow quedó activo es parte de revisar.
   'salesforce:read',
 ];
+
+/**
+ * Perfil de la key que `environments.connectRepo` deja en el repo como
+ * `PULSE_DEPLOY_MCP_KEY` (O3/TES-253). Sólo abre y cierra deploys: el workflow
+ * de deploy no necesita leer issues, y una key en un repo del cliente tiene
+ * que poder lo mínimo.
+ */
+export const DEPLOY_SCOPES: McpScope[] = ['deploy:write'];
 
 /**
  * Scope requerido por cada tool MCP, verificado centralmente antes de
@@ -102,6 +111,10 @@ export const TOOL_SCOPES: Record<string, McpScope> = {
   pulse_sf_tooling_query: 'salesforce:read',
   pulse_sf_describe: 'salesforce:read',
   pulse_sf_limits: 'salesforce:read',
+
+  // Workflow de deploy (O3/TES-253), en `tools/deployments.ts`.
+  pulse_start_deployment: 'deploy:write',
+  pulse_report_deployment: 'deploy:write',
 };
 
 /**

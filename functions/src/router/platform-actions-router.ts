@@ -36,6 +36,8 @@ import { ListEnvironmentsAction } from '../actions/environments/list-environment
 import { UpdateEnvironmentAction } from '../actions/environments/update-environment';
 import { VerifyEnvironmentAction } from '../actions/environments/verify-environment';
 import { DisconnectEnvironmentAction } from '../actions/environments/disconnect-environment';
+import { ConnectEnvironmentRepoAction } from '../actions/environments/connect-repo';
+import { CancelDeploymentAction } from '../actions/deployments/cancel-deployment';
 import { SalesforceQueryAction } from '../actions/salesforce/query';
 import { SalesforceToolingQueryAction } from '../actions/salesforce/tooling-query';
 import { SalesforceDescribeAction } from '../actions/salesforce/describe';
@@ -152,6 +154,13 @@ export async function dispatchPlatformAction(
       return new VerifyEnvironmentAction(request, callerUid, callerEmail).run();
     case 'environments.disconnect':
       return new DisconnectEnvironmentAction(request, callerUid, callerEmail).run();
+
+    case 'environments.connectRepo':
+      return new ConnectEnvironmentRepoAction(request, callerUid, callerEmail).run();
+    // `deployments.start`/`deployments.report` no están acá a propósito: sólo
+    // las llama el workflow por el MCP con una key `deploy:write`.
+    case 'deployments.cancel':
+      return new CancelDeploymentAction(request, callerUid, callerEmail).run();
 
     case 'salesforce.query':
       return new SalesforceQueryAction(request, callerUid, callerEmail).run();
