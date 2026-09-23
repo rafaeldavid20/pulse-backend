@@ -2,6 +2,7 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { missingConnectPermissions } from '../../github/client';
+import { refreshInstallationRepos } from '../../github/installation-sync';
 
 /**
  * Non-sensitive view of a workspace's GitHub connection — the frontend can't
@@ -37,6 +38,16 @@ export class GithubStatusAction extends PlatformActionHandler {
 
     const doc = snap.docs[0].data();
 
+    // Se relee en vivo: es la red de seguridad para un evento de instalación
+    // que no llegó (o llegó antes de que existiera TES-278). Si GitHub falla,
+    // vale la lista guardada.
+    let repositories: string[] = (doc.repositories || []).map((r: any) => r.fullName);
+    try {
+      repositories = (await refreshInstallationRepos(doc.installationId)) ?? repositories;
+    } catch (error) {
+      console.warn('[GithubStatus] no se pudieron releer los repos de la instalación:', error);
+    }
+
     // Que falte un permiso no es un error de estado: la instalación sigue
     // sirviendo para crear ramas y despachar. Solo condiciona si se puede
     // conectar un repo desde la app, así que se informa y no se lanza.
@@ -50,7 +61,7 @@ export class GithubStatusAction extends PlatformActionHandler {
     return {
       connected: true,
       accountLogin: doc.accountLogin,
-      repositories: (doc.repositories || []).map((r: any) => r.fullName),
+      repositories,
       connectedAt: doc.connectedAt,
       missingPermissions,
       canConnectRepos: missingPermissions.length === 0,

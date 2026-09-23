@@ -64,11 +64,22 @@ export interface InstallationRepo {
   default_branch: string;
 }
 
+/**
+ * Todos los repos de la instalación. Pagina: GitHub devuelve 30 por defecto y
+ * 100 como máximo, así que sin esto una cuenta con más de 30 repos quedaba con
+ * la lista cortada sin ningún aviso (TES-278).
+ */
 export async function listInstallationRepos(installationId: string): Promise<InstallationRepo[]> {
-  const body = (await githubInstallationFetch(installationId, '/installation/repositories')) as {
-    repositories: InstallationRepo[];
-  };
-  return body.repositories;
+  const all: InstallationRepo[] = [];
+  for (let page = 1; page <= 20; page++) {
+    const body = (await githubInstallationFetch(
+      installationId,
+      `/installation/repositories?per_page=100&page=${page}`
+    )) as { total_count: number; repositories: InstallationRepo[] };
+    all.push(...body.repositories);
+    if (body.repositories.length < 100 || all.length >= body.total_count) break;
+  }
+  return all;
 }
 
 async function getRepo(installationId: string, repoFullName: string): Promise<InstallationRepo> {
