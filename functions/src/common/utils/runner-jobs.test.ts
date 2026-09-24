@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { signRunnerJob } from './runner-jobs';
 import { isRunnerAvailable } from './runner-availability';
+import { safeRunnerJobResult } from './runner-result';
 
 const unsigned = {
   id: 'rjob-example', workspaceId: 'ws-1', issueId: 'issue-1', agentId: 'agent-1',
@@ -22,4 +23,9 @@ test('un Runner online sin heartbeat reciente no puede recibir jobs', () => {
   assert.equal(isRunnerAvailable({ status: 'online', lastHeartbeatAt: '2026-09-24T00:04:00.000Z' }, now), true);
   assert.equal(isRunnerAvailable({ status: 'online', lastHeartbeatAt: '2026-09-24T00:02:59.999Z' }, now), false);
   assert.equal(isRunnerAvailable({ status: 'online' }, now), false);
+});
+
+test('el resumen de un job no conserva tokens de proveedores', () => {
+  const result = safeRunnerJobResult('Falló con Bearer abc.def-gh y sk-ant-api03-SECRET ghp_012345');
+  assert.equal(result, 'Falló con Bearer [redacted] y [redacted] [redacted]');
 });

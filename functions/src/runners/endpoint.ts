@@ -5,6 +5,7 @@ import { generateApiKey, hashApiKeySecret } from '../common/utils/api-key';
 import { mcpKeyPepper } from '../common/secrets';
 import { DEV_SCOPES, QA_SCOPES } from '../mcp/scopes';
 import { isRunnerAvailable } from '../common/utils/runner-availability';
+import { safeRunnerJobResult } from '../common/utils/runner-result';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -157,7 +158,7 @@ export const pulseRunnerComplete = onRequest(
     const job = jobSnap.data()!;
     if (job.status !== 'delivered' || new Date(job.expiresAt).getTime() <= Date.now()) { res.status(409).json({ error: 'Runner job is not completable' }); return; }
     const now = new Date().toISOString();
-    await jobRef.update({ status: outcome, completedAt: now, result: typeof req.body?.result === 'string' ? req.body.result.slice(0, 2000) : null });
+    await jobRef.update({ status: outcome, completedAt: now, result: safeRunnerJobResult(req.body?.result) });
     await getFirestore().collection('api_keys').where('jobId', '==', jobId).get().then((keys) => Promise.all(keys.docs.map((key) => key.ref.update({ revokedAt: now }))));
     res.json({ jobId, status: outcome, completedAt: now });
   },
