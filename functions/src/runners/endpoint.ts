@@ -1,8 +1,9 @@
 import { timingSafeEqual } from 'crypto';
 import { getFirestore } from 'firebase-admin/firestore';
 import { onRequest } from 'firebase-functions/v2/https';
-import { hashApiKeySecret } from '../common/utils/api-key';
+import { generateApiKey, hashApiKeySecret } from '../common/utils/api-key';
 import { mcpKeyPepper } from '../common/secrets';
+import { DEV_SCOPES, QA_SCOPES } from '../mcp/scopes';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -98,8 +99,36 @@ export const pulseRunnerPoll = onRequest(
       return;
     }
     const job = pending[0];
-    await getFirestore().collection('runner_jobs').doc(job.id).update({ status: 'delivered', deliveredAt: new Date().toISOString() });
-    res.json({ job });
+    const db = getFirestore();
+    const deliveredAt = new Date().toISOString();
+    const agent = await db.collection('agents').doc(job.agentId).get();
+    if (!agent.exists) {
+      await db.collection('runner_jobs').doc(job.id).update({ status: 'canceled', completedAt: deliveredAt, result: 'El agente ya no existe.' });
+      res.json({ job: null });
+      return;
+    }
+    // Esta credencial sólo viaja en la respuesta HTTPS al Runner que probó
+    // posesión de la credencial de dispositivo. No queda en runner_jobs.
+    const { keyId, secret, fullKey, prefix } = generateApiKey();
+    const delivered = await db.runTransaction(async (transaction) => {
+      const current = await transaction.get(db.collection('runner_jobs').doc(job.id));
+      if (!current.exists || current.data()!.status !== 'pending') return false;
+      transaction.update(current.ref, { status: 'delivered', deliveredAt });
+      transaction.set(db.collection('api_keys').doc(keyId), {
+        id: keyId, workspaceId: job.workspaceId, name: `Runner job ${job.id}`,
+        hash: hashApiKeySecret(secret, mcpKeyPepper.value()), prefix,
+        scopes: agent.data()!.role === 'qa' ? QA_SCOPES : DEV_SCOPES,
+        agentId: job.agentId, createdBy: runner.data.ownerMemberId, jobId: job.id,
+        issueId: job.issueId, runnerId: runner.id, repoFullName: job.repoFullName,
+        expiresAt: job.expiresAt, createdAt: deliveredAt, lastUsedAt: null, revokedAt: null,
+      });
+      return true;
+    });
+    if (!delivered) {
+      res.json({ job: null });
+      return;
+    }
+    res.json({ job, mcpCredential: fullKey });
   },
 );
 

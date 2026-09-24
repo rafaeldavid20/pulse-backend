@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { initializeApp, getApps } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { AssignExecutionAgentAction } from '../actions/issues/assign-execution-agent';
-import { RevokeRunnerAction } from '../actions/runners/manage-runners';
+import { ListRunnerJobsAction, RevokeRunnerAction } from '../actions/runners/manage-runners';
 import { jobCanAccessArgs } from '../mcp/server';
 
 if (!process.env.FIRESTORE_EMULATOR_HOST) throw new Error('Este test debe ejecutarse mediante Firebase Emulator.');
@@ -50,4 +50,15 @@ test('emulator: la credencial de job sólo puede señalar su issue y repo', asyn
   assert.equal(await jobCanAccessArgs(principal, { identifier: issueId, repoFullName: 'owner/repo' }), true);
   assert.equal(await jobCanAccessArgs(principal, { identifier: issueId, repoFullName: 'owner/other' }), false);
   assert.equal(await jobCanAccessArgs(principal, {}), false);
+});
+
+test('emulator: el historial de jobs no filtra actividad de Runners ajenos', async () => {
+  await seed();
+  const otherRunnerId = `runner-other-${suffix}`;
+  await db.collection('runners').doc(otherRunnerId).set({ id: otherRunnerId, workspaceId, ownerMemberId: otherId, status: 'online' });
+  await db.collection('runner_jobs').doc(`job-own-${suffix}`).set({ id: `job-own-${suffix}`, workspaceId, runnerId, issueId, agentId, repoFullName: 'owner/repo', mode: 'task', status: 'failed', issuedAt: '2026-01-01T00:00:00.000Z', expiresAt: '2026-01-01T00:05:00.000Z' });
+  await db.collection('runner_jobs').doc(`job-other-${suffix}`).set({ id: `job-other-${suffix}`, workspaceId, runnerId: otherRunnerId, issueId, agentId, repoFullName: 'other/repo', mode: 'task', status: 'failed', issuedAt: '2026-01-02T00:00:00.000Z', expiresAt: '2026-01-02T00:05:00.000Z' });
+  const result = await new ListRunnerJobsAction({ actionCode: 'runners.listJobs', data: { workspaceId } }, ownerId).run();
+  assert.equal(result.success, true);
+  assert.deepEqual((result.data as any).jobs.map((job: any) => job.id), [`job-own-${suffix}`]);
 });
