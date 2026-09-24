@@ -3,7 +3,7 @@ import { TOOL_SCOPES } from './scopes';
 import { NO_SALESFORCE_PROJECT_MESSAGE, SALESFORCE_TOOL_PREFIX, workspaceHasSalesforceProject } from '../salesforce/gate';
 import { getFirestore } from 'firebase-admin/firestore';
 
-async function jobCanAccessArgs(principal: McpPrincipal, args: Record<string, any>): Promise<boolean> {
+export async function jobCanAccessArgs(principal: McpPrincipal, args: Record<string, any>): Promise<boolean> {
   if (!principal.jobId || !principal.issueId) return true;
   if (args.repoFullName && args.repoFullName !== principal.repoFullName) return false;
   const identifier = args.identifier ?? args.issueId;
