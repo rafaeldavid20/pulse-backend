@@ -30,8 +30,8 @@ export class RegisterRunnerAction extends PlatformActionHandler {
     if (!workspaceId || !String(displayName || '').trim() || !String(publicKey || '').trim()) {
       throw new Error('workspaceId, displayName y publicKey son obligatorios para registrar un Runner.');
     }
-    if (!Array.isArray(connectedRepos) || connectedRepos.some((repo) => typeof repo !== 'string')) {
-      throw new Error('connectedRepos debe ser una lista de repositorios.');
+    if (!Array.isArray(connectedRepos) || connectedRepos.some((repo) => typeof repo !== 'string' || !/^[^/\s]+\/[^/\s]+$/.test(repo))) {
+      throw new Error('connectedRepos debe ser una lista de repositorios owner/repo.');
     }
     const now = new Date().toISOString();
     const runner: Runner = {

@@ -3,7 +3,7 @@ import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { agentAllowedRepos, agentVisibility, getWorkspaceMember, isWorkspaceAdmin } from '../../common/utils/agent-authorization';
 import { enqueueRunnerJob } from '../../common/utils/runner-jobs';
-import { mcpKeyPepper } from '../../common/secrets';
+import { runnerJobSigningPrivateKey } from '../../common/secrets';
 import { isRunnerAvailable } from '../../common/utils/runner-availability';
 
 async function assertRunnerCapacity(db: FirebaseFirestore.Firestore, runnerId: string, maxConcurrentJobs: number) {
@@ -63,7 +63,7 @@ export class IssueRunnerJobAction extends PlatformActionHandler {
       runnerId: agent.runnerId,
       repoFullName,
       mode: 'task',
-    }, mcpKeyPepper.value());
+    }, runnerJobSigningPrivateKey.value());
     // La credencial MCP se crea al entregar el job al Runner autenticado,
     // nunca se devuelve al navegador que lo emitió.
     return { job };
@@ -120,7 +120,7 @@ export class RetryRunnerJobAction extends PlatformActionHandler {
     const job = await enqueueRunnerJob(db, {
       workspaceId: original.workspaceId, issueId: original.issueId, agentId: original.agentId,
       runnerId: original.runnerId, repoFullName: original.repoFullName, mode: original.mode,
-    }, mcpKeyPepper.value());
+    }, runnerJobSigningPrivateKey.value());
     await Promise.all([
       db.collection('runner_jobs').doc(job.id).update({ retryOf: original.id }),
       originalSnap.ref.update({ retriedByJobId: job.id, retryRequestedAt: new Date().toISOString() }),
