@@ -6,7 +6,7 @@ import { generateApiKey, hashApiKeySecret } from '../../common/utils/api-key';
 import { mcpKeyPepper } from '../../common/secrets';
 import { DEPLOY_SCOPES } from '../../mcp/scopes';
 import { putRepoFile, setRepoSecret } from '../../github/client';
-import { writeEnvSecret } from '../../salesforce/repo-connection';
+import { detachEnvFromRepo, writeEnvSecret } from '../../salesforce/repo-connection';
 import {
   DEPLOY_MCP_SECRET_NAME,
   DEPLOY_WORKFLOW_PATH,
@@ -30,6 +30,10 @@ import { loadEnvironmentForWorkspace, sanitizeEnvironment } from './shared';
  *
  * Es un admin quien lo hace: deja en un repo una credencial de la org del
  * cliente, mismo listón que conectar la org.
+ *
+ * También sirve para **cambiar** de repo o de rama (TES-282): con otro
+ * `repoFullName`, ata el nuevo primero y después limpia el viejo
+ * (`detachEnvFromRepo`). Un entorno queda atado a un solo repo.
  */
 export class ConnectEnvironmentRepoAction extends PlatformActionHandler {
   private resolvedWorkspaceId?: string;
@@ -163,10 +167,25 @@ export class ConnectEnvironmentRepoAction extends PlatformActionHandler {
       deployKeyId: keyId,
       connectedAt: now,
     };
-    const connectedRepos = [
-      ...((env.connectedRepos || []) as any[]).filter((c) => c.repoFullName !== repoFullName),
-      connection,
-    ];
+    // Un entorno se despliega desde un solo repo: los que tenía antes se limpian
+    // después de que el nuevo quedó atado, así un fallo a mitad de camino nunca
+    // lo deja sin ninguno.
+    const previousRepos = ((env.connectedRepos || []) as any[]).filter((c) => c.repoFullName !== repoFullName);
+    const otherEnvs = siblings.docs.map((d) => d.data()).filter((e) => e.id !== environmentId);
+    const warnings: string[] = [];
+    for (const old of previousRepos) {
+      warnings.push(
+        ...(await detachEnvFromRepo({
+          installationId: installation.installationId,
+          workspaceId,
+          envKey: env.key,
+          repoFullName: old.repoFullName,
+          secretName: old.secretName,
+          otherEnvs,
+        }))
+      );
+    }
+    const connectedRepos = [connection];
     await db.collection('environments').doc(environmentId).update({ connectedRepos, repoSecretsStale: false });
 
     // Los otros entornos atados al mismo repo comparten el workflow y la key:
@@ -193,6 +212,8 @@ export class ConnectEnvironmentRepoAction extends PlatformActionHandler {
       workflowCreated: file.created,
       workflowVersion: DEPLOY_WORKFLOW_VERSION,
       trackingBranches: [...new Set(branches)],
+      detachedFrom: previousRepos.map((c) => c.repoFullName),
+      warnings,
     };
   }
 }
