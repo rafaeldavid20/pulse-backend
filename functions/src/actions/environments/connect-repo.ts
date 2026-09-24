@@ -84,11 +84,11 @@ export class ConnectEnvironmentRepoAction extends PlatformActionHandler {
     if (clash) {
       throw new Error(`La rama '${trackingBranch}' ya despliega a '${clash.key}' en ${repoFullName}. Elegí otra.`);
     }
-    if (repoFullName !== env.repoFullName || trackingBranch !== env.trackingBranch) {
-      await db.collection('environments').doc(environmentId).update({ repoFullName, trackingBranch });
-      env.repoFullName = repoFullName;
-      env.trackingBranch = trackingBranch;
-    }
+    // Repo y rama nuevos se guardan recién al final, junto con `connectedRepos`
+    // (finding de QA en TES-282): guardarlos antes y fallar al escribir en el
+    // repo nuevo dejaba el entorno apuntando a una rama que ya no matchea en
+    // `deployments.start`, así que el repo viejo, que funcionaba, dejaba de
+    // desplegar.
 
     const permissionHint =
       'Si es un 403, a la GitHub App le faltan los permisos "Secrets: Read and write" y "Workflows: Read and write".';
@@ -186,7 +186,12 @@ export class ConnectEnvironmentRepoAction extends PlatformActionHandler {
       );
     }
     const connectedRepos = [connection];
-    await db.collection('environments').doc(environmentId).update({ connectedRepos, repoSecretsStale: false });
+    await db
+      .collection('environments')
+      .doc(environmentId)
+      .update({ repoFullName, trackingBranch, connectedRepos, repoSecretsStale: false });
+    env.repoFullName = repoFullName;
+    env.trackingBranch = trackingBranch;
 
     // Los otros entornos atados al mismo repo comparten el workflow y la key:
     // su entrada queda apuntando a la versión y la key nuevas.
