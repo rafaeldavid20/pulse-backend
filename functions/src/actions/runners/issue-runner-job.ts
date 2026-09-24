@@ -4,6 +4,8 @@ import { PlatformActionRequest } from '../../common/platform-actions/interfaces'
 import { agentAllowedRepos, agentVisibility, getWorkspaceMember, isWorkspaceAdmin } from '../../common/utils/agent-authorization';
 import { enqueueRunnerJob } from '../../common/utils/runner-jobs';
 import { mcpKeyPepper } from '../../common/secrets';
+import { generateApiKey, hashApiKeySecret } from '../../common/utils/api-key';
+import { DEV_SCOPES, QA_SCOPES } from '../../mcp/scopes';
 
 /** Human-authorized fallback to enqueue a signed local Runner job. */
 export class IssueRunnerJobAction extends PlatformActionHandler {
@@ -56,6 +58,32 @@ export class IssueRunnerJobAction extends PlatformActionHandler {
       repoFullName,
       mode: 'task',
     }, mcpKeyPepper.value());
-    return { job };
+    // La key sólo vive lo mismo que el job y lleva su scope de identidad para
+    // que el servidor pueda revocarla/atribuirla incluso si el Runner cae.
+    const { keyId, secret, fullKey, prefix } = generateApiKey();
+    await db.collection('api_keys').doc(keyId).set({
+      id: keyId,
+      workspaceId: issue.workspaceId,
+      name: `Runner job ${job.id}`,
+      hash: hashApiKeySecret(secret, mcpKeyPepper.value()),
+      prefix,
+      scopes: agent.role === 'qa' ? QA_SCOPES : DEV_SCOPES,
+      agentId,
+      createdBy: this.caller.uid,
+      jobId: job.id,
+      issueId: issue.id,
+      runnerId: agent.runnerId,
+      repoFullName,
+      expiresAt: job.expiresAt,
+      createdAt: job.issuedAt,
+      lastUsedAt: null,
+      revokedAt: null,
+    });
+    return { job, mcpCredential: fullKey };
+  }
+
+  protected auditResponse(response: Record<string, any>): Record<string, any> {
+    const { mcpCredential: _secret, ...safe } = response;
+    return safe;
   }
 }

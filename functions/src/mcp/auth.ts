@@ -26,6 +26,11 @@ export interface McpPrincipal {
    * to check workspace membership against for `authorize()`.
    */
   createdBy: string;
+  /** Present only for a short-lived Runner job credential. */
+  jobId?: string;
+  issueId?: string;
+  runnerId?: string;
+  repoFullName?: string;
 }
 
 export class McpAuthError extends Error {
@@ -78,6 +83,9 @@ async function authenticateApiKey(parsed: { keyId: string; secret: string }): Pr
   if (record.revokedAt) {
     throw new McpAuthError('This API key has been revoked.', 403);
   }
+  if (record.expiresAt && new Date(record.expiresAt).getTime() <= Date.now()) {
+    throw new McpAuthError('This API key has expired.', 403);
+  }
 
   const expectedHash = hashApiKeySecret(parsed.secret, mcpKeyPepper.value());
   if (expectedHash !== record.hash) {
@@ -97,6 +105,10 @@ async function authenticateApiKey(parsed: { keyId: string; secret: string }): Pr
     source: 'api_key',
     apiKeyId: parsed.keyId,
     createdBy: record.createdBy,
+    jobId: record.jobId,
+    issueId: record.issueId,
+    runnerId: record.runnerId,
+    repoFullName: record.repoFullName,
   };
 }
 
