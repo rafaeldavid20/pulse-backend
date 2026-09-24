@@ -2,10 +2,13 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { cleanUndefined } from '../../common/utils/clean';
-import { AgentRole, AgentQaMode } from '../../common/domain.generated';
+import { AgentKind, AgentRole, AgentQaMode, AgentVisibility } from '../../common/domain.generated';
+import { getWorkspaceMember, isWorkspaceAdmin } from '../../common/utils/agent-authorization';
 
 const AGENT_ROLES: AgentRole[] = ['dev', 'qa'];
 const AGENT_QA_MODES: AgentQaMode[] = ['shadow', 'enforce'];
+const AGENT_KINDS: AgentKind[] = ['claude', 'codex', 'chatgpt'];
+const AGENT_VISIBILITIES: AgentVisibility[] = ['personal', 'public'];
 
 /**
  * Creates an agent as a real workspace `member` — not a special case in the
@@ -38,6 +41,17 @@ export class CreateAgentAction extends PlatformActionHandler {
     if (data.role !== undefined && !AGENT_ROLES.includes(data.role)) {
       throw new Error(`role inválido: '${data.role}'. Debe ser 'dev' o 'qa'.`);
     }
+    if (!AGENT_KINDS.includes(data.kind)) {
+      throw new Error(`kind inválido: '${data.kind}'. Debe ser 'claude' o 'codex'.`);
+    }
+    const visibility: AgentVisibility = data.visibility ?? 'personal';
+    if (!AGENT_VISIBILITIES.includes(visibility)) {
+      throw new Error(`visibility inválida: '${visibility}'. Debe ser 'personal' o 'public'.`);
+    }
+    const callerMember = await getWorkspaceMember(db, data.workspaceId, this.caller.uid!);
+    if (visibility === 'public' && !isWorkspaceAdmin(callerMember)) {
+      throw new Error('Solo un admin puede crear un agente público.');
+    }
     if (data.qaMode !== undefined && !AGENT_QA_MODES.includes(data.qaMode)) {
       throw new Error(`qaMode inválido: '${data.qaMode}'. Debe ser 'shadow' o 'enforce'.`);
     }
@@ -47,6 +61,10 @@ export class CreateAgentAction extends PlatformActionHandler {
       id: data.agentId,
       workspaceId: data.workspaceId,
       kind: data.kind,
+      ownerMemberId: this.caller.uid,
+      visibility,
+      runnerId: data.runnerId,
+      allowedRepos: data.allowedRepos,
       role,
       displayName: data.displayName,
       defaultRepo: data.defaultRepo,

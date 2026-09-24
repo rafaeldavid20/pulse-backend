@@ -4,6 +4,7 @@ import { PlatformActionRequest } from '../../common/platform-actions/interfaces'
 import { deleteRepoSecret, deleteRepoFile } from '../../github/client';
 import { WORKFLOW_PATH } from '../../github/templates/pulse-agent-workflow';
 import { QA_WORKFLOW_PATH } from '../../github/templates/pulse-qa-workflow';
+import { agentVisibility, getWorkspaceMember, isWorkspaceAdmin } from '../../common/utils/agent-authorization';
 
 const DEV_MCP_SECRET_NAME = 'PULSE_AGENT_MCP_KEY';
 const QA_MCP_SECRET_NAME = 'PULSE_QA_MCP_KEY';
@@ -52,8 +53,16 @@ export class DisconnectRepoAction extends PlatformActionHandler {
     if (!agentSnap.exists || agentSnap.data()!.workspaceId !== data.workspaceId) {
       throw new Error(`El agente '${data.agentId}' no existe en este workspace.`);
     }
+    const agent = agentSnap.data()!;
+    const caller = await getWorkspaceMember(db, data.workspaceId, this.caller.uid!);
+    if (agentVisibility(agent) === 'public' && !isWorkspaceAdmin(caller)) {
+      throw new Error('Solo un admin puede desconectar un agente público.');
+    }
+    if (agentVisibility(agent) === 'personal' && agent.ownerMemberId !== this.caller.uid && !isWorkspaceAdmin(caller)) {
+      throw new Error('Solo el dueño o un admin puede desconectar este agente.');
+    }
 
-    const connections: any[] = agentSnap.data()!.connectedRepos || [];
+    const connections: any[] = agent.connectedRepos || [];
     const connection = connections.find((c) => c.repoFullName === data.repoFullName);
     if (!connection) {
       throw new Error(`El agente no está conectado a '${data.repoFullName}'.`);
@@ -104,6 +113,7 @@ export class DisconnectRepoAction extends PlatformActionHandler {
     }
 
     await agentRef.update({
+      allowedRepos: (agent.allowedRepos || []).filter((repo: string) => repo !== data.repoFullName),
       connectedRepos: connections.filter((c) => c.repoFullName !== data.repoFullName),
     });
 

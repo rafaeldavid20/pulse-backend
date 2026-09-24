@@ -7,6 +7,7 @@ import { nextIssueNumber } from '../../common/utils/counters';
 import { normalizeAcceptanceCriteria } from '../../common/utils/acceptance-criteria';
 import { ISSUE_WRITABLE_FIELDS, pickWritableFields } from '../../common/utils/issue-fields';
 import { validateRepoForWorkspace } from '../../common/utils/repo-field';
+import { getWorkspaceMember, isWorkspaceAdmin } from '../../common/utils/agent-authorization';
 import {
   adjustParentCounters,
   doneWeight,
@@ -51,6 +52,17 @@ export class CreateIssueAction extends PlatformActionHandler {
       type: normalizeIssueType(data.type),
       parentId: data.parentId,
     });
+
+    if (data.assigneeId) {
+      const responsible = await getWorkspaceMember(db, data.workspaceId, data.assigneeId);
+      if (!responsible || responsible.isAgent) {
+        throw new Error('El responsable inicial debe ser un miembro humano.');
+      }
+      const callerMember = await getWorkspaceMember(db, data.workspaceId, this.caller.uid!);
+      if (!isWorkspaceAdmin(callerMember) && data.assigneeId !== this.caller.uid) {
+        throw new Error('Solo un admin puede crear un issue asignado a otra persona.');
+      }
+    }
 
     // Atomically reserve the next sequential issue number for this
     // workspace/team via a Firestore transaction-backed counter — avoids the
@@ -98,6 +110,7 @@ export class CreateIssueAction extends PlatformActionHandler {
       priority: data.priority !== undefined ? data.priority : 3,
       projectId: data.projectId || null,
       assigneeId: data.assigneeId || null,
+      responsibleMemberId: data.assigneeId || null,
       creatorId: this.caller.uid || data.creatorId || 'system',
       labelIds: data.labelIds || ['feature'],
       // Igual que `type`/`parentId`: `pickWritableFields` ya copió el valor
