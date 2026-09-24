@@ -28,7 +28,8 @@ export { oauthProtectedResourceMetadata, oauthAuthorizationServerMetadata } from
 export { oauthRegister } from './oauth/register';
 export { oauthAuthorize } from './oauth/authorize';
 export { oauthToken } from './oauth/token';
-export { pulseRunnerHeartbeat, pulseRunnerPoll } from './runners/endpoint';
+export { pulseRunnerHeartbeat, pulseRunnerPoll, pulseRunnerComplete } from './runners/endpoint';
+export { runnerJobSweeperScheduled } from './scheduled/runner-job-sweeper';
 
 // Initialize Firebase Admin SDK once
 initializeApp();
