@@ -1,7 +1,8 @@
 import { createHmac, timingSafeEqual } from 'crypto';
 import { onRequest } from 'firebase-functions/v2/https';
 import { getFirestore } from 'firebase-admin/firestore';
-import { githubWebhookSecret } from '../common/secrets';
+import { githubWebhookSecret, githubAppId, githubAppPrivateKeyB64 } from '../common/secrets';
+import { handleInstallationEvent } from './installation-sync';
 import { dispatchPlatformAction } from '../router/platform-actions-router';
 
 function verifySignature(rawBody: Buffer, signatureHeader: string | undefined, secret: string): boolean {
@@ -67,7 +68,8 @@ function normalizeFromCreate(payload: any) {
 }
 
 export const githubWebhook = onRequest(
-  { region: 'us-east4', secrets: [githubWebhookSecret] },
+  // Las de la App: los eventos de instalación releen los repos desde GitHub (TES-278).
+  { region: 'us-east4', secrets: [githubWebhookSecret, githubAppId, githubAppPrivateKeyB64] },
   async (req, res) => {
     // `req.rawBody` is populated by firebase-functions before JSON parsing.
     // Verifying against `JSON.stringify(req.body)` instead would fail on
@@ -100,6 +102,9 @@ export const githubWebhook = onRequest(
         null;
       if (eventType === 'pull_request') normalized = normalizeFromPullRequest(req.body);
       else if (eventType === 'create') normalized = normalizeFromCreate(req.body);
+      else if (eventType === 'installation' || eventType === 'installation_repositories') {
+        await handleInstallationEvent(eventType, req.body);
+      }
 
       if (normalized) {
         const result = await dispatchPlatformAction({ actionCode: 'github.syncFromWebhook', data: normalized });
