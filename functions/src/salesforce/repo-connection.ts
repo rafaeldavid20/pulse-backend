@@ -65,3 +65,87 @@ export async function rewriteConnectedRepoSecrets(environmentId: string): Promis
   }
   return failed;
 }
+
+/**
+ * Saca un entorno de un repo al que estaba atado (TES-282: cambiar de repo sin
+ * desconectar la org). El repo viejo no puede quedar con la credencial de la
+ * org ni con un workflow que siga desplegando esa rama:
+ *
+ * - Borra `PULSE_SF_AUTH_<KEY>`.
+ * - Si otros entornos del workspace siguen atados a ese repo, reescribe el
+ *   workflow sólo con sus ramas. Si no queda ninguno, borra el workflow y la
+ *   key de deploy (secret y `api_keys`), que ya no sirven para nada.
+ *
+ * Best-effort: el entorno ya está atado al repo nuevo, así que un fallo acá no
+ * deshace el cambio; vuelve como aviso para que una persona lo limpie.
+ */
+export async function detachEnvFromRepo(params: {
+  installationId: string;
+  workspaceId: string;
+  envKey: string;
+  repoFullName: string;
+  secretName?: string;
+  /** Los demás entornos del workspace (sin el que se va). */
+  otherEnvs: FirebaseFirestore.DocumentData[];
+}): Promise<string[]> {
+  const { installationId, workspaceId, envKey, repoFullName, otherEnvs } = params;
+  const secretName = params.secretName || envSecretName(envKey);
+  const warnings: string[] = [];
+  const attempt = async (what: string, fn: () => Promise<unknown>) => {
+    try {
+      await fn();
+    } catch (error) {
+      warnings.push(`${what} en ${repoFullName}: ${(error as Error).message}`);
+    }
+  };
+  const { deleteRepoSecret, deleteRepoFile, putRepoFile } = await import('../github/client');
+  const { renderDeployWorkflow, DEPLOY_WORKFLOW_PATH, DEPLOY_MCP_SECRET_NAME } = await import('./templates/pulse-deploy-workflow');
+
+  await attempt(`No se pudo borrar el secret '${secretName}'`, () => deleteRepoSecret(installationId, repoFullName, secretName));
+
+  const remaining = otherEnvs.filter(
+    (e) => e.trackingBranch && (e.connectedRepos || []).some((c: any) => c.repoFullName === repoFullName)
+  );
+  if (remaining.length > 0) {
+    const { DEPLOY_WORKFLOW_VERSION } = await import('./templates/pulse-deploy-workflow');
+    await attempt(`No se pudo actualizar ${DEPLOY_WORKFLOW_PATH}`, async () => {
+      await putRepoFile(
+        installationId,
+        repoFullName,
+        DEPLOY_WORKFLOW_PATH,
+        renderDeployWorkflow(remaining.map((e) => e.trackingBranch)),
+        `chore: el entorno ${envKey} de Pulse ya no despliega desde este repo`
+      );
+      // El archivo quedó en la versión actual para todos los que siguen atados.
+      await Promise.all(
+        remaining.map((e) =>
+          getFirestore()
+            .collection('environments')
+            .doc(e.id)
+            .update({
+              connectedRepos: (e.connectedRepos || []).map((c: any) =>
+                c.repoFullName === repoFullName ? { ...c, workflowVersion: DEPLOY_WORKFLOW_VERSION } : c
+              ),
+            })
+        )
+      );
+    });
+    return warnings;
+  }
+
+  await attempt(`No se pudo borrar ${DEPLOY_WORKFLOW_PATH}`, () =>
+    deleteRepoFile(installationId, repoFullName, DEPLOY_WORKFLOW_PATH, `chore: desatar Pulse de este repo (entorno ${envKey})`)
+  );
+  await attempt(`No se pudo borrar el secret '${DEPLOY_MCP_SECRET_NAME}'`, () =>
+    deleteRepoSecret(installationId, repoFullName, DEPLOY_MCP_SECRET_NAME)
+  );
+  const keys = await getFirestore()
+    .collection('api_keys')
+    .where('workspaceId', '==', workspaceId)
+    .where('connectedRepo', '==', repoFullName)
+    .where('purpose', '==', 'deploy')
+    .get();
+  const now = new Date().toISOString();
+  await Promise.all(keys.docs.filter((d) => !d.data().revokedAt).map((d) => d.ref.update({ revokedAt: now })));
+  return warnings;
+}
