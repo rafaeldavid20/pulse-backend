@@ -70,6 +70,9 @@ export class ConnectRepoAction extends PlatformActionHandler {
       throw new Error(`El agente '${data.agentId}' no existe en este workspace.`);
     }
     const agent = agentSnap.data()!;
+    if (agent.kind === 'codex') {
+      throw new Error('Los agentes Codex requieren Pulse Runner y todavía no se pueden conectar al workflow de GitHub Actions.');
+    }
     const caller = await getWorkspaceMember(db, data.workspaceId, this.caller.uid!);
     if (agentVisibility(agent) === 'public' && !isWorkspaceAdmin(caller)) {
       throw new Error('Solo un admin puede conectar repos a un agente público.');

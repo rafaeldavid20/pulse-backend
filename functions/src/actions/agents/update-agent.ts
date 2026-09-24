@@ -71,14 +71,14 @@ export class UpdateAgentAction extends PlatformActionHandler {
     const agent = snap.data()!;
     const callerMember = await getWorkspaceMember(db, agent.workspaceId, this.caller.uid!);
     const callerIsAdmin = isWorkspaceAdmin(callerMember);
-    const changingSharedSettings = data.visibility !== undefined || data.enabled !== undefined || data.runnerId !== undefined || data.allowedRepos !== undefined;
+    const changingSettings = AGENT_WRITABLE_FIELDS.some((field) => data[field] !== undefined);
     if (agent.visibility === 'public' && !callerIsAdmin) {
       throw new Error('Solo un admin puede modificar un agente público.');
     }
     if (data.visibility === 'public' && !callerIsAdmin) {
       throw new Error('Solo un admin puede publicar un agente.');
     }
-    if (agent.ownerMemberId && agent.ownerMemberId !== this.caller.uid && changingSharedSettings && !callerIsAdmin) {
+    if (agent.ownerMemberId && agent.ownerMemberId !== this.caller.uid && changingSettings && !callerIsAdmin) {
       throw new Error('Solo el dueño o un admin puede modificar este agente.');
     }
 
