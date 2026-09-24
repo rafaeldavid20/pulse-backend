@@ -4,6 +4,7 @@ import { PlatformActionRequest } from '../../common/platform-actions/interfaces'
 import { agentAllowedRepos, agentVisibility, getWorkspaceMember, isWorkspaceAdmin } from '../../common/utils/agent-authorization';
 import { enqueueRunnerJob } from '../../common/utils/runner-jobs';
 import { mcpKeyPepper } from '../../common/secrets';
+import { isRunnerAvailable } from '../../common/utils/runner-availability';
 
 async function assertRunnerCapacity(db: FirebaseFirestore.Firestore, runnerId: string, maxConcurrentJobs: number) {
   const active = await db.collection('runner_jobs').where('runnerId', '==', runnerId).get();
@@ -48,7 +49,7 @@ export class IssueRunnerJobAction extends PlatformActionHandler {
     const runnerSnap = await db.collection('runners').doc(agent.runnerId).get();
     if (!runnerSnap.exists || runnerSnap.data()!.workspaceId !== issue.workspaceId) throw new Error('El Runner del agente no existe en este workspace.');
     const runner = runnerSnap.data()!;
-    if (runner.status !== 'online') throw new Error('El Runner debe estar online para recibir un job.');
+    if (!isRunnerAvailable(runner)) throw new Error('El Runner debe estar online y con un heartbeat reciente para recibir un job.');
     await assertRunnerCapacity(db, agent.runnerId, runner.maxConcurrentJobs || 1);
     const repoFullName = this.action.data.repoFullName;
     if (typeof repoFullName !== 'string' || !repoFullName) throw new Error('repoFullName es obligatorio.');
@@ -104,7 +105,7 @@ export class RetryRunnerJobAction extends PlatformActionHandler {
     const runner = runnerSnap.data()!;
     const agent = agentSnap.data()!;
     const issue = issueSnap.data()!;
-    if (runner.revokedAt || runner.status !== 'online') throw new Error('El Runner debe estar online y no revocado para reintentar.');
+    if (!isRunnerAvailable(runner)) throw new Error('El Runner debe estar online, no revocado y con un heartbeat reciente para reintentar.');
     if (runner.ownerMemberId !== this.caller.uid && !isWorkspaceAdmin(caller)) throw new Error('Sólo el dueño del Runner o un admin puede reintentar este job.');
     if (!agent.enabled || agent.workspaceId !== original.workspaceId || agent.runnerId !== runner.id || !agentAllowedRepos(agent).includes(original.repoFullName)) {
       throw new Error('El agente ya no está habilitado para este Runner o repo.');

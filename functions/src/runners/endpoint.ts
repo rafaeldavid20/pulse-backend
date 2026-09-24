@@ -4,6 +4,7 @@ import { onRequest } from 'firebase-functions/v2/https';
 import { generateApiKey, hashApiKeySecret } from '../common/utils/api-key';
 import { mcpKeyPepper } from '../common/secrets';
 import { DEV_SCOPES, QA_SCOPES } from '../mcp/scopes';
+import { isRunnerAvailable } from '../common/utils/runner-availability';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -86,6 +87,10 @@ export const pulseRunnerPoll = onRequest(
     const runner = await authenticateRunner(req.headers.authorization);
     if (!runner) {
       res.status(401).json({ error: 'Invalid runner credential' });
+      return;
+    }
+    if (!isRunnerAvailable(runner.data)) {
+      res.status(409).json({ error: 'Runner is not available; send a fresh online heartbeat before polling.' });
       return;
     }
     const jobs = await getFirestore().collection('runner_jobs').where('runnerId', '==', runner.id).limit(20).get();
