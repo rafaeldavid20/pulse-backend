@@ -9,6 +9,7 @@ import { checkIssueRunBudget } from '../common/utils/issue-run-budget';
 import { buildNeedsHumanEscalation } from '../common/utils/review-escalation';
 import { agentAllowedRepos, agentVisibility } from '../common/utils/agent-authorization';
 import { enqueueRunnerJob } from '../common/utils/runner-jobs';
+import { isRunnerAvailable } from '../common/utils/runner-availability';
 
 // Un run tarda ~30s en arrancar y reclamar el issue (ver `agent.state ===
 // 'claimed'` en claim-issue.ts), así que ese guard solo no alcanza para
@@ -545,7 +546,7 @@ export const agentDispatchTrigger = onDocumentWritten(
       if (agent.runnerId) {
         const runnerSnap = await db.collection('runners').doc(agent.runnerId).get();
         const runner = runnerSnap.exists ? runnerSnap.data()! : null;
-        if (!runner || runner.workspaceId !== workspaceId || runner.status !== 'online' || !runner.connectedRepos?.includes(preflightRepo.repoFullName)) {
+        if (!runner || runner.workspaceId !== workspaceId || !isRunnerAvailable(runner) || !runner.connectedRepos?.includes(preflightRepo.repoFullName)) {
           console.log(`[AgentDispatch] runner '${agent.runnerId}' is missing, offline, or lacks '${preflightRepo.repoFullName}', skipping dispatch.`);
           return;
         }
@@ -643,8 +644,8 @@ export const agentDispatchTrigger = onDocumentWritten(
           return;
         }
         const runner = runnerSnap.data()!;
-        if (runner.status !== 'online') {
-          console.log(`[AgentDispatch] runner '${agent.runnerId}' is ${runner.status || 'offline'}, skipping dispatch.`);
+        if (!isRunnerAvailable(runner)) {
+          console.log(`[AgentDispatch] runner '${agent.runnerId}' is offline, revoked, or has an expired heartbeat, skipping dispatch.`);
           return;
         }
         if (!Array.isArray(runner.connectedRepos) || !runner.connectedRepos.includes(repoFullName)) {

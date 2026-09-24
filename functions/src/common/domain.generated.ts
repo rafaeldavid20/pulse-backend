@@ -5,7 +5,7 @@
 // dominio de Pulse. Para cambiar algo de acá, editá ese archivo y corré
 // `npm run sync:types` desde `pulse-app`.
 //
-// SOURCE_HASH: 6a258641e0937ff7
+// SOURCE_HASH: 480442923b3b76b5
 // ============================================================
 
 /**
@@ -81,6 +81,8 @@ export interface Runner {
   maxConcurrentJobs: number;
   connectedRepos: string[];
   lastHeartbeatAt?: string;
+  /** Revocar desactiva la credencial del dispositivo sin borrar la auditoría. */
+  revokedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
