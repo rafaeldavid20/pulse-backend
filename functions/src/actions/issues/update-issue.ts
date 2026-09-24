@@ -7,7 +7,7 @@ import { ISSUE_WRITABLE_FIELDS, pickWritableFields } from '../../common/utils/is
 import { canHaveChildren } from '../../common/domain.generated';
 import { validateRepoForWorkspace } from '../../common/utils/repo-field';
 import { upsertGitRef } from '../../common/utils/project-repos';
-import { getWorkspaceMember, isWorkspaceAdmin } from '../../common/utils/agent-authorization';
+import { agentVisibility, getWorkspaceMember, isWorkspaceAdmin } from '../../common/utils/agent-authorization';
 import {
   adjustParentCounters,
   childIdsOf,
@@ -71,6 +71,7 @@ export class UpdateIssueAction extends PlatformActionHandler {
     if ('assigneeId' in data) {
       const nextResponsible = data.assigneeId || null;
       const callerMember = await getWorkspaceMember(db, current.workspaceId, this.caller.uid!);
+      const responsibilityChanged = nextResponsible !== (current.responsibleMemberId || current.assigneeId || null);
       if (nextResponsible) {
         const responsible = await getWorkspaceMember(db, current.workspaceId, nextResponsible);
         if (!responsible || responsible.isAgent) {
@@ -83,8 +84,36 @@ export class UpdateIssueAction extends PlatformActionHandler {
       updates.assigneeId = nextResponsible;
       updates.responsibleMemberId = nextResponsible;
       // Cambiar de responsable no arrastra una suscripción personal ajena.
-      if (nextResponsible !== (current.responsibleMemberId || current.assigneeId || null)) {
-        updates.execution = FieldValue.delete();
+      if (responsibilityChanged) {
+        if (data.confirmKeepExecution === true) {
+          if (!isWorkspaceAdmin(callerMember)) {
+            throw new Error('Solo un admin puede conservar explícitamente un agente al reasignar el responsable.');
+          }
+          if (!nextResponsible) {
+            throw new Error('Un agente ejecutor no puede conservarse sin un responsable humano.');
+          }
+          const executionAgentId = current.execution?.agentId;
+          if (!executionAgentId) {
+            throw new Error('No hay agente ejecutor para conservar.');
+          }
+          const executionAgentSnap = await db.collection('agents').doc(executionAgentId).get();
+          if (!executionAgentSnap.exists || executionAgentSnap.data()!.workspaceId !== current.workspaceId) {
+            throw new Error('El agente ejecutor actual ya no existe en este workspace.');
+          }
+          const executionAgent = executionAgentSnap.data()!;
+          // Un admin no puede conservar silenciosamente el agente personal de
+          // otra persona sobre un issue reasignado. Solo puede conservar su
+          // propio agente personal en un issue que queda a su nombre; los
+          // agentes públicos están precisamente hechos para este caso.
+          if (
+            agentVisibility(executionAgent) === 'personal' &&
+            (executionAgent.ownerMemberId !== this.caller.uid || nextResponsible !== this.caller.uid)
+          ) {
+            throw new Error('Solo se puede conservar un agente personal si el admin es su dueño y sigue siendo el responsable.');
+          }
+        } else {
+          updates.execution = FieldValue.delete();
+        }
       }
     }
 

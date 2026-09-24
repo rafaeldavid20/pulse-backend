@@ -5,7 +5,7 @@
 // dominio de Pulse. Para cambiar algo de acá, editá ese archivo y corré
 // `npm run sync:types` desde `pulse-app`.
 //
-// SOURCE_HASH: 08240af1eee81230
+// SOURCE_HASH: 6a258641e0937ff7
 // ============================================================
 
 /**
@@ -93,6 +93,7 @@ export interface RunnerJob {
   agentId: string;
   runnerId: string;
   repoFullName: string;
+  mode: AgentRunMode;
   issuedAt: string;
   expiresAt: string;
   signature: string;

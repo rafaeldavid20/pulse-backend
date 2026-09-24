@@ -61,6 +61,8 @@ import { ReportCriteriaAction } from '../actions/reviews/report-criteria';
 import { DismissFindingAction } from '../actions/reviews/dismiss-finding';
 import { ReviewsRerunAction } from '../actions/reviews/rerun-review';
 import { ReturnToAgentAction } from '../actions/reviews/return-to-agent';
+import { RegisterRunnerAction } from '../actions/runners/register-runner';
+import { IssueRunnerJobAction } from '../actions/runners/issue-runner-job';
 
 export async function dispatchPlatformAction(
   request: PlatformActionRequest,
@@ -121,6 +123,10 @@ export async function dispatchPlatformAction(
       return new DisconnectRepoAction(request, callerUid, callerEmail).run();
     case 'agents.getQaCalibration':
       return new GetQaCalibrationAction(request, callerUid, callerEmail).run();
+    case 'runners.register':
+      return new RegisterRunnerAction(request, callerUid, callerEmail).run();
+    case 'runners.issueJob':
+      return new IssueRunnerJobAction(request, callerUid, callerEmail).run();
     case 'comments.create':
       return new CreateCommentAction(request, callerUid, callerEmail).run();
     case 'issues.claim':

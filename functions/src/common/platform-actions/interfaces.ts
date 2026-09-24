@@ -25,6 +25,8 @@ export type PlatformActionCode =
   | 'agents.connectRepo'
   | 'agents.disconnectRepo'
   | 'agents.getQaCalibration'
+  | 'runners.register'
+  | 'runners.issueJob'
   | 'issues.claim'
   | 'issues.claimNext'
   | 'issues.release'

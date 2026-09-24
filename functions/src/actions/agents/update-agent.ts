@@ -3,7 +3,7 @@ import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { cleanUndefined } from '../../common/utils/clean';
 import { AgentRole, AgentQaMode, AgentVisibility } from '../../common/domain.generated';
-import { getWorkspaceMember, isWorkspaceAdmin } from '../../common/utils/agent-authorization';
+import { canManageAgent, getWorkspaceMember, isWorkspaceAdmin } from '../../common/utils/agent-authorization';
 
 const AGENT_ROLES: AgentRole[] = ['dev', 'qa'];
 const AGENT_QA_MODES: AgentQaMode[] = ['shadow', 'enforce'];
@@ -72,13 +72,10 @@ export class UpdateAgentAction extends PlatformActionHandler {
     const callerMember = await getWorkspaceMember(db, agent.workspaceId, this.caller.uid!);
     const callerIsAdmin = isWorkspaceAdmin(callerMember);
     const changingSettings = AGENT_WRITABLE_FIELDS.some((field) => data[field] !== undefined);
-    if (agent.visibility === 'public' && !callerIsAdmin) {
-      throw new Error('Solo un admin puede modificar un agente público.');
-    }
     if (data.visibility === 'public' && !callerIsAdmin) {
       throw new Error('Solo un admin puede publicar un agente.');
     }
-    if (agent.ownerMemberId && agent.ownerMemberId !== this.caller.uid && changingSettings && !callerIsAdmin) {
+    if (changingSettings && !canManageAgent(agent, this.caller.uid!, callerIsAdmin)) {
       throw new Error('Solo el dueño o un admin puede modificar este agente.');
     }
 

@@ -24,3 +24,22 @@ export function agentAllowedRepos(agent: Record<string, any>): string[] {
   return (agent.connectedRepos || []).map((connection: Record<string, any>) => connection.repoFullName).filter(Boolean);
 }
 
+/** Política pura, reutilizable y testeable para agentes personales/públicos. */
+export function canManageAgent(
+  agent: { ownerMemberId?: string; visibility?: string },
+  callerUid: string,
+  callerIsAdmin: boolean,
+): boolean {
+  if (agentVisibility(agent as Record<string, any>) === 'public') return callerIsAdmin;
+  return callerIsAdmin || !agent.ownerMemberId || agent.ownerMemberId === callerUid;
+}
+
+export function canAssignExecutionAgent(
+  agent: { ownerMemberId?: string; visibility?: string },
+  callerUid: string,
+  responsibleMemberId: string,
+  callerIsAdmin: boolean,
+): boolean {
+  if (agentVisibility(agent as Record<string, any>) === 'public') return callerIsAdmin;
+  return agent.ownerMemberId === callerUid && responsibleMemberId === callerUid;
+}
