@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import { initializeApp, getApps } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { AssignExecutionAgentAction } from '../actions/issues/assign-execution-agent';
+import { UpdateAgentAction } from '../actions/agents/update-agent';
 import { ListRunnerJobsAction, RevokeRunnerAction } from '../actions/runners/manage-runners';
-import { jobCanAccessArgs } from '../mcp/server';
+import { jobCanAccessArgs, jobToolRequiresExplicitRepo } from '../mcp/server';
 
 if (!process.env.FIRESTORE_EMULATOR_HOST) throw new Error('Este test debe ejecutarse mediante Firebase Emulator.');
 if (!getApps().length) initializeApp({ projectId: 'pulse-integration' });
@@ -13,6 +14,7 @@ const suffix = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const workspaceId = `ws-${suffix}`;
 const ownerId = `owner-${suffix}`;
 const otherId = `other-${suffix}`;
+const adminId = `admin-${suffix}`;
 const agentId = `agent-${suffix}`;
 const runnerId = `runner-${suffix}`;
 const issueId = `issue-${suffix}`;
@@ -20,6 +22,7 @@ const issueId = `issue-${suffix}`;
 async function seed() {
   await db.collection('members').doc(`${workspaceId}_${ownerId}`).set({ workspaceId, userId: ownerId, role: 'member' });
   await db.collection('members').doc(`${workspaceId}_${otherId}`).set({ workspaceId, userId: otherId, role: 'member' });
+  await db.collection('members').doc(`${workspaceId}_${adminId}`).set({ workspaceId, userId: adminId, role: 'admin' });
   await db.collection('agents').doc(agentId).set({ id: agentId, workspaceId, ownerMemberId: ownerId, visibility: 'personal', enabled: true });
   await db.collection('issues').doc(issueId).set({ id: issueId, workspaceId, identifier: `INT-${suffix}`, assigneeId: ownerId, responsibleMemberId: ownerId });
   await db.collection('runners').doc(runnerId).set({ id: runnerId, workspaceId, ownerMemberId: ownerId, status: 'online', deviceSecretHash: 'hash' });
@@ -50,6 +53,25 @@ test('emulator: la credencial de job sólo puede señalar su issue y repo', asyn
   assert.equal(await jobCanAccessArgs(principal, { identifier: issueId, repoFullName: 'owner/repo' }), true);
   assert.equal(await jobCanAccessArgs(principal, { identifier: issueId, repoFullName: 'owner/other' }), false);
   assert.equal(await jobCanAccessArgs(principal, {}), false);
+  assert.equal(await jobCanAccessArgs(principal, { identifier: issueId }, true), false);
+  assert.equal(jobToolRequiresExplicitRepo('pulse_create_branch'), true);
+  assert.equal(await jobCanAccessArgs(principal, { identifier: issueId }, jobToolRequiresExplicitRepo('pulse_create_branch')), false);
+});
+
+test('emulator: no se vincula un agente a un Runner que no cubre sus repos existentes', async () => {
+  await seed();
+  await db.collection('agents').doc(agentId).update({ allowedRepos: ['owner/repo'] });
+  await db.collection('runners').doc(runnerId).update({ connectedRepos: ['owner/other'] });
+  const result = await new UpdateAgentAction({ actionCode: 'agents.update', data: { agentId, runnerId } }, ownerId).run();
+  assert.equal(result.success, false);
+});
+
+test('emulator: un admin tampoco puede vincular un agente público a un Runner sin sus repos', async () => {
+  await seed();
+  await db.collection('agents').doc(agentId).update({ visibility: 'public', allowedRepos: ['owner/repo'] });
+  await db.collection('runners').doc(runnerId).update({ connectedRepos: ['owner/other'] });
+  const result = await new UpdateAgentAction({ actionCode: 'agents.update', data: { agentId, runnerId } }, adminId).run();
+  assert.equal(result.success, false);
 });
 
 test('emulator: el historial de jobs no filtra actividad de Runners ajenos', async () => {

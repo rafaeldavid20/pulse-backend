@@ -3,7 +3,7 @@ import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { cleanUndefined } from '../../common/utils/clean';
 import { AgentRole, AgentQaMode, AgentVisibility } from '../../common/domain.generated';
-import { agentVisibility, canManageAgent, getWorkspaceMember, isWorkspaceAdmin } from '../../common/utils/agent-authorization';
+import { agentAllowedRepos, agentVisibility, canManageAgent, getWorkspaceMember, isWorkspaceAdmin } from '../../common/utils/agent-authorization';
 
 const AGENT_ROLES: AgentRole[] = ['dev', 'qa'];
 const AGENT_QA_MODES: AgentQaMode[] = ['shadow', 'enforce'];
@@ -89,7 +89,8 @@ export class UpdateAgentAction extends PlatformActionHandler {
       if (agentVisibility(agent) === 'personal' && runner.ownerMemberId !== agent.ownerMemberId) {
         throw new Error('Un agente personal solo puede usar un Runner de su dueño.');
       }
-      if (Array.isArray(data.allowedRepos) && data.allowedRepos.some((repo: string) => !runner.connectedRepos?.includes(repo))) {
+      const effectiveAllowedRepos = Array.isArray(data.allowedRepos) ? data.allowedRepos : agentAllowedRepos(agent);
+      if (effectiveAllowedRepos.some((repo: string) => !runner.connectedRepos?.includes(repo))) {
         throw new Error('Todos los repos permitidos del agente deben existir en el Runner seleccionado.');
       }
     }

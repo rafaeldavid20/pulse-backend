@@ -3,8 +3,20 @@ import { TOOL_SCOPES } from './scopes';
 import { NO_SALESFORCE_PROJECT_MESSAGE, SALESFORCE_TOOL_PREFIX, workspaceHasSalesforceProject } from '../salesforce/gate';
 import { getFirestore } from 'firebase-admin/firestore';
 
-export async function jobCanAccessArgs(principal: McpPrincipal, args: Record<string, any>): Promise<boolean> {
+const JOB_TOOLS_REQUIRING_EXPLICIT_REPO = new Set([
+  'pulse_create_branch',
+  'pulse_request_repo_work',
+]);
+
+export function jobToolRequiresExplicitRepo(toolName: string): boolean {
+  return JOB_TOOLS_REQUIRING_EXPLICIT_REPO.has(toolName);
+}
+
+export async function jobCanAccessArgs(principal: McpPrincipal, args: Record<string, any>, requiresExplicitRepo = false): Promise<boolean> {
   if (!principal.jobId || !principal.issueId) return true;
+  // Resolver el repo por defecto de un issue multi-repo ampliaría el alcance
+  // del job. Las herramientas que actúan sobre Git deben nombrar el repo.
+  if (requiresExplicitRepo && args.repoFullName !== principal.repoFullName) return false;
   if (args.repoFullName && args.repoFullName !== principal.repoFullName) return false;
   const identifier = args.identifier ?? args.issueId;
   if (!identifier) return false;
@@ -40,7 +52,7 @@ function enforceScopes(server: any, principal: McpPrincipal) {
         // A Runner credential is deliberately incapable of browsing the
         // workspace: every tool invocation must name its own job's issue and
         // cannot substitute another repository.
-        if (principal.jobId && !(await jobCanAccessArgs(principal, handlerArgs[0] || {}))) {
+        if (principal.jobId && !(await jobCanAccessArgs(principal, handlerArgs[0] || {}, jobToolRequiresExplicitRepo(name)))) {
           return {
             content: [{ type: 'text' as const, text: JSON.stringify({ error: 'La credencial MCP sólo puede operar el issue y repo de su job.' }, null, 2) }],
             isError: true,
