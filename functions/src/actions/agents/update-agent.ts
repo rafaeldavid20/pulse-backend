@@ -3,7 +3,7 @@ import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { cleanUndefined } from '../../common/utils/clean';
 import { AgentRole, AgentQaMode, AgentVisibility } from '../../common/domain.generated';
-import { canManageAgent, getWorkspaceMember, isWorkspaceAdmin } from '../../common/utils/agent-authorization';
+import { agentVisibility, canManageAgent, getWorkspaceMember, isWorkspaceAdmin } from '../../common/utils/agent-authorization';
 
 const AGENT_ROLES: AgentRole[] = ['dev', 'qa'];
 const AGENT_QA_MODES: AgentQaMode[] = ['shadow', 'enforce'];
@@ -77,6 +77,21 @@ export class UpdateAgentAction extends PlatformActionHandler {
     }
     if (changingSettings && !canManageAgent(agent, this.caller.uid!, callerIsAdmin)) {
       throw new Error('Solo el dueño o un admin puede modificar este agente.');
+    }
+
+    if (data.runnerId !== undefined && data.runnerId !== null) {
+      const runnerSnap = await db.collection('runners').doc(data.runnerId).get();
+      if (!runnerSnap.exists || runnerSnap.data()!.workspaceId !== agent.workspaceId) {
+        throw new Error('El Runner seleccionado no existe en este workspace.');
+      }
+      const runner = runnerSnap.data()!;
+      if (runner.revokedAt) throw new Error('No se puede vincular un Runner revocado.');
+      if (agentVisibility(agent) === 'personal' && runner.ownerMemberId !== agent.ownerMemberId) {
+        throw new Error('Un agente personal solo puede usar un Runner de su dueño.');
+      }
+      if (Array.isArray(data.allowedRepos) && data.allowedRepos.some((repo: string) => !runner.connectedRepos?.includes(repo))) {
+        throw new Error('Todos los repos permitidos del agente deben existir en el Runner seleccionado.');
+      }
     }
 
     const updates: Record<string, any> = { updatedAt: new Date().toISOString() };
