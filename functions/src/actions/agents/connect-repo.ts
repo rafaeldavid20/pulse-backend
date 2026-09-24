@@ -16,6 +16,7 @@ import {
   QA_WORKFLOW_PATH,
   QA_WORKFLOW_VERSION,
 } from '../../github/templates/pulse-qa-workflow';
+import { agentVisibility, getWorkspaceMember, isWorkspaceAdmin } from '../../common/utils/agent-authorization';
 
 const DEV_MCP_SECRET_NAME = 'PULSE_AGENT_MCP_KEY';
 const QA_MCP_SECRET_NAME = 'PULSE_QA_MCP_KEY';
@@ -69,6 +70,13 @@ export class ConnectRepoAction extends PlatformActionHandler {
       throw new Error(`El agente '${data.agentId}' no existe en este workspace.`);
     }
     const agent = agentSnap.data()!;
+    const caller = await getWorkspaceMember(db, data.workspaceId, this.caller.uid!);
+    if (agentVisibility(agent) === 'public' && !isWorkspaceAdmin(caller)) {
+      throw new Error('Solo un admin puede conectar repos a un agente público.');
+    }
+    if (agentVisibility(agent) === 'personal' && agent.ownerMemberId !== this.caller.uid && !isWorkspaceAdmin(caller)) {
+      throw new Error('Solo el dueño o un admin puede conectar repos a este agente.');
+    }
 
     const installSnap = await db
       .collection('github_installations')
@@ -151,6 +159,7 @@ export class ConnectRepoAction extends PlatformActionHandler {
     // debería quedar una conexión activa por repo para este agente.
     const existingConnections: any[] = agentSnap.data()!.connectedRepos || [];
     await agentRef.update({
+      allowedRepos: Array.from(new Set([...(agent.allowedRepos || []), data.repoFullName])),
       connectedRepos: [
         ...existingConnections.filter((c) => c.repoFullName !== data.repoFullName),
         {

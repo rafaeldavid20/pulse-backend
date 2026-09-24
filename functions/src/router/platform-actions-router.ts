@@ -26,6 +26,7 @@ import { ClaimNextIssueAction } from '../actions/issues/claim-next-issue';
 import { ReleaseIssueAction } from '../actions/issues/release-issue';
 import { RequestRepoWorkAction } from '../actions/issues/request-repo-work';
 import { ReportPendingWorkAction } from '../actions/issues/report-pending-work';
+import { AssignExecutionAgentAction } from '../actions/issues/assign-execution-agent';
 import { CreateInstallUrlAction } from '../actions/github/create-install-url';
 import { GithubStatusAction } from '../actions/github/github-status';
 import { CreateBranchAction } from '../actions/github/create-branch';
@@ -132,6 +133,8 @@ export async function dispatchPlatformAction(
       return new RequestRepoWorkAction(request, callerUid, callerEmail).run();
     case 'issues.reportPendingWork':
       return new ReportPendingWorkAction(request, callerUid, callerEmail).run();
+    case 'issues.assignExecutionAgent':
+      return new AssignExecutionAgentAction(request, callerUid, callerEmail).run();
 
     case 'github.createInstallUrl':
       return new CreateInstallUrlAction(request, callerUid, callerEmail).run();

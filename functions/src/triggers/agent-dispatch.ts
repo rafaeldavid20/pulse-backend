@@ -7,6 +7,7 @@ import { resolveIssueRepo } from '../common/utils/repo-resolution';
 import { checkWorkspaceDispatchBudget, todayKey } from '../common/utils/dispatch-counter';
 import { checkIssueRunBudget } from '../common/utils/issue-run-budget';
 import { buildNeedsHumanEscalation } from '../common/utils/review-escalation';
+import { agentAllowedRepos, agentVisibility } from '../common/utils/agent-authorization';
 
 // Un run tarda ~30s en arrancar y reclamar el issue (ver `agent.state ===
 // 'claimed'` en claim-issue.ts), así que ese guard solo no alcanza para
@@ -399,7 +400,10 @@ export const agentDispatchTrigger = onDocumentWritten(
       // Reasignar a otro agente estando en `todo` también dispara, para el nuevo.
       // Cualquier otro update de un issue ya en `todo` con el mismo asignado no
       // dispara, así que no hay doble dispatch por editar un título.
-      const agentId = after.assigneeId;
+      // Desde TES-284 el responsable humano y el ejecutor son dos campos
+      // distintos. El fallback conserva los issues legacy asignados a un
+      // agente hasta que se migren desde la UI.
+      const agentId = after.execution?.agentId || after.assigneeId;
 
       // Traspaso a otro repo (TES-202): el run anterior registró trabajo
       // pendiente en otro repo y ya soltó el issue (`agent.state` deja de ser
@@ -438,7 +442,7 @@ export const agentDispatchTrigger = onDocumentWritten(
       }
 
       const enteredTodo = before?.status !== 'todo';
-      const assigneeChanged = before?.assigneeId !== agentId;
+      const assigneeChanged = (before?.execution?.agentId || before?.assigneeId) !== agentId;
       if (!enteredTodo && !assigneeChanged) {
         console.log(
           `[AgentDispatch] issue '${event.params.issueId}' already in 'todo' for the same assignee, not a new dispatchable transition, skipping dispatch.`
@@ -456,6 +460,15 @@ export const agentDispatchTrigger = onDocumentWritten(
       if (!agent.enabled || !agent.autonomousMode) {
         console.log(
           `[AgentDispatch] agent '${agentId}' is not enabled/autonomous (enabled=${!!agent.enabled}, autonomousMode=${!!agent.autonomousMode}), skipping dispatch.`
+        );
+        return;
+      }
+
+      const visibility = agentVisibility(agent);
+      const responsibleMemberId = after.responsibleMemberId || (after.execution ? after.assigneeId : undefined);
+      if (visibility === 'personal' && agent.ownerMemberId !== responsibleMemberId) {
+        console.log(
+          `[AgentDispatch] personal agent '${agentId}' cannot execute issue '${event.params.issueId}' owned by '${responsibleMemberId ?? 'none'}', skipping dispatch.`
         );
         return;
       }
@@ -564,6 +577,13 @@ export const agentDispatchTrigger = onDocumentWritten(
       if (authorized.length > 0 && !authorized.includes(repoFullName)) {
         console.log(
           `[AgentDispatch] '${repoFullName}' (via ${source}) is not in this workspace's GitHub installation, skipping dispatch.`
+        );
+        return;
+      }
+      const allowedRepos = agentAllowedRepos(agent);
+      if (allowedRepos.length > 0 && !allowedRepos.includes(repoFullName)) {
+        console.log(
+          `[AgentDispatch] agent '${agentId}' is not connected to '${repoFullName}', skipping dispatch.`
         );
         return;
       }

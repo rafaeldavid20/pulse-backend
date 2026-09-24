@@ -30,6 +30,7 @@ export type PlatformActionCode =
   | 'issues.release'
   | 'issues.requestRepoWork'
   | 'issues.reportPendingWork'
+  | 'issues.assignExecutionAgent'
   | 'github.createInstallUrl'
   | 'github.status'
   | 'github.createBranch'

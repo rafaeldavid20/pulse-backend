@@ -7,6 +7,7 @@ import { ISSUE_WRITABLE_FIELDS, pickWritableFields } from '../../common/utils/is
 import { canHaveChildren } from '../../common/domain.generated';
 import { validateRepoForWorkspace } from '../../common/utils/repo-field';
 import { upsertGitRef } from '../../common/utils/project-repos';
+import { getWorkspaceMember, isWorkspaceAdmin } from '../../common/utils/agent-authorization';
 import {
   adjustParentCounters,
   childIdsOf,
@@ -63,6 +64,29 @@ export class UpdateIssueAction extends PlatformActionHandler {
       // cambio, para no notificarle a alguien su propia acción.
       updatedBy: this.caller.uid || 'system',
     };
+
+    // TES-284: `assigneeId` representa a la persona responsable. Un agente
+    // se elige por la action específica, así no puede reemplazar el dueño del
+    // resultado ni saltar las reglas de visibilidad vía el update genérico.
+    if ('assigneeId' in data) {
+      const nextResponsible = data.assigneeId || null;
+      const callerMember = await getWorkspaceMember(db, current.workspaceId, this.caller.uid!);
+      if (nextResponsible) {
+        const responsible = await getWorkspaceMember(db, current.workspaceId, nextResponsible);
+        if (!responsible || responsible.isAgent) {
+          throw new Error('El responsable debe ser un miembro humano. Elegí el agente ejecutor por separado.');
+        }
+        if (!isWorkspaceAdmin(callerMember) && nextResponsible !== this.caller.uid) {
+          throw new Error('Solo un admin puede asignar un issue a otra persona.');
+        }
+      }
+      updates.assigneeId = nextResponsible;
+      updates.responsibleMemberId = nextResponsible;
+      // Cambiar de responsable no arrastra una suscripción personal ajena.
+      if (nextResponsible !== (current.responsibleMemberId || current.assigneeId || null)) {
+        updates.execution = FieldValue.delete();
+      }
+    }
 
     // Igual que `type`/`parentId`: `pickWritableFields` ya copió el valor
     // crudo del caller arriba, y acá se pisa con la versión normalizada (ids
