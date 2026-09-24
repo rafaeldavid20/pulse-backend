@@ -26,7 +26,9 @@ async function authenticateRunner(authorization?: string) {
   if (!credential) return null;
   const snap = await getFirestore().collection('runners').doc(credential.runnerId).get();
   if (!snap.exists) return null;
+  if (snap.data()!.revokedAt) return null;
   const expected = String(snap.data()!.deviceSecretHash || '');
+  if (!expected) return null;
   const actual = hashApiKeySecret(credential.secret, mcpKeyPepper.value());
   const expectedBuffer = Buffer.from(expected, 'hex');
   const actualBuffer = Buffer.from(actual, 'hex');

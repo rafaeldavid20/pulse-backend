@@ -63,6 +63,7 @@ import { ReviewsRerunAction } from '../actions/reviews/rerun-review';
 import { ReturnToAgentAction } from '../actions/reviews/return-to-agent';
 import { RegisterRunnerAction } from '../actions/runners/register-runner';
 import { IssueRunnerJobAction } from '../actions/runners/issue-runner-job';
+import { ListRunnersAction, RevokeRunnerAction, RotateRunnerCredentialAction } from '../actions/runners/manage-runners';
 
 export async function dispatchPlatformAction(
   request: PlatformActionRequest,
@@ -127,6 +128,12 @@ export async function dispatchPlatformAction(
       return new RegisterRunnerAction(request, callerUid, callerEmail).run();
     case 'runners.issueJob':
       return new IssueRunnerJobAction(request, callerUid, callerEmail).run();
+    case 'runners.list':
+      return new ListRunnersAction(request, callerUid, callerEmail).run();
+    case 'runners.revoke':
+      return new RevokeRunnerAction(request, callerUid, callerEmail).run();
+    case 'runners.rotateCredential':
+      return new RotateRunnerCredentialAction(request, callerUid, callerEmail).run();
     case 'comments.create':
       return new CreateCommentAction(request, callerUid, callerEmail).run();
     case 'issues.claim':
