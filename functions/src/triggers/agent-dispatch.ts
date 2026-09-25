@@ -362,6 +362,32 @@ async function dispatchHandoff(
     return;
   }
 
+  // Un handoff conserva el transporte local del agente. Enviar este camino a
+  // GitHub Actions dejaba el Runner sin el repo destino y el workflow podía
+  // quedar skipped para adaptadores locales.
+  if (agent.runnerId) {
+    const runnerSnap = await db.collection('runners').doc(agent.runnerId).get();
+    if (!runnerSnap.exists || runnerSnap.data()!.workspaceId !== workspaceId) {
+      console.log(`[AgentDispatch] handoff for '${issueId}': runner '${agent.runnerId}' does not exist in this workspace, skipping.`);
+      return;
+    }
+    const runner = runnerSnap.data()!;
+    if (!isRunnerAvailable(runner) || !runner.connectedRepos?.includes(targetRepo)) {
+      console.log(`[AgentDispatch] handoff for '${issueId}': runner '${agent.runnerId}' is unavailable or lacks '${targetRepo}', skipping.`);
+      return;
+    }
+    const contextRepos = await runnerContextRepos(db, after, agent, runner, authorized);
+    const job = await enqueueRunnerJob(db, {
+      workspaceId, issueId, agentId, runnerId: agent.runnerId, repoFullName: targetRepo, contextRepos, mode: 'handoff',
+    }, runnerJobSigningPrivateKey.value());
+    await db.collection('agent_runs').doc(job.id).set({
+      id: job.id, issueId, workspaceId, agentId, role: 'dev', mode: 'handoff', repo: targetRepo,
+      runnerId: agent.runnerId, startedAt: new Date().toISOString(), date: todayKey(),
+    });
+    console.log(`[AgentDispatch] enqueued Runner handoff job '${job.id}' for issue '${after.identifier}' to '${agent.runnerId}'.`);
+    return;
+  }
+
   // D15/TES-211: ver el comentario equivalente en `dispatchRework`.
   const runId = `run-${nanoid(8)}`;
   await dispatchRepositoryEvent(installation.installationId, targetRepo, 'pulse_task', {
