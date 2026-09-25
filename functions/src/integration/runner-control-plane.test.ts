@@ -4,6 +4,7 @@ import { initializeApp, getApps } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { AssignExecutionAgentAction } from '../actions/issues/assign-execution-agent';
 import { UpdateAgentAction } from '../actions/agents/update-agent';
+import { DeleteAgentAction } from '../actions/agents/delete-agent';
 import { ListRunnerJobsAction, RevokeRunnerAction } from '../actions/runners/manage-runners';
 import { jobCanAccessArgs, jobToolRequiresExplicitRepo } from '../mcp/server';
 
@@ -35,6 +36,34 @@ test('emulator: un usuario no puede asignar el agente personal de otra persona',
   const accepted = await new AssignExecutionAgentAction({ actionCode: 'issues.assignExecutionAgent', data: { issueId, agentId } }, ownerId).run();
   assert.equal(accepted.success, true);
   assert.equal((await db.collection('issues').doc(issueId).get()).data()?.execution.agentId, agentId);
+});
+
+test('emulator: se elimina un agente personal inactivo y se cortan sus accesos', async () => {
+  await seed();
+  await db.collection('issues').doc(issueId).update({ execution: { agentId } });
+  await db.collection('api_keys').doc(`key-${suffix}`).set({ agentId, workspaceId, revokedAt: null });
+
+  const result = await new DeleteAgentAction({ actionCode: 'agents.delete', data: { agentId } }, ownerId).run();
+
+  assert.equal(result.success, true);
+  assert.equal((await db.collection('agents').doc(agentId).get()).exists, false);
+  assert.equal((await db.collection('members').doc(`${workspaceId}_${agentId}`).get()).exists, false);
+  assert.equal((await db.collection('issues').doc(issueId).get()).data()?.execution, null);
+  assert.ok((await db.collection('api_keys').doc(`key-${suffix}`).get()).data()?.revokedAt);
+});
+
+test('emulator: no se elimina un agente con actividad ni con ejecuciones activas', async () => {
+  await seed();
+  await db.collection('agent_runs').doc(`run-${suffix}`).set({ agentId, workspaceId, issueId, startedAt: '2026-01-01T00:00:00.000Z' });
+  const history = await new DeleteAgentAction({ actionCode: 'agents.delete', data: { agentId } }, ownerId).run();
+  assert.equal(history.success, false);
+  assert.match(history.error || '', /actividad registrada/);
+
+  await db.collection('agent_runs').doc(`run-${suffix}`).delete();
+  await db.collection('runner_jobs').doc(`job-active-${suffix}`).set({ agentId, workspaceId, status: 'delivered' });
+  const active = await new DeleteAgentAction({ actionCode: 'agents.delete', data: { agentId } }, ownerId).run();
+  assert.equal(active.success, false);
+  assert.match(active.error || '', /ejecuciones activas/);
 });
 
 test('emulator: revocar un Runner conserva auditoría y corta la credencial', async () => {

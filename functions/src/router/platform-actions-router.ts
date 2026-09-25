@@ -16,6 +16,7 @@ import { RevokeApiKeyAction } from '../actions/apikeys/revoke-api-key';
 import { ListApiKeysAction } from '../actions/apikeys/list-api-keys';
 import { CreateAgentAction } from '../actions/agents/create-agent';
 import { UpdateAgentAction } from '../actions/agents/update-agent';
+import { DeleteAgentAction } from '../actions/agents/delete-agent';
 import { ListAgentsAction } from '../actions/agents/list-agents';
 import { ConnectRepoAction } from '../actions/agents/connect-repo';
 import { DisconnectRepoAction } from '../actions/agents/disconnect-repo';
@@ -116,6 +117,8 @@ export async function dispatchPlatformAction(
       return new CreateAgentAction(request, callerUid, callerEmail).run();
     case 'agents.update':
       return new UpdateAgentAction(request, callerUid, callerEmail).run();
+    case 'agents.delete':
+      return new DeleteAgentAction(request, callerUid, callerEmail).run();
     case 'agents.list':
       return new ListAgentsAction(request, callerUid, callerEmail).run();
     case 'agents.connectRepo':
