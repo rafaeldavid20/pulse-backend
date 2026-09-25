@@ -126,6 +126,7 @@ export const pulseRunnerPoll = onRequest(
         scopes: agent.data()!.role === 'qa' ? QA_SCOPES : DEV_SCOPES,
         agentId: job.agentId, createdBy: runner.data.ownerMemberId, jobId: job.id,
         issueId: job.issueId, runnerId: runner.id, repoFullName: job.repoFullName,
+        repoFullNames: job.contextRepos || [job.repoFullName],
         expiresAt: job.expiresAt, createdAt: deliveredAt, lastUsedAt: null, revokedAt: null,
       });
       return true;

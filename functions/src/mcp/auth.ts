@@ -31,6 +31,8 @@ export interface McpPrincipal {
   issueId?: string;
   runnerId?: string;
   repoFullName?: string;
+  /** Repos explícitamente autorizados por el envelope firmado del Runner job. */
+  repoFullNames?: string[];
 }
 
 export class McpAuthError extends Error {
@@ -109,6 +111,7 @@ async function authenticateApiKey(parsed: { keyId: string; secret: string }): Pr
     issueId: record.issueId,
     runnerId: record.runnerId,
     repoFullName: record.repoFullName,
+    repoFullNames: Array.isArray(record.repoFullNames) ? record.repoFullNames : undefined,
   };
 }
 

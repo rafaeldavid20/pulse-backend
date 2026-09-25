@@ -12,7 +12,8 @@ function base64url(input: Buffer): string {
 export function runnerJobPayload(job: Omit<RunnerJob, 'signature'>): string {
   // La lista explícita evita que campos operativos agregados al documento de
   // Firestore (p. ej. deliveredAt) alteren la verificación del Runner.
-  return [job.id, job.workspaceId, job.issueId, job.agentId, job.runnerId, job.repoFullName, job.mode, job.issuedAt, job.expiresAt, job.signatureAlgorithm, job.signingKeyId].join('.');
+  const contextRepos = [...new Set(job.contextRepos || [job.repoFullName])].sort().join(',');
+  return [job.id, job.workspaceId, job.issueId, job.agentId, job.runnerId, job.repoFullName, contextRepos, job.mode, job.issuedAt, job.expiresAt, job.signatureAlgorithm, job.signingKeyId].join('.');
 }
 
 export function signRunnerJob(job: Omit<RunnerJob, 'signature'>, privateKey: string): string {
@@ -28,7 +29,8 @@ export async function enqueueRunnerJob(
 ): Promise<RunnerJob> {
   const issuedAt = new Date().toISOString();
   const expiresAt = new Date(Date.now() + JOB_TTL_MS).toISOString();
-  const unsigned = { id: `rjob-${nanoid(12)}`, ...input, issuedAt, expiresAt, signatureAlgorithm: 'ed25519' as const, signingKeyId };
+  const contextRepos = [...new Set(input.contextRepos || [input.repoFullName])].sort();
+  const unsigned = { id: `rjob-${nanoid(12)}`, ...input, contextRepos, issuedAt, expiresAt, signatureAlgorithm: 'ed25519' as const, signingKeyId };
   const job: RunnerJob = { ...unsigned, signature: signRunnerJob(unsigned, privateKey) };
   await db.collection('runner_jobs').doc(job.id).set({ ...job, status: 'pending', createdAt: issuedAt });
   return job;

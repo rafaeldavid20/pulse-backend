@@ -95,6 +95,8 @@ export interface RunnerJob {
   agentId: string;
   runnerId: string;
   repoFullName: string;
+  /** Repos adicionales del mismo proyecto disponibles para este job. */
+  contextRepos?: string[];
   mode: AgentRunMode;
   issuedAt: string;
   expiresAt: string;

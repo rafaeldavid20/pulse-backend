@@ -10,6 +10,7 @@ import { buildNeedsHumanEscalation } from '../common/utils/review-escalation';
 import { agentAllowedRepos, agentVisibility } from '../common/utils/agent-authorization';
 import { enqueueRunnerJob } from '../common/utils/runner-jobs';
 import { isRunnerAvailable } from '../common/utils/runner-availability';
+import { allowedReposForIssue } from '../common/utils/project-repos';
 
 // Un run tarda ~30s en arrancar y reclamar el issue (ver `agent.state ===
 // 'claimed'` en claim-issue.ts), así que ese guard solo no alcanza para
@@ -19,6 +20,21 @@ import { isRunnerAvailable } from '../common/utils/runner-availability';
 const DISPATCH_COOLDOWN_MS = 10 * 60 * 1000;
 
 const DEFAULT_MAX_REVIEW_ATTEMPTS = 2;
+
+/** Repos que un Runner puede montar juntos para un único job, sin salir del proyecto ni de sus allow-lists. */
+async function runnerContextRepos(
+  db: FirebaseFirestore.Firestore,
+  issue: FirebaseFirestore.DocumentData,
+  agent: FirebaseFirestore.DocumentData,
+  runner: FirebaseFirestore.DocumentData,
+  installationRepos: string[],
+): Promise<string[]> {
+  const projectRepos = await allowedReposForIssue(db, issue, installationRepos);
+  const agentRepos = agentAllowedRepos(agent);
+  return projectRepos.filter((repo) =>
+    runner.connectedRepos?.includes(repo) && (agentRepos.length === 0 || agentRepos.includes(repo))
+  );
+}
 
 /**
  * Despacha el run de re-trabajo del dev tras un rechazo de QA (D9): sin este
@@ -188,8 +204,9 @@ async function dispatchRework(
       console.log(`[AgentDispatch] rework for '${issueId}': runner '${agent.runnerId}' is not connected to '${repoFullName}', skipping.`);
       return;
     }
+    const contextRepos = await runnerContextRepos(db, after, agent, runner, authorized);
     const job = await enqueueRunnerJob(db, {
-      workspaceId, issueId, agentId, runnerId: agent.runnerId, repoFullName, mode: 'rework',
+      workspaceId, issueId, agentId, runnerId: agent.runnerId, repoFullName, contextRepos, mode: 'rework',
     }, runnerJobSigningPrivateKey.value());
     await db.collection('agent_runs').doc(job.id).set({
       id: job.id, issueId, workspaceId, agentId, role: 'dev', mode: 'rework', repo: repoFullName,
@@ -682,12 +699,14 @@ export const agentDispatchTrigger = onDocumentWritten(
           console.log(`[AgentDispatch] runner '${agent.runnerId}' is not connected to '${repoFullName}', skipping dispatch.`);
           return;
         }
+        const contextRepos = await runnerContextRepos(db, after, agent, runner, authorized);
         const job = await enqueueRunnerJob(db, {
           workspaceId,
           issueId: event.params.issueId,
           agentId,
           runnerId: agent.runnerId,
           repoFullName,
+          contextRepos,
           mode: 'task',
         }, runnerJobSigningPrivateKey.value());
         await db.collection('agent_runs').doc(job.id).set({

@@ -14,10 +14,11 @@ export function jobToolRequiresExplicitRepo(toolName: string): boolean {
 
 export async function jobCanAccessArgs(principal: McpPrincipal, args: Record<string, any>, requiresExplicitRepo = false): Promise<boolean> {
   if (!principal.jobId || !principal.issueId) return true;
+  const allowedRepos = principal.repoFullNames?.length ? principal.repoFullNames : [principal.repoFullName];
   // Resolver el repo por defecto de un issue multi-repo ampliaría el alcance
   // del job. Las herramientas que actúan sobre Git deben nombrar el repo.
-  if (requiresExplicitRepo && args.repoFullName !== principal.repoFullName) return false;
-  if (args.repoFullName && args.repoFullName !== principal.repoFullName) return false;
+  if (requiresExplicitRepo && (!args.repoFullName || !allowedRepos.includes(args.repoFullName))) return false;
+  if (args.repoFullName && !allowedRepos.includes(args.repoFullName)) return false;
   const identifier = args.identifier ?? args.issueId;
   if (!identifier) return false;
   if (identifier === principal.issueId) return true;
