@@ -24,6 +24,7 @@ async function seed() {
   await db.collection('members').doc(`${workspaceId}_${ownerId}`).set({ workspaceId, userId: ownerId, role: 'member' });
   await db.collection('members').doc(`${workspaceId}_${otherId}`).set({ workspaceId, userId: otherId, role: 'member' });
   await db.collection('members').doc(`${workspaceId}_${adminId}`).set({ workspaceId, userId: adminId, role: 'admin' });
+  await db.collection('members').doc(`${workspaceId}_${agentId}`).set({ workspaceId, userId: agentId, role: 'member', isAgent: true });
   await db.collection('agents').doc(agentId).set({ id: agentId, workspaceId, ownerMemberId: ownerId, visibility: 'personal', enabled: true });
   await db.collection('issues').doc(issueId).set({ id: issueId, workspaceId, identifier: `INT-${suffix}`, assigneeId: ownerId, responsibleMemberId: ownerId });
   await db.collection('runners').doc(runnerId).set({ id: runnerId, workspaceId, ownerMemberId: ownerId, status: 'online', deviceSecretHash: 'hash' });
