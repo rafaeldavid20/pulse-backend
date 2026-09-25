@@ -5,7 +5,8 @@ import { generateApiKey, hashApiKeySecret } from '../common/utils/api-key';
 import { mcpKeyPepper } from '../common/secrets';
 import { DEV_SCOPES, QA_SCOPES } from '../mcp/scopes';
 import { isRunnerAvailable } from '../common/utils/runner-availability';
-import { safeRunnerJobResult } from '../common/utils/runner-result';
+import { parseRunnerUsageReport } from '../common/utils/runner-usage';
+import { recordRunnerCompletion } from './record-completion';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -158,7 +159,7 @@ export const pulseRunnerConfigure = onRequest(
   },
 );
 
-/** Completa un job entregado; el resultado queda acotado y no acepta logs/secrets arbitrarios. */
+/** Completa un job entregado; sólo guarda metadatos y contadores validados. */
 export const pulseRunnerComplete = onRequest(
   { region: 'us-east4', cors: true, secrets: [mcpKeyPepper] },
   async (req, res) => {
@@ -172,18 +173,35 @@ export const pulseRunnerComplete = onRequest(
     if (typeof jobId !== 'string' || !['completed', 'failed', 'canceled'].includes(outcome)) {
       res.status(400).json({ error: 'jobId y outcome válido son obligatorios' }); return;
     }
-    const jobRef = getFirestore().collection('runner_jobs').doc(jobId);
+    const db = getFirestore();
+    const jobRef = db.collection('runner_jobs').doc(jobId);
     const jobSnap = await jobRef.get();
     if (!jobSnap.exists || jobSnap.data()!.runnerId !== runner.id) { res.status(404).json({ error: 'Runner job not found' }); return; }
     const job = jobSnap.data()!;
+    if (['completed', 'failed', 'canceled'].includes(job.status)) {
+      res.json({ jobId, status: job.status, completedAt: job.completedAt, alreadyCompleted: true }); return;
+    }
     if (job.status !== 'delivered' || new Date(job.expiresAt).getTime() <= Date.now()) { res.status(409).json({ error: 'Runner job is not completable' }); return; }
+    const agentSnap = await db.collection('agents').doc(job.agentId).get();
+    const provider = agentSnap.data()?.kind;
+    if (provider !== 'claude' && provider !== 'codex') { res.status(400).json({ error: 'El agente no tiene proveedor Claude o Codex.' }); return; }
+    let report;
+    try {
+      report = parseRunnerUsageReport(req.body?.usageReport, provider);
+    } catch (error) {
+      res.status(400).json({ error: (error as Error).message }); return;
+    }
     const now = new Date().toISOString();
-    await jobRef.update({ status: outcome, completedAt: now, result: safeRunnerJobResult(req.body?.result) });
+    const completion = await recordRunnerCompletion(db, jobId, runner.id, provider, outcome, report, now);
+    if (completion !== 'written') {
+      if (['completed', 'failed', 'canceled'].includes(completion)) { res.json({ jobId, status: completion, alreadyCompleted: true }); return; }
+      res.status(completion === 'missing' ? 404 : 409).json({ error: 'Runner job is not completable' }); return;
+    }
     // Un job exitoso puede liberar un handoff inmediatamente. El proceso
     // local todavía envía su heartbeat final en el `finally`, pero marcarlo
     // online acá evita que ese trigger vea el estado transitorio `busy` y
     // descarte el siguiente job aunque ya no haya ninguno activo.
-    await getFirestore().collection('runners').doc(runner.id).update({ status: 'online', lastHeartbeatAt: now, updatedAt: now });
+    await db.collection('runners').doc(runner.id).update({ status: 'online', lastHeartbeatAt: now, updatedAt: now });
     // El workflow de GitHub libera el issue al finalizar un traspaso para que
     // el trigger despache el repo destino. El Runner local no tiene ese paso
     // de workflow: hacerlo acá evita que un `pendingRepoWork` quede detenido

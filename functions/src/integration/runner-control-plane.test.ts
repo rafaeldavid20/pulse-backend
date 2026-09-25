@@ -6,6 +6,8 @@ import { AssignExecutionAgentAction } from '../actions/issues/assign-execution-a
 import { UpdateAgentAction } from '../actions/agents/update-agent';
 import { DeleteAgentAction } from '../actions/agents/delete-agent';
 import { ListRunnerJobsAction, RevokeRunnerAction } from '../actions/runners/manage-runners';
+import { GetAgentUsageAction } from '../actions/agents/get-usage';
+import { recordRunnerCompletion } from '../runners/record-completion';
 import { jobCanAccessArgs, jobToolRequiresExplicitRepo } from '../mcp/server';
 
 if (!process.env.FIRESTORE_EMULATOR_HOST) throw new Error('Este test debe ejecutarse mediante Firebase Emulator.');
@@ -113,4 +115,47 @@ test('emulator: el historial de jobs no filtra actividad de Runners ajenos', asy
   const result = await new ListRunnerJobsAction({ actionCode: 'runners.listJobs', data: { workspaceId } }, ownerId).run();
   assert.equal(result.success, true);
   assert.deepEqual((result.data as any).jobs.map((job: any) => job.id), [`job-own-${suffix}`]);
+});
+
+test('emulator: consumo filtra workspace, visibilidad, Runner y período', async () => {
+  await seed();
+  const otherWorkspace = `ws-other-${suffix}`;
+  const otherAgent = `agent-other-${suffix}`;
+  await db.collection('agents').doc(agentId).update({ kind: 'claude', displayName: 'Claude', runnerId });
+  await db.collection('agents').doc(otherAgent).set({ id: otherAgent, workspaceId, ownerMemberId: otherId, kind: 'codex', displayName: 'Codex', runnerId });
+  const base = { workspaceId, issueId, startedAt: '2026-09-20T12:00:00.000Z', mode: 'task', usage: { inputTokens: 5, outputTokens: 2 } };
+  await Promise.all([
+    db.collection('agent_runs').doc(`local-${suffix}`).set({ ...base, agentId, runnerId }),
+    db.collection('agent_runs').doc(`github-${suffix}`).set({ ...base, agentId }),
+    db.collection('agent_runs').doc(`other-agent-${suffix}`).set({ ...base, agentId: otherAgent, runnerId }),
+    db.collection('agent_runs').doc(`other-workspace-${suffix}`).set({ ...base, workspaceId: otherWorkspace, agentId, runnerId }),
+    db.collection('agent_runs').doc(`old-${suffix}`).set({ ...base, agentId, runnerId, startedAt: '2026-01-01T00:00:00.000Z' }),
+  ]);
+  const period = { from: '2026-09-19T00:00:00.000Z', to: '2026-09-21T00:00:00.000Z' };
+  const owner = await new GetAgentUsageAction({ actionCode: 'agents.getUsage', data: { workspaceId, ...period } }, ownerId).run();
+  assert.equal(owner.success, true);
+  assert.deepEqual((owner.data as any).agents.map((agent: any) => agent.id), [agentId]);
+  assert.deepEqual((owner.data as any).runs.map((run: any) => run.id), [`local-${suffix}`]);
+  const other = await new GetAgentUsageAction({ actionCode: 'agents.getUsage', data: { workspaceId, ...period } }, otherId).run();
+  assert.equal(other.success, true);
+  assert.deepEqual((other.data as any).runs.map((run: any) => run.id), [`other-agent-${suffix}`]);
+  const outsider = await new GetAgentUsageAction({ actionCode: 'agents.getUsage', data: { workspaceId: otherWorkspace, ...period } }, ownerId).run();
+  assert.equal(outsider.success, false);
+});
+
+test('emulator: el reporte Runner es idempotente y conserva uso parcial de un fallo', async () => {
+  await seed();
+  const jobId = `job-usage-${suffix}`;
+  await db.collection('runner_jobs').doc(jobId).set({ id: jobId, workspaceId, issueId, agentId, runnerId, status: 'delivered', expiresAt: '2099-01-01T00:00:00.000Z' });
+  await db.collection('agent_runs').doc(jobId).set({ id: jobId, workspaceId, issueId, agentId, runnerId, startedAt: '2026-09-20T12:00:00.000Z' });
+  const report = { usage: { inputTokens: 12, outputTokens: 3, cacheReadInputTokens: 5 }, costUsd: 0.01 };
+  const first = await recordRunnerCompletion(db, jobId, runnerId, 'codex', 'failed', report, '2026-09-20T12:05:00.000Z');
+  const retry = await recordRunnerCompletion(db, jobId, runnerId, 'codex', 'failed', { usage: null }, '2026-09-20T12:06:00.000Z');
+  assert.equal(first, 'written');
+  assert.equal(retry, 'failed');
+  const run = (await db.collection('agent_runs').doc(jobId).get()).data()!;
+  assert.deepEqual(run.usage, report.usage);
+  assert.equal(run.costUsd, 0.01);
+  assert.equal(run.runnerOutcome, 'failed');
+  assert.equal((await db.collection('runner_jobs').doc(jobId).get()).data()!.completedAt, '2026-09-20T12:05:00.000Z');
 });

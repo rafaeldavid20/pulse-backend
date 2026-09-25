@@ -12,6 +12,15 @@ async function assertRunnerCapacity(db: FirebaseFirestore.Firestore, runnerId: s
   if (count >= maxConcurrentJobs) throw new Error('El Runner ya alcanzó su capacidad de jobs activos.');
 }
 
+async function createAgentRun(db: FirebaseFirestore.Firestore, job: { id: string; workspaceId: string; issueId: string; agentId: string; runnerId: string; repoFullName: string; mode: string }, role: string) {
+  const startedAt = new Date().toISOString();
+  await db.collection('agent_runs').doc(job.id).set({
+    id: job.id, workspaceId: job.workspaceId, issueId: job.issueId, agentId: job.agentId,
+    runnerId: job.runnerId, repo: job.repoFullName, mode: job.mode, role,
+    startedAt, date: startedAt.slice(0, 10),
+  });
+}
+
 /** Human-authorized fallback to enqueue a signed local Runner job. */
 export class IssueRunnerJobAction extends PlatformActionHandler {
   private issueId?: string;
@@ -64,6 +73,7 @@ export class IssueRunnerJobAction extends PlatformActionHandler {
       repoFullName,
       mode: 'task',
     }, runnerJobSigningPrivateKey.value());
+    await createAgentRun(db, job, agent.role || 'dev');
     // La credencial MCP se crea al entregar el job al Runner autenticado,
     // nunca se devuelve al navegador que lo emitió.
     return { job };
@@ -122,6 +132,7 @@ export class RetryRunnerJobAction extends PlatformActionHandler {
       runnerId: original.runnerId, repoFullName: original.repoFullName, mode: original.mode,
     }, runnerJobSigningPrivateKey.value());
     await Promise.all([
+      createAgentRun(db, job, agent.role || 'dev'),
       db.collection('runner_jobs').doc(job.id).update({ retryOf: original.id }),
       originalSnap.ref.update({ retriedByJobId: job.id, retryRequestedAt: new Date().toISOString() }),
     ]);
