@@ -21,6 +21,7 @@ export type PlatformActionCode =
   | 'comments.create'
   | 'agents.create'
   | 'agents.update'
+  | 'agents.delete'
   | 'agents.list'
   | 'agents.connectRepo'
   | 'agents.disconnectRepo'
