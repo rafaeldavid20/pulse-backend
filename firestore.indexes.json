@@ -1,6 +1,14 @@
 {
   "indexes": [
     {
+      "collectionGroup": "agent_runs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "workspaceId", "order": "ASCENDING" },
+        { "fieldPath": "startedAt", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "qa_calibration_records",
       "queryScope": "COLLECTION",
       "fields": [

@@ -23,6 +23,7 @@ export type PlatformActionCode =
   | 'agents.update'
   | 'agents.delete'
   | 'agents.list'
+  | 'agents.getUsage'
   | 'agents.connectRepo'
   | 'agents.disconnectRepo'
   | 'agents.getQaCalibration'

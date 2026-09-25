@@ -18,6 +18,7 @@ import { CreateAgentAction } from '../actions/agents/create-agent';
 import { UpdateAgentAction } from '../actions/agents/update-agent';
 import { DeleteAgentAction } from '../actions/agents/delete-agent';
 import { ListAgentsAction } from '../actions/agents/list-agents';
+import { GetAgentUsageAction } from '../actions/agents/get-usage';
 import { ConnectRepoAction } from '../actions/agents/connect-repo';
 import { DisconnectRepoAction } from '../actions/agents/disconnect-repo';
 import { GetQaCalibrationAction } from '../actions/agents/get-qa-calibration';
@@ -121,6 +122,8 @@ export async function dispatchPlatformAction(
       return new DeleteAgentAction(request, callerUid, callerEmail).run();
     case 'agents.list':
       return new ListAgentsAction(request, callerUid, callerEmail).run();
+    case 'agents.getUsage':
+      return new GetAgentUsageAction(request, callerUid, callerEmail).run();
     case 'agents.connectRepo':
       return new ConnectRepoAction(request, callerUid, callerEmail).run();
     case 'agents.disconnectRepo':
