@@ -179,6 +179,11 @@ export const pulseRunnerComplete = onRequest(
     if (job.status !== 'delivered' || new Date(job.expiresAt).getTime() <= Date.now()) { res.status(409).json({ error: 'Runner job is not completable' }); return; }
     const now = new Date().toISOString();
     await jobRef.update({ status: outcome, completedAt: now, result: safeRunnerJobResult(req.body?.result) });
+    // Un job exitoso puede liberar un handoff inmediatamente. El proceso
+    // local todavía envía su heartbeat final en el `finally`, pero marcarlo
+    // online acá evita que ese trigger vea el estado transitorio `busy` y
+    // descarte el siguiente job aunque ya no haya ninguno activo.
+    await getFirestore().collection('runners').doc(runner.id).update({ status: 'online', lastHeartbeatAt: now, updatedAt: now });
     // El workflow de GitHub libera el issue al finalizar un traspaso para que
     // el trigger despache el repo destino. El Runner local no tiene ese paso
     // de workflow: hacerlo acá evita que un `pendingRepoWork` quede detenido

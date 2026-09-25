@@ -338,6 +338,24 @@ async function dispatchHandoff(
     return;
   }
 
+  // Validar el Runner antes de reservar el traspaso. Si se escribiera
+  // `pendingRepoWork.dispatchedAt` primero y el Runner estuviera offline o
+  // sin el repo, el entry quedaría marcado como enviado sin ningún job que lo
+  // pueda completar (exactamente el estado que después no se puede reintentar).
+  let runner: FirebaseFirestore.DocumentData | undefined;
+  if (agent.runnerId) {
+    const runnerSnap = await db.collection('runners').doc(agent.runnerId).get();
+    if (!runnerSnap.exists || runnerSnap.data()!.workspaceId !== workspaceId) {
+      console.log(`[AgentDispatch] handoff for '${issueId}': runner '${agent.runnerId}' does not exist in this workspace, skipping.`);
+      return;
+    }
+    runner = runnerSnap.data()!;
+    if (!isRunnerAvailable(runner) || !runner.connectedRepos?.includes(targetRepo)) {
+      console.log(`[AgentDispatch] handoff for '${issueId}': runner '${agent.runnerId}' is unavailable or lacks '${targetRepo}', skipping.`);
+      return;
+    }
+  }
+
   const issueRef = db.collection('issues').doc(issueId);
   const decision = await db.runTransaction(async (tx: Transaction) => {
     const issueSnap = await tx.get(issueRef);
@@ -366,17 +384,7 @@ async function dispatchHandoff(
   // GitHub Actions dejaba el Runner sin el repo destino y el workflow podía
   // quedar skipped para adaptadores locales.
   if (agent.runnerId) {
-    const runnerSnap = await db.collection('runners').doc(agent.runnerId).get();
-    if (!runnerSnap.exists || runnerSnap.data()!.workspaceId !== workspaceId) {
-      console.log(`[AgentDispatch] handoff for '${issueId}': runner '${agent.runnerId}' does not exist in this workspace, skipping.`);
-      return;
-    }
-    const runner = runnerSnap.data()!;
-    if (!isRunnerAvailable(runner) || !runner.connectedRepos?.includes(targetRepo)) {
-      console.log(`[AgentDispatch] handoff for '${issueId}': runner '${agent.runnerId}' is unavailable or lacks '${targetRepo}', skipping.`);
-      return;
-    }
-    const contextRepos = await runnerContextRepos(db, after, agent, runner, authorized);
+    const contextRepos = await runnerContextRepos(db, after, agent, runner!, authorized);
     const job = await enqueueRunnerJob(db, {
       workspaceId, issueId, agentId, runnerId: agent.runnerId, repoFullName: targetRepo, contextRepos, mode: 'handoff',
     }, runnerJobSigningPrivateKey.value());
