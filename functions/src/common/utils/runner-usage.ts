@@ -23,6 +23,9 @@ function optionalCounter(value: unknown, name: string): number | undefined {
 
 /** Only provider counters enter storage. Raw messages, sessions and prompts are discarded. */
 export function parseRunnerUsageReport(value: unknown, provider: string): RunnerUsageReport {
+  // Legacy/unknown agent kinds can still finish a job. Their usage format is
+  // unsupported, so discard the entire report rather than storing raw fields.
+  if (provider !== 'claude' && provider !== 'codex') return { usage: null };
   if (value === undefined || value === null) return { usage: null };
   if (typeof value !== 'object' || Array.isArray(value)) throw new Error('El reporte de uso debe ser un objeto.');
   const report = value as Record<string, unknown>;
@@ -45,14 +48,12 @@ export function parseRunnerUsageReport(value: unknown, provider: string): Runner
     cacheCreationInputTokens = optionalCounter(raw.cache_creation_input_tokens, 'cache_creation_input_tokens');
     inputTokens = direct + (cacheReadInputTokens ?? 0) + (cacheCreationInputTokens ?? 0);
     if (!Number.isSafeInteger(inputTokens)) throw new Error('inputTokens excede el rango seguro.');
-  } else if (provider === 'codex') {
+  } else {
     // Codex input_tokens already includes cached_input_tokens.
     inputTokens = counter(raw.input_tokens, 'input_tokens');
     outputTokens = counter(raw.output_tokens, 'output_tokens');
     cacheReadInputTokens = optionalCounter(raw.cached_input_tokens, 'cached_input_tokens');
     if (cacheReadInputTokens !== undefined && cacheReadInputTokens > inputTokens) throw new Error('cached_input_tokens excede input_tokens.');
-  } else {
-    throw new Error('Proveedor de uso desconocido.');
   }
   return {
     usage: {

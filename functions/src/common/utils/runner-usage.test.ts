@@ -20,6 +20,11 @@ test('missing usage stays unavailable even when cost is reported', () => {
   assert.deepEqual(parseRunnerUsageReport(undefined, 'codex'), { usage: null });
 });
 
+test('legacy agent kinds discard unsupported usage without blocking completion', () => {
+  assert.deepEqual(parseRunnerUsageReport(undefined, 'chatgpt'), { usage: null });
+  assert.deepEqual(parseRunnerUsageReport({ usage: { input_tokens: 8, output_tokens: 3 }, costUsd: 1, prompt: 'discard me' }, 'chatgpt'), { usage: null });
+});
+
 test('rejects malformed, negative, fractional and inconsistent counters', () => {
   for (const usage of [
     { input_tokens: -1, output_tokens: 1 },

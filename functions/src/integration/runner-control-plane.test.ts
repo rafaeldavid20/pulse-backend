@@ -8,6 +8,7 @@ import { DeleteAgentAction } from '../actions/agents/delete-agent';
 import { ListRunnerJobsAction, RevokeRunnerAction } from '../actions/runners/manage-runners';
 import { GetAgentUsageAction } from '../actions/agents/get-usage';
 import { recordRunnerCompletion } from '../runners/record-completion';
+import { parseRunnerUsageReport } from '../common/utils/runner-usage';
 import { jobCanAccessArgs, jobToolRequiresExplicitRepo } from '../mcp/server';
 
 if (!process.env.FIRESTORE_EMULATOR_HOST) throw new Error('Este test debe ejecutarse mediante Firebase Emulator.');
@@ -158,4 +159,20 @@ test('emulator: el reporte Runner es idempotente y conserva uso parcial de un fa
   assert.equal(run.costUsd, 0.01);
   assert.equal(run.runnerOutcome, 'failed');
   assert.equal((await db.collection('runner_jobs').doc(jobId).get()).data()!.completedAt, '2026-09-20T12:05:00.000Z');
+});
+
+test('emulator: un agente chatgpt legado completa el job sin métricas disponibles', async () => {
+  await seed();
+  const jobId = `job-legacy-${suffix}`;
+  await db.collection('agents').doc(agentId).update({ kind: 'chatgpt', runnerId });
+  await db.collection('runner_jobs').doc(jobId).set({ id: jobId, workspaceId, issueId, agentId, runnerId, status: 'delivered', expiresAt: '2099-01-01T00:00:00.000Z' });
+  await db.collection('agent_runs').doc(jobId).set({ id: jobId, workspaceId, issueId, agentId, runnerId, startedAt: '2026-09-20T12:00:00.000Z' });
+
+  const report = parseRunnerUsageReport(undefined, 'chatgpt');
+  const result = await recordRunnerCompletion(db, jobId, runnerId, 'chatgpt', 'completed', report, '2026-09-20T12:05:00.000Z');
+  assert.equal(result, 'written');
+  assert.equal((await db.collection('runner_jobs').doc(jobId).get()).data()!.status, 'completed');
+  const run = (await db.collection('agent_runs').doc(jobId).get()).data()!;
+  assert.equal(run.provider, 'chatgpt');
+  assert.equal(run.usage, null);
 });

@@ -30,5 +30,7 @@ Send `usageReport: { "usage": null }` or omit it when structured usage is
 unavailable. Cost is optional and must come from the provider, not an estimate.
 The same report format is accepted for failed and canceled jobs. A retry of a
 completed job returns its original status without changing the stored usage.
+Jobs for legacy agent kinds (such as `chatgpt`) still complete; the server
+discards any unsupported usage report and stores `usage: null`.
 Do not send the provider's full result object, logs, sessions, prompts, or
 responses.

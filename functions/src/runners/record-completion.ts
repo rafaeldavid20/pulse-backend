@@ -2,7 +2,7 @@ import { Firestore } from 'firebase-admin/firestore';
 import { RunnerUsageReport } from '../common/utils/runner-usage';
 
 export async function recordRunnerCompletion(
-  db: Firestore, jobId: string, runnerId: string, provider: 'claude' | 'codex',
+  db: Firestore, jobId: string, runnerId: string, provider: string,
   outcome: 'completed' | 'failed' | 'canceled', report: RunnerUsageReport, now: string,
 ): Promise<'written' | 'missing' | 'expired' | 'mismatch' | 'completed' | 'failed' | 'canceled'> {
   const jobRef = db.collection('runner_jobs').doc(jobId);

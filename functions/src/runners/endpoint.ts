@@ -183,8 +183,7 @@ export const pulseRunnerComplete = onRequest(
     }
     if (job.status !== 'delivered' || new Date(job.expiresAt).getTime() <= Date.now()) { res.status(409).json({ error: 'Runner job is not completable' }); return; }
     const agentSnap = await db.collection('agents').doc(job.agentId).get();
-    const provider = agentSnap.data()?.kind;
-    if (provider !== 'claude' && provider !== 'codex') { res.status(400).json({ error: 'El agente no tiene proveedor Claude o Codex.' }); return; }
+    const provider = agentSnap.data()?.kind ?? 'unknown';
     let report;
     try {
       report = parseRunnerUsageReport(req.body?.usageReport, provider);
