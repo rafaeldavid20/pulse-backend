@@ -1,12 +1,15 @@
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { getFirestore, Transaction } from 'firebase-admin/firestore';
 import { nanoid } from 'nanoid';
-import { githubAppId, githubAppPrivateKeyB64 } from '../common/secrets';
+import { githubAppId, githubAppPrivateKeyB64, mcpKeyPepper, runnerJobSigningPrivateKey } from '../common/secrets';
 import { dispatchRepositoryEvent } from '../github/client';
 import { resolveIssueRepo } from '../common/utils/repo-resolution';
 import { checkWorkspaceDispatchBudget, todayKey } from '../common/utils/dispatch-counter';
 import { checkIssueRunBudget } from '../common/utils/issue-run-budget';
 import { buildNeedsHumanEscalation } from '../common/utils/review-escalation';
+import { agentAllowedRepos, agentVisibility } from '../common/utils/agent-authorization';
+import { enqueueRunnerJob } from '../common/utils/runner-jobs';
+import { isRunnerAvailable } from '../common/utils/runner-availability';
 
 // Un run tarda ~30s en arrancar y reclamar el issue (ver `agent.state ===
 // 'claimed'` en claim-issue.ts), así que ese guard solo no alcanza para
@@ -376,7 +379,7 @@ export const agentDispatchTrigger = onDocumentWritten(
   {
     document: 'issues/{issueId}',
     region: 'us-east4',
-    secrets: [githubAppId, githubAppPrivateKeyB64],
+    secrets: [githubAppId, githubAppPrivateKeyB64, mcpKeyPepper, runnerJobSigningPrivateKey],
   },
   async (event) => {
     try {
@@ -399,7 +402,10 @@ export const agentDispatchTrigger = onDocumentWritten(
       // Reasignar a otro agente estando en `todo` también dispara, para el nuevo.
       // Cualquier otro update de un issue ya en `todo` con el mismo asignado no
       // dispara, así que no hay doble dispatch por editar un título.
-      const agentId = after.assigneeId;
+      // Desde TES-284 el responsable humano y el ejecutor son dos campos
+      // distintos. El fallback conserva los issues legacy asignados a un
+      // agente hasta que se migren desde la UI.
+      const agentId = after.execution?.agentId || after.assigneeId;
 
       // Traspaso a otro repo (TES-202): el run anterior registró trabajo
       // pendiente en otro repo y ya soltó el issue (`agent.state` deja de ser
@@ -438,7 +444,7 @@ export const agentDispatchTrigger = onDocumentWritten(
       }
 
       const enteredTodo = before?.status !== 'todo';
-      const assigneeChanged = before?.assigneeId !== agentId;
+      const assigneeChanged = (before?.execution?.agentId || before?.assigneeId) !== agentId;
       if (!enteredTodo && !assigneeChanged) {
         console.log(
           `[AgentDispatch] issue '${event.params.issueId}' already in 'todo' for the same assignee, not a new dispatchable transition, skipping dispatch.`
@@ -459,16 +465,29 @@ export const agentDispatchTrigger = onDocumentWritten(
         );
         return;
       }
+      const allowedRepos = agentAllowedRepos(agent);
+
+      const visibility = agentVisibility(agent);
+      const responsibleMemberId = after.responsibleMemberId || (after.execution ? after.assigneeId : undefined);
+      if (visibility === 'personal' && agent.ownerMemberId !== responsibleMemberId) {
+        console.log(
+          `[AgentDispatch] personal agent '${agentId}' cannot execute issue '${event.params.issueId}' owned by '${responsibleMemberId ?? 'none'}', skipping dispatch.`
+        );
+        return;
+      }
 
       const maxConcurrent = agent.maxConcurrentIssues ?? 1;
-      const inProgressSnap = await db
-        .collection('issues')
-        .where('assigneeId', '==', agentId)
-        .where('status', '==', 'in_progress')
-        .get();
-      if (inProgressSnap.size >= maxConcurrent) {
+      const [legacyInProgressSnap, executionInProgressSnap] = await Promise.all([
+        db.collection('issues').where('assigneeId', '==', agentId).where('status', '==', 'in_progress').get(),
+        db.collection('issues').where('execution.agentId', '==', agentId).where('status', '==', 'in_progress').get(),
+      ]);
+      const inProgressCount = new Set([
+        ...legacyInProgressSnap.docs.map((doc) => doc.id),
+        ...executionInProgressSnap.docs.map((doc) => doc.id),
+      ]).size;
+      if (inProgressCount >= maxConcurrent) {
         console.log(
-          `[AgentDispatch] max concurrent reached for agent '${agentId}' (${inProgressSnap.size}/${maxConcurrent}), skipping dispatch.`
+          `[AgentDispatch] max concurrent reached for agent '${agentId}' (${inProgressCount}/${maxConcurrent}), skipping dispatch.`
         );
         return;
       }
@@ -492,6 +511,45 @@ export const agentDispatchTrigger = onDocumentWritten(
           );
         }
         return;
+      }
+
+      // Preflight antes de reservar el presupuesto/cooldown: un Runner
+      // offline o un repo no autorizado no debe consumir un dispatch que no
+      // llegó a ejecutarse.
+      const preflightInstallSnap = await db
+        .collection('github_installations')
+        .where('workspaceId', '==', workspaceId)
+        .limit(1)
+        .get();
+      if (preflightInstallSnap.empty) {
+        console.log(`[AgentDispatch] workspace '${workspaceId}' has no GitHub installation, skipping dispatch.`);
+        return;
+      }
+      const preflightInstallation = preflightInstallSnap.docs[0].data();
+      const preflightRepo = await resolveIssueRepo(db, { ...after, id: event.params.issueId }, {
+        agentId,
+        installationRepos: preflightInstallation.repositoryFullNames || [],
+      });
+      if (!preflightRepo.repoFullName) {
+        console.log(`[AgentDispatch] no resolvable repo for agent '${agentId}' / issue '${event.params.issueId}', skipping dispatch.`);
+        return;
+      }
+      const preflightAuthorized: string[] = preflightInstallation.repositoryFullNames || [];
+      if (preflightAuthorized.length > 0 && !preflightAuthorized.includes(preflightRepo.repoFullName)) {
+        console.log(`[AgentDispatch] '${preflightRepo.repoFullName}' is not in this workspace's GitHub installation, skipping dispatch.`);
+        return;
+      }
+      if (allowedRepos.length > 0 && !allowedRepos.includes(preflightRepo.repoFullName)) {
+        console.log(`[AgentDispatch] agent '${agentId}' is not connected to '${preflightRepo.repoFullName}', skipping dispatch.`);
+        return;
+      }
+      if (agent.runnerId) {
+        const runnerSnap = await db.collection('runners').doc(agent.runnerId).get();
+        const runner = runnerSnap.exists ? runnerSnap.data()! : null;
+        if (!runner || runner.workspaceId !== workspaceId || !isRunnerAvailable(runner) || !runner.connectedRepos?.includes(preflightRepo.repoFullName)) {
+          console.log(`[AgentDispatch] runner '${agent.runnerId}' is missing, offline, or lacks '${preflightRepo.repoFullName}', skipping dispatch.`);
+          return;
+        }
       }
 
       const issueRef = db.collection('issues').doc(event.params.issueId);
@@ -565,6 +623,56 @@ export const agentDispatchTrigger = onDocumentWritten(
         console.log(
           `[AgentDispatch] '${repoFullName}' (via ${source}) is not in this workspace's GitHub installation, skipping dispatch.`
         );
+        return;
+      }
+      if (allowedRepos.length > 0 && !allowedRepos.includes(repoFullName)) {
+        console.log(
+          `[AgentDispatch] agent '${agentId}' is not connected to '${repoFullName}', skipping dispatch.`
+        );
+        return;
+      }
+
+      // Un agente con Runner no cae al workflow de GitHub Actions: el trabajo
+      // se entrega como envelope firmado al proceso local que el usuario
+      // vinculó. La verificación de estado/repo ocurre acá, antes de crear el
+      // run, y el Runner vuelve a validar la firma/vencimiento antes de tocar
+      // el worktree.
+      if (agent.runnerId) {
+        const runnerSnap = await db.collection('runners').doc(agent.runnerId).get();
+        if (!runnerSnap.exists || runnerSnap.data()!.workspaceId !== workspaceId) {
+          console.log(`[AgentDispatch] runner '${agent.runnerId}' for agent '${agentId}' does not exist in this workspace, skipping dispatch.`);
+          return;
+        }
+        const runner = runnerSnap.data()!;
+        if (!isRunnerAvailable(runner)) {
+          console.log(`[AgentDispatch] runner '${agent.runnerId}' is offline, revoked, or has an expired heartbeat, skipping dispatch.`);
+          return;
+        }
+        if (!Array.isArray(runner.connectedRepos) || !runner.connectedRepos.includes(repoFullName)) {
+          console.log(`[AgentDispatch] runner '${agent.runnerId}' is not connected to '${repoFullName}', skipping dispatch.`);
+          return;
+        }
+        const job = await enqueueRunnerJob(db, {
+          workspaceId,
+          issueId: event.params.issueId,
+          agentId,
+          runnerId: agent.runnerId,
+          repoFullName,
+          mode: 'task',
+        }, runnerJobSigningPrivateKey.value());
+        await db.collection('agent_runs').doc(job.id).set({
+          id: job.id,
+          issueId: event.params.issueId,
+          workspaceId,
+          agentId,
+          role: 'dev',
+          mode: 'task',
+          repo: repoFullName,
+          runnerId: agent.runnerId,
+          startedAt: new Date().toISOString(),
+          date: todayKey(),
+        });
+        console.log(`[AgentDispatch] enqueued Runner job '${job.id}' for issue '${after.identifier}' to '${agent.runnerId}'.`);
         return;
       }
 

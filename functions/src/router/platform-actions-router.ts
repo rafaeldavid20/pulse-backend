@@ -26,6 +26,7 @@ import { ClaimNextIssueAction } from '../actions/issues/claim-next-issue';
 import { ReleaseIssueAction } from '../actions/issues/release-issue';
 import { RequestRepoWorkAction } from '../actions/issues/request-repo-work';
 import { ReportPendingWorkAction } from '../actions/issues/report-pending-work';
+import { AssignExecutionAgentAction } from '../actions/issues/assign-execution-agent';
 import { CreateInstallUrlAction } from '../actions/github/create-install-url';
 import { GithubStatusAction } from '../actions/github/github-status';
 import { CreateBranchAction } from '../actions/github/create-branch';
@@ -60,6 +61,9 @@ import { ReportCriteriaAction } from '../actions/reviews/report-criteria';
 import { DismissFindingAction } from '../actions/reviews/dismiss-finding';
 import { ReviewsRerunAction } from '../actions/reviews/rerun-review';
 import { ReturnToAgentAction } from '../actions/reviews/return-to-agent';
+import { RegisterRunnerAction } from '../actions/runners/register-runner';
+import { IssueRunnerJobAction, RetryRunnerJobAction } from '../actions/runners/issue-runner-job';
+import { ListRunnerJobsAction, ListRunnersAction, RevokeRunnerAction, RotateRunnerCredentialAction } from '../actions/runners/manage-runners';
 
 export async function dispatchPlatformAction(
   request: PlatformActionRequest,
@@ -120,6 +124,20 @@ export async function dispatchPlatformAction(
       return new DisconnectRepoAction(request, callerUid, callerEmail).run();
     case 'agents.getQaCalibration':
       return new GetQaCalibrationAction(request, callerUid, callerEmail).run();
+    case 'runners.register':
+      return new RegisterRunnerAction(request, callerUid, callerEmail).run();
+    case 'runners.issueJob':
+      return new IssueRunnerJobAction(request, callerUid, callerEmail).run();
+    case 'runners.retryJob':
+      return new RetryRunnerJobAction(request, callerUid, callerEmail).run();
+    case 'runners.list':
+      return new ListRunnersAction(request, callerUid, callerEmail).run();
+    case 'runners.revoke':
+      return new RevokeRunnerAction(request, callerUid, callerEmail).run();
+    case 'runners.rotateCredential':
+      return new RotateRunnerCredentialAction(request, callerUid, callerEmail).run();
+    case 'runners.listJobs':
+      return new ListRunnerJobsAction(request, callerUid, callerEmail).run();
     case 'comments.create':
       return new CreateCommentAction(request, callerUid, callerEmail).run();
     case 'issues.claim':
@@ -132,6 +150,8 @@ export async function dispatchPlatformAction(
       return new RequestRepoWorkAction(request, callerUid, callerEmail).run();
     case 'issues.reportPendingWork':
       return new ReportPendingWorkAction(request, callerUid, callerEmail).run();
+    case 'issues.assignExecutionAgent':
+      return new AssignExecutionAgentAction(request, callerUid, callerEmail).run();
 
     case 'github.createInstallUrl':
       return new CreateInstallUrlAction(request, callerUid, callerEmail).run();

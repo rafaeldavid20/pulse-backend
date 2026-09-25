@@ -93,7 +93,11 @@ export const qaDispatchTrigger = onDocumentWritten(
       // Repo contra el que matchear `reviewRepo`: el del issue, o el de su
       // épica si el issue no tiene uno propio (cascada compartida con el
       // dispatch de dev).
-      const { repoFullName } = await resolveIssueRepo(db, { ...after, id: issueId }, { agentId: after.assigneeId });
+      // TES-284 separa responsable humano de ejecutor. Los issues previos
+      // conservan `assigneeId` como fallback, pero los nuevos resuelven el
+      // repo desde el agente que realmente hizo el trabajo.
+      const executionAgentId = after.execution?.agentId || after.assigneeId;
+      const { repoFullName } = await resolveIssueRepo(db, { ...after, id: issueId }, { agentId: executionAgentId });
       if (!repoFullName) {
         console.log(`[QaDispatch] issue '${issueId}' no tiene repo resolvable, skipping.`);
         return;
@@ -109,7 +113,7 @@ export const qaDispatchTrigger = onDocumentWritten(
       // Nunca el mismo agente que es el dev asignado, y el `reviewRepo` tiene
       // que matchear el repo del issue (o el de su épica): con varios
       // agentes QA, es lo único que dice cuál corre el workflow acá.
-      const qaDoc = qaSnap.docs.find((d) => d.id !== after.assigneeId && d.data().reviewRepo === repoFullName);
+      const qaDoc = qaSnap.docs.find((d) => d.id !== executionAgentId && d.data().reviewRepo === repoFullName);
       if (!qaDoc) {
         console.log(`[QaDispatch] no hay agente QA enabled/autonomous con reviewRepo '${repoFullName}' (o el único es el dev asignado), skipping.`);
         return;

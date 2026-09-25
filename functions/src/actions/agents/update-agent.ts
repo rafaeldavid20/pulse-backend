@@ -2,10 +2,12 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { cleanUndefined } from '../../common/utils/clean';
-import { AgentRole, AgentQaMode } from '../../common/domain.generated';
+import { AgentRole, AgentQaMode, AgentVisibility } from '../../common/domain.generated';
+import { agentAllowedRepos, agentVisibility, canManageAgent, getWorkspaceMember, isWorkspaceAdmin } from '../../common/utils/agent-authorization';
 
 const AGENT_ROLES: AgentRole[] = ['dev', 'qa'];
 const AGENT_QA_MODES: AgentQaMode[] = ['shadow', 'enforce'];
+const AGENT_VISIBILITIES: AgentVisibility[] = ['personal', 'public'];
 
 /** Fields a workspace member is allowed to change on an agent — notably
  * `autonomousMode`, the toggle that lets Fase 6's Firestore trigger dispatch
@@ -22,6 +24,9 @@ const AGENT_WRITABLE_FIELDS = [
   'reviewRepo',
   'maxReviewAttempts',
   'qaMode',
+  'runnerId',
+  'allowedRepos',
+  'visibility',
 ] as const;
 
 export class UpdateAgentAction extends PlatformActionHandler {
@@ -54,11 +59,40 @@ export class UpdateAgentAction extends PlatformActionHandler {
     if (data.qaMode !== undefined && !AGENT_QA_MODES.includes(data.qaMode)) {
       throw new Error(`qaMode inválido: '${data.qaMode}'. Debe ser 'shadow' o 'enforce'.`);
     }
+    if (data.visibility !== undefined && !AGENT_VISIBILITIES.includes(data.visibility)) {
+      throw new Error(`visibility inválida: '${data.visibility}'. Debe ser 'personal' o 'public'.`);
+    }
 
     const agentRef = db.collection('agents').doc(data.agentId);
     const snap = await agentRef.get();
     if (!snap.exists) {
       throw new Error(`El agente '${data.agentId}' no existe.`);
+    }
+    const agent = snap.data()!;
+    const callerMember = await getWorkspaceMember(db, agent.workspaceId, this.caller.uid!);
+    const callerIsAdmin = isWorkspaceAdmin(callerMember);
+    const changingSettings = AGENT_WRITABLE_FIELDS.some((field) => data[field] !== undefined);
+    if (data.visibility === 'public' && !callerIsAdmin) {
+      throw new Error('Solo un admin puede publicar un agente.');
+    }
+    if (changingSettings && !canManageAgent(agent, this.caller.uid!, callerIsAdmin)) {
+      throw new Error('Solo el dueño o un admin puede modificar este agente.');
+    }
+
+    if (data.runnerId !== undefined && data.runnerId !== null) {
+      const runnerSnap = await db.collection('runners').doc(data.runnerId).get();
+      if (!runnerSnap.exists || runnerSnap.data()!.workspaceId !== agent.workspaceId) {
+        throw new Error('El Runner seleccionado no existe en este workspace.');
+      }
+      const runner = runnerSnap.data()!;
+      if (runner.revokedAt) throw new Error('No se puede vincular un Runner revocado.');
+      if (agentVisibility(agent) === 'personal' && runner.ownerMemberId !== agent.ownerMemberId) {
+        throw new Error('Un agente personal solo puede usar un Runner de su dueño.');
+      }
+      const effectiveAllowedRepos = Array.isArray(data.allowedRepos) ? data.allowedRepos : agentAllowedRepos(agent);
+      if (effectiveAllowedRepos.some((repo: string) => !runner.connectedRepos?.includes(repo))) {
+        throw new Error('Todos los repos permitidos del agente deben existir en el Runner seleccionado.');
+      }
     }
 
     const updates: Record<string, any> = { updatedAt: new Date().toISOString() };

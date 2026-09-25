@@ -1,6 +1,7 @@
 import { getFirestore } from 'firebase-admin/firestore';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
+import { getWorkspaceMember, isWorkspaceAdmin } from '../../common/utils/agent-authorization';
 
 /** `agents` is Admin-SDK-only (`allow read, write: if false`), so the
  * frontend can't subscribe to it directly — this is its read path, same
@@ -27,7 +28,13 @@ export class ListAgentsAction extends PlatformActionHandler {
     }
 
     const snap = await db.collection('agents').where('workspaceId', '==', data.workspaceId).get();
-    const agents = snap.docs.map((d) => d.data());
+    const caller = await getWorkspaceMember(db, data.workspaceId, this.caller.uid!);
+    const agents = snap.docs
+      .map((d) => d.data())
+      // Los agentes personales son una extensión de la sesión del dueño, no
+      // recursos del workspace. Los admins ven el inventario completo para
+      // poder operar los agentes públicos.
+      .filter((agent) => isWorkspaceAdmin(caller) || agent.ownerMemberId === this.caller.uid);
 
     return { agents };
   }

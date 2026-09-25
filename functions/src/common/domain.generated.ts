@@ -5,7 +5,7 @@
 // dominio de Pulse. Para cambiar algo de acá, editá ese archivo y corré
 // `npm run sync:types` desde `pulse-app`.
 //
-// SOURCE_HASH: 1b4ab10913c3e734
+// SOURCE_HASH: 480442923b3b76b5
 // ============================================================
 
 /**
@@ -62,7 +62,46 @@ export type MemberRole = 'owner' | 'admin' | 'member';
 
 export type CycleStatus = 'upcoming' | 'active' | 'completed';
 
-export type AgentKind = 'claude' | 'chatgpt';
+/** `chatgpt` se conserva para los agentes creados antes de TES-284. */
+export type AgentKind = 'claude' | 'codex' | 'chatgpt';
+
+/** Un agente personal ejecuta trabajo de su dueño; uno público es compartido por admins. */
+export type AgentVisibility = 'personal' | 'public';
+
+/** Contrato del Pulse Runner; la credencial del proveedor nunca forma parte de este documento. */
+export type RunnerStatus = 'online' | 'offline' | 'busy' | 'paused';
+
+export interface Runner {
+  id: string;
+  workspaceId: string;
+  ownerMemberId: string;
+  displayName: string;
+  publicKey: string;
+  status: RunnerStatus;
+  maxConcurrentJobs: number;
+  connectedRepos: string[];
+  lastHeartbeatAt?: string;
+  /** Revocar desactiva la credencial del dispositivo sin borrar la auditoría. */
+  revokedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Payload mínimo, firmado y de vida corta que un runner acepta ejecutar. */
+export interface RunnerJob {
+  id: string;
+  workspaceId: string;
+  issueId: string;
+  agentId: string;
+  runnerId: string;
+  repoFullName: string;
+  mode: AgentRunMode;
+  issuedAt: string;
+  expiresAt: string;
+  signatureAlgorithm: 'ed25519';
+  signingKeyId: string;
+  signature: string;
+}
 
 /** 'dev' abre PRs sobre issues; 'qa' los revisa contra criterios explícitos. */
 export type AgentRole = 'dev' | 'qa';
@@ -309,6 +348,14 @@ export interface Agent {
   id: string;
   workspaceId: string;
   kind: AgentKind;
+  /** Usuario humano que conectó la suscripción y controla el runner. */
+  ownerMemberId?: string;
+  /** Ausente en agentes anteriores; se trata como `public` solo para admins. */
+  visibility?: AgentVisibility;
+  /** Identidad del dispositivo/VM que recibirá los jobs del agente. */
+  runnerId?: string;
+  /** Límite explícito adicional a las conexiones de repo existentes. */
+  allowedRepos?: string[];
   /** Default `'dev'`. Un agente `'qa'` revisa PRs en vez de abrirlos. */
   role: AgentRole;
   displayName: string;
@@ -549,6 +596,18 @@ export interface IssueAgentState {
 }
 
 /**
+ * El responsable humano nunca se reemplaza por el agente que ejecuta el
+ * trabajo. Este registro deja quién lo eligió y permite revocar el permiso
+ * sin reescribir el historial del issue.
+ */
+export interface IssueExecutionAssignment {
+  agentId: string;
+  assignedBy: string;
+  assignedAt: string;
+  mode: AgentVisibility;
+}
+
+/**
  * Un dispatch de agente (D15). Colección `agent_runs/{runId}`, Admin-SDK-only
  * (igual que `agent_dispatch_counters`): el trigger de dispatch crea el
  * registro con `outcome` ausente, y el paso de reporte del workflow lo
@@ -737,6 +796,10 @@ export interface Issue {
   /** Default `'task'`. Los issues creados antes de la jerarquía se migran a `'task'`. */
   type: IssueType;
   assigneeId?: string;
+  /** Responsable humano. En issues anteriores se deriva de `assigneeId`. */
+  responsibleMemberId?: string;
+  /** Agente que ejecuta el issue, si fue elegido explícitamente. */
+  execution?: IssueExecutionAssignment;
   creatorId: string;
   labelIds: string[];
   /** Padre directo: la épica de una historia, o la historia de una sub-tarea. */
