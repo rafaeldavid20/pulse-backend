@@ -169,6 +169,36 @@ async function dispatchRework(
     return;
   }
 
+  // Un agente vinculado a un Runner debe conservar el mismo transporte en
+  // rework: nunca caer a GitHub Actions después de haber ejecutado el primer
+  // intento local. Revalidamos Runner y repo antes de emitir el envelope,
+  // igual que en el dispatch inicial.
+  if (agent.runnerId) {
+    const runnerSnap = await db.collection('runners').doc(agent.runnerId).get();
+    if (!runnerSnap.exists || runnerSnap.data()!.workspaceId !== workspaceId) {
+      console.log(`[AgentDispatch] rework for '${issueId}': runner '${agent.runnerId}' does not exist in this workspace, skipping.`);
+      return;
+    }
+    const runner = runnerSnap.data()!;
+    if (!isRunnerAvailable(runner)) {
+      console.log(`[AgentDispatch] rework for '${issueId}': runner '${agent.runnerId}' is offline, revoked, or has an expired heartbeat, skipping.`);
+      return;
+    }
+    if (!Array.isArray(runner.connectedRepos) || !runner.connectedRepos.includes(repoFullName)) {
+      console.log(`[AgentDispatch] rework for '${issueId}': runner '${agent.runnerId}' is not connected to '${repoFullName}', skipping.`);
+      return;
+    }
+    const job = await enqueueRunnerJob(db, {
+      workspaceId, issueId, agentId, runnerId: agent.runnerId, repoFullName, mode: 'rework',
+    }, runnerJobSigningPrivateKey.value());
+    await db.collection('agent_runs').doc(job.id).set({
+      id: job.id, issueId, workspaceId, agentId, role: 'dev', mode: 'rework', repo: repoFullName,
+      runnerId: agent.runnerId, reviewAttempt: attempt, startedAt: new Date().toISOString(), date: todayKey(),
+    });
+    console.log(`[AgentDispatch] enqueued Runner rework job '${job.id}' for issue '${after.identifier}' to '${agent.runnerId}'.`);
+    return;
+  }
+
   // D15/TES-211: el runId se genera ANTES del dispatch para poder mandarlo en
   // el `client_payload` — el paso de reporte del workflow lo necesita para
   // saber qué registro de `agent_runs` cerrar con `runs.complete`.
