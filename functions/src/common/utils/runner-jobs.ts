@@ -3,7 +3,10 @@ import { sign } from 'crypto';
 import { nanoid } from 'nanoid';
 import { RunnerJob } from '../domain.generated';
 
-const JOB_TTL_MS = 5 * 60 * 1000;
+// Un adaptador local puede necesitar instalar dependencias, ejecutar tests y
+// abrir/actualizar un PR. Cinco minutos alcanzan para entregar el envelope,
+// pero no para completar de forma fiable una sesión real de Codex o Claude.
+const JOB_TTL_MS = 30 * 60 * 1000;
 
 function base64url(input: Buffer): string {
   return input.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');

@@ -1,5 +1,5 @@
 import { timingSafeEqual } from 'crypto';
-import { getFirestore } from 'firebase-admin/firestore';
+import { FieldValue, getFirestore } from 'firebase-admin/firestore';
 import { onRequest } from 'firebase-functions/v2/https';
 import { generateApiKey, hashApiKeySecret } from '../common/utils/api-key';
 import { mcpKeyPepper } from '../common/secrets';
@@ -179,6 +179,29 @@ export const pulseRunnerComplete = onRequest(
     if (job.status !== 'delivered' || new Date(job.expiresAt).getTime() <= Date.now()) { res.status(409).json({ error: 'Runner job is not completable' }); return; }
     const now = new Date().toISOString();
     await jobRef.update({ status: outcome, completedAt: now, result: safeRunnerJobResult(req.body?.result) });
+    // El workflow de GitHub libera el issue al finalizar un traspaso para que
+    // el trigger despache el repo destino. El Runner local no tiene ese paso
+    // de workflow: hacerlo acá evita que un `pendingRepoWork` quede detenido
+    // en `claimed` después de un job exitoso.
+    if (outcome === 'completed') {
+      const issueRef = getFirestore().collection('issues').doc(job.issueId);
+      await getFirestore().runTransaction(async (transaction) => {
+        const issueSnap = await transaction.get(issueRef);
+        if (!issueSnap.exists) return;
+        const issue = issueSnap.data()!;
+        const hasPendingHandoff = (issue.pendingRepoWork || []).some((entry: any) => !entry.dispatchedAt);
+        if (hasPendingHandoff && issue.agent?.claimedBy === job.agentId) {
+          transaction.update(issueRef, {
+            'agent.state': 'idle',
+            'agent.claimedBy': FieldValue.delete(),
+            'agent.claimedAt': FieldValue.delete(),
+            'agent.blockedReason': FieldValue.delete(),
+            updatedAt: now,
+            updatedBy: job.agentId,
+          });
+        }
+      });
+    }
     await getFirestore().collection('api_keys').where('jobId', '==', jobId).get().then((keys) => Promise.all(keys.docs.map((key) => key.ref.update({ revokedAt: now }))));
     res.json({ jobId, status: outcome, completedAt: now });
   },
