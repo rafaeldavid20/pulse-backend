@@ -5,10 +5,10 @@ import { signRunnerJob, runnerJobPayload } from './runner-jobs';
 import { isRunnerAvailable } from './runner-availability';
 
 const unsigned = {
-  id: 'rjob-example', workspaceId: 'ws-1', issueId: 'issue-1', agentId: 'agent-1',
+  id: 'rjob-example', workspaceId: 'ws-1', projectId: 'project-1', issueId: 'issue-1', agentId: 'agent-1',
   runnerId: 'runner-123456789012', repoFullName: 'owner/repo', contextRepos: ['owner/app', 'owner/repo'], mode: 'task' as const,
   issuedAt: '2026-09-24T00:00:00.000Z', expiresAt: '2026-09-24T00:05:00.000Z',
-  signatureAlgorithm: 'ed25519' as const, signingKeyId: 'runner-job-v1',
+  signatureAlgorithm: 'ed25519' as const, signingKeyId: 'runner-job-v2',
 };
 
 test('la firma de un Runner job ata identidad, repos de contexto, modo y vencimiento', () => {

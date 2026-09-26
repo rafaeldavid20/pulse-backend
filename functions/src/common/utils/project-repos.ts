@@ -32,6 +32,27 @@ export async function allowedReposForIssue(
   return declared.filter((r) => installationRepos.includes(r));
 }
 
+/** Strict project boundary for signed local Runner jobs (TES-298). Legacy
+ * GitHub Actions issues may still use the installation fallback above, but a
+ * Runner envelope must always be scoped to an explicitly configured project. */
+export async function runnerProjectRepoAccess(
+  db: Firestore,
+  issue: FirebaseFirestore.DocumentData,
+  installationRepos: string[],
+): Promise<{ projectId: string; repos: string[] } | null> {
+  if (!issue.projectId) return null;
+  const snap = await db.collection('projects').doc(issue.projectId).get();
+  if (!snap.exists) return null;
+  const project = snap.data()!;
+  if (project.workspaceId !== issue.workspaceId) return null;
+  const declared = Array.isArray(project.repoFullNames) ? project.repoFullNames : [];
+  if (declared.length === 0) return null;
+  return {
+    projectId: issue.projectId,
+    repos: [...new Set(declared.filter((repo: string) => installationRepos.includes(repo)))],
+  };
+}
+
 export function assertRepoAllowed(
   repoFullName: string,
   allowed: string[],
