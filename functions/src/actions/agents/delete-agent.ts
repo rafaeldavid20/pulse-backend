@@ -1,12 +1,12 @@
-import { getFirestore } from 'firebase-admin/firestore';
+import { FieldValue, getFirestore } from 'firebase-admin/firestore';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
-import { agentVisibility, getWorkspaceMember, isWorkspaceAdmin } from '../../common/utils/agent-authorization';
+import { agentVisibility, canDeleteAgent, getWorkspaceMember, isWorkspaceAdmin } from '../../common/utils/agent-authorization';
 
 const ACTIVE_JOB_STATUSES = new Set(['pending', 'delivered']);
 
 /**
- * Removes a personal agent only while it has no audit trail or work in flight.
+ * Removes an owned agent only while it has no audit trail or work in flight.
  * Agent runs and runner jobs are deliberately retained as immutable audit
  * records, so an agent that has used either cannot be deleted.
  */
@@ -39,11 +39,10 @@ export class DeleteAgentAction extends PlatformActionHandler {
     const caller = await getWorkspaceMember(db, agent.workspaceId, this.caller.uid!);
     const callerIsAdmin = isWorkspaceAdmin(caller);
 
-    if (agentVisibility(agent) !== 'personal') {
-      throw new Error('Solo se pueden eliminar agentes personales.');
-    }
-    if (agent.ownerMemberId !== this.caller.uid && !callerIsAdmin) {
-      throw new Error('Solo el dueño o un admin puede eliminar este agente personal.');
+    if (!canDeleteAgent(agent, this.caller.uid!, callerIsAdmin)) {
+      throw new Error(agentVisibility(agent) === 'public'
+        ? 'Solo el admin que creó este agente público puede eliminarlo.'
+        : 'Solo el dueño o un admin puede eliminar este agente personal.');
     }
 
     const [runsSnap, jobsSnap] = await Promise.all([
@@ -58,18 +57,31 @@ export class DeleteAgentAction extends PlatformActionHandler {
       throw new Error('No se puede eliminar el agente porque tiene actividad registrada. Conservamos el agente para mantener la auditoría.');
     }
 
-    // Clearing execution assignments avoids leaving a deleted agent selected on
-    // an issue and ensures future dispatches cannot target it.
-    const assignedIssues = await db.collection('issues').where('execution.agentId', '==', agentId).get();
-    const keys = await db.collection('api_keys').where('agentId', '==', agentId).get();
+    // Clear explicit execution and epic defaults so the deleted agent cannot
+    // remain selected or be inherited by future child issues.
+    const [assignedIssues, defaultAssignedIssues, keys] = await Promise.all([
+      db.collection('issues').where('execution.agentId', '==', agentId).get(),
+      db.collection('issues').where('defaultAssigneeId', '==', agentId).get(),
+      db.collection('api_keys').where('agentId', '==', agentId).get(),
+    ]);
+    const issueUpdates = new Map<string, Record<string, unknown>>();
+    const issueRefs = new Map<string, FirebaseFirestore.DocumentReference>();
+    for (const issue of assignedIssues.docs) {
+      issueRefs.set(issue.id, issue.ref);
+      issueUpdates.set(issue.id, { ...(issueUpdates.get(issue.id) || {}), execution: null });
+    }
+    for (const issue of defaultAssignedIssues.docs) {
+      issueRefs.set(issue.id, issue.ref);
+      issueUpdates.set(issue.id, { ...(issueUpdates.get(issue.id) || {}), defaultAssigneeId: FieldValue.delete() });
+    }
     const now = new Date().toISOString();
     const writes: Array<(batch: FirebaseFirestore.WriteBatch) => void> = [
       (batch) => {
         batch.delete(agentRef);
         batch.delete(db.collection('members').doc(`${agent.workspaceId}_${agentId}`));
       },
-      ...assignedIssues.docs.map((issue) => (batch: FirebaseFirestore.WriteBatch) =>
-        batch.update(issue.ref, { execution: null, updatedAt: now, updatedBy: this.caller.uid })
+      ...Array.from(issueUpdates, ([issueId, fields]) => (batch: FirebaseFirestore.WriteBatch) =>
+        batch.update(issueRefs.get(issueId)!, { ...fields, updatedAt: now, updatedBy: this.caller.uid })
       ),
       ...keys.docs
         .filter((key) => !key.data().revokedAt)
@@ -82,6 +94,6 @@ export class DeleteAgentAction extends PlatformActionHandler {
       await batch.commit();
     }
 
-    return { agentId, deleted: true, clearedIssueAssignments: assignedIssues.size, revokedKeys: keys.docs.filter((key) => !key.data().revokedAt).length };
+    return { agentId, deleted: true, clearedIssueAssignments: issueUpdates.size, revokedKeys: keys.docs.filter((key) => !key.data().revokedAt).length };
   }
 }
