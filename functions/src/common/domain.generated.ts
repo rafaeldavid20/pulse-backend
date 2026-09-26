@@ -5,7 +5,7 @@
 // dominio de Pulse. Para cambiar algo de acá, editá ese archivo y corré
 // `npm run sync:types` desde `pulse-app`.
 //
-// SOURCE_HASH: 480442923b3b76b5
+// SOURCE_HASH: 4c1abb0eaae98778
 // ============================================================
 
 /**
@@ -79,7 +79,8 @@ export interface Runner {
   publicKey: string;
   status: RunnerStatus;
   maxConcurrentJobs: number;
-  connectedRepos: string[];
+  /** @deprecated La autorización de repos se deriva del proyecto del issue. */
+  connectedRepos?: string[];
   lastHeartbeatAt?: string;
   /** Revocar desactiva la credencial del dispositivo sin borrar la auditoría. */
   revokedAt?: string;
@@ -91,11 +92,13 @@ export interface Runner {
 export interface RunnerJob {
   id: string;
   workspaceId: string;
+  /** Proyecto cuyo acceso a repos autoriza este job firmado. */
+  projectId: string;
   issueId: string;
   agentId: string;
   runnerId: string;
   repoFullName: string;
-  /** Repos adicionales del mismo proyecto disponibles para este job. */
+  /** Otros repositorios autorizados por el mismo proyecto para este job. */
   contextRepos?: string[];
   mode: AgentRunMode;
   issuedAt: string;

@@ -1,10 +1,17 @@
 import { getFirestore } from 'firebase-admin/firestore';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
-import { agentAllowedRepos, agentVisibility, getWorkspaceMember, isWorkspaceAdmin } from '../../common/utils/agent-authorization';
+import { agentVisibility, getWorkspaceMember, isWorkspaceAdmin } from '../../common/utils/agent-authorization';
 import { enqueueRunnerJob } from '../../common/utils/runner-jobs';
 import { runnerJobSigningPrivateKey } from '../../common/secrets';
 import { isRunnerAvailable } from '../../common/utils/runner-availability';
+import { runnerProjectRepoAccess } from '../../common/utils/project-repos';
+
+async function projectAccessForRunnerJob(db: FirebaseFirestore.Firestore, issue: FirebaseFirestore.DocumentData) {
+  const installations = await db.collection('github_installations').where('workspaceId', '==', issue.workspaceId).limit(1).get();
+  if (installations.empty) throw new Error('El workspace no tiene una instalación GitHub activa.');
+  return runnerProjectRepoAccess(db, issue, installations.docs[0].data().repositoryFullNames || []);
+}
 
 async function assertRunnerCapacity(db: FirebaseFirestore.Firestore, runnerId: string, maxConcurrentJobs: number) {
   const active = await db.collection('runner_jobs').where('runnerId', '==', runnerId).get();
@@ -62,15 +69,16 @@ export class IssueRunnerJobAction extends PlatformActionHandler {
     await assertRunnerCapacity(db, agent.runnerId, runner.maxConcurrentJobs || 1);
     const repoFullName = this.action.data.repoFullName;
     if (typeof repoFullName !== 'string' || !repoFullName) throw new Error('repoFullName es obligatorio.');
-    if (!runner.connectedRepos.includes(repoFullName) || !agentAllowedRepos(agent).includes(repoFullName)) {
-      throw new Error('El repo no está autorizado para este agente y Runner.');
-    }
+    const projectAccess = await projectAccessForRunnerJob(db, issue);
+    if (!projectAccess || !projectAccess.repos.includes(repoFullName)) throw new Error('El repo no está autorizado por el proyecto del issue.');
     const job = await enqueueRunnerJob(db, {
       workspaceId: issue.workspaceId,
+      projectId: projectAccess.projectId,
       issueId: issue.id,
       agentId,
       runnerId: agent.runnerId,
       repoFullName,
+      contextRepos: projectAccess.repos,
       mode: 'task',
     }, runnerJobSigningPrivateKey.value());
     await createAgentRun(db, job, agent.role || 'dev');
@@ -117,7 +125,7 @@ export class RetryRunnerJobAction extends PlatformActionHandler {
     const issue = issueSnap.data()!;
     if (!isRunnerAvailable(runner)) throw new Error('El Runner debe estar online, no revocado y con un heartbeat reciente para reintentar.');
     if (runner.ownerMemberId !== this.caller.uid && !isWorkspaceAdmin(caller)) throw new Error('Sólo el dueño del Runner o un admin puede reintentar este job.');
-    if (!agent.enabled || agent.workspaceId !== original.workspaceId || agent.runnerId !== runner.id || !agentAllowedRepos(agent).includes(original.repoFullName)) {
+    if (!agent.enabled || agent.workspaceId !== original.workspaceId || agent.runnerId !== runner.id) {
       throw new Error('El agente ya no está habilitado para este Runner o repo.');
     }
     if (agentVisibility(agent) === 'public') {
@@ -125,11 +133,12 @@ export class RetryRunnerJobAction extends PlatformActionHandler {
     } else if (agent.ownerMemberId !== this.caller.uid || issue.responsibleMemberId !== this.caller.uid) {
       throw new Error('Sólo el dueño puede reintentar su agente personal en su propio issue.');
     }
-    if (!runner.connectedRepos.includes(original.repoFullName)) throw new Error('El repo ya no está conectado a este Runner.');
+    const projectAccess = await projectAccessForRunnerJob(db, issue);
+    if (!projectAccess || !projectAccess.repos.includes(original.repoFullName)) throw new Error('El repo ya no está autorizado por el proyecto del issue.');
     await assertRunnerCapacity(db, original.runnerId, runner.maxConcurrentJobs || 1);
     const job = await enqueueRunnerJob(db, {
-      workspaceId: original.workspaceId, issueId: original.issueId, agentId: original.agentId,
-      runnerId: original.runnerId, repoFullName: original.repoFullName, mode: original.mode,
+      workspaceId: original.workspaceId, projectId: projectAccess.projectId, issueId: original.issueId, agentId: original.agentId,
+      runnerId: original.runnerId, repoFullName: original.repoFullName, contextRepos: projectAccess.repos, mode: original.mode,
     }, runnerJobSigningPrivateKey.value());
     await Promise.all([
       createAgentRun(db, job, agent.role || 'dev'),

@@ -16,7 +16,7 @@ export function runnerJobPayload(job: Omit<RunnerJob, 'signature'>): string {
   // La lista explícita evita que campos operativos agregados al documento de
   // Firestore (p. ej. deliveredAt) alteren la verificación del Runner.
   const contextRepos = [...new Set(job.contextRepos || [job.repoFullName])].sort().join(',');
-  return [job.id, job.workspaceId, job.issueId, job.agentId, job.runnerId, job.repoFullName, contextRepos, job.mode, job.issuedAt, job.expiresAt, job.signatureAlgorithm, job.signingKeyId].join('.');
+  return [job.id, job.workspaceId, job.projectId, job.issueId, job.agentId, job.runnerId, job.repoFullName, contextRepos, job.mode, job.issuedAt, job.expiresAt, job.signatureAlgorithm, job.signingKeyId].join('.');
 }
 
 export function signRunnerJob(job: Omit<RunnerJob, 'signature'>, privateKey: string): string {
@@ -28,7 +28,7 @@ export async function enqueueRunnerJob(
   db: Firestore,
   input: Omit<RunnerJob, 'id' | 'issuedAt' | 'expiresAt' | 'signature' | 'signatureAlgorithm' | 'signingKeyId'>,
   privateKey: string,
-  signingKeyId = 'runner-job-v1',
+  signingKeyId = 'runner-job-v2',
 ): Promise<RunnerJob> {
   const issuedAt = new Date().toISOString();
   const expiresAt = new Date(Date.now() + JOB_TTL_MS).toISOString();

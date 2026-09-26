@@ -109,8 +109,23 @@ export const pulseRunnerPoll = onRequest(
     const db = getFirestore();
     const deliveredAt = new Date().toISOString();
     const agent = await db.collection('agents').doc(job.agentId).get();
-    if (!agent.exists) {
-      await db.collection('runner_jobs').doc(job.id).update({ status: 'canceled', completedAt: deliveredAt, result: 'El agente ya no existe.' });
+    const issue = await db.collection('issues').doc(job.issueId).get();
+    const project = job.projectId ? await db.collection('projects').doc(job.projectId).get() : null;
+    const installations = await db.collection('github_installations').where('workspaceId', '==', job.workspaceId).limit(1).get();
+    const projectData = project?.exists ? project.data()! : null;
+    const issueData = issue.exists ? issue.data()! : null;
+    const projectRepos: string[] = Array.isArray(projectData?.repoFullNames) ? projectData.repoFullNames : [];
+    const installationRepos: string[] = installations.empty ? [] : installations.docs[0].data().repositoryFullNames || [];
+    const signedRepos: string[] = job.contextRepos || [job.repoFullName];
+    const accessIsCurrent = !!agent.exists && !!issueData && !!projectData &&
+      job.workspaceId === runner.data.workspaceId && agent.data()!.workspaceId === job.workspaceId &&
+      agent.data()!.runnerId === runner.id && issueData.workspaceId === job.workspaceId && issueData.projectId === job.projectId &&
+      projectData.workspaceId === job.workspaceId && !installations.empty &&
+      projectRepos.includes(job.repoFullName) && installationRepos.includes(job.repoFullName) &&
+      signedRepos.every((repo) => projectRepos.includes(repo) && installationRepos.includes(repo)) &&
+      signedRepos.includes(job.repoFullName);
+    if (!accessIsCurrent) {
+      await db.collection('runner_jobs').doc(job.id).update({ status: 'canceled', completedAt: deliveredAt, result: 'El acceso al proyecto cambió desde que se creó este job.' });
       res.json({ job: null });
       return;
     }
@@ -153,9 +168,9 @@ export const pulseRunnerConfigure = onRequest(
     if (!Array.isArray(repos) || repos.some((repo) => typeof repo !== 'string' || !/^[^/\s]+\/[^/\s]+$/.test(repo))) {
       res.status(400).json({ error: 'connectedRepos must contain owner/repo strings' }); return;
     }
-    const connectedRepos = Array.from(new Set(repos));
-    await getFirestore().collection('runners').doc(runner.id).update({ connectedRepos, updatedAt: new Date().toISOString() });
-    res.json({ runnerId: runner.id, connectedRepos });
+    // Compatibility endpoint for older Runners: project configuration is now
+    // the sole repo authorization source, so an old local allow-list is ignored.
+    res.json({ runnerId: runner.id, deprecated: true, message: 'Repository access is derived from the issue project.' });
   },
 );
 
