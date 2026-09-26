@@ -52,8 +52,10 @@ export function canAssignExecutionAgent(
   agent: { ownerMemberId?: string; visibility?: string },
   callerUid: string,
   responsibleMemberId: string,
-  callerIsAdmin: boolean,
 ): boolean {
-  if (agentVisibility(agent as Record<string, any>) === 'public') return callerIsAdmin;
+  // Public agents are reserved for workspace assignment processes. This action
+  // is the manual issue assignment path, so only the private agent's owner may
+  // use it, and only on an issue they own.
+  if (agentVisibility(agent as Record<string, any>) === 'public') return false;
   return agent.ownerMemberId === callerUid && responsibleMemberId === callerUid;
 }
