@@ -1,12 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canAssignExecutionAgent, canManageAgent } from './agent-authorization';
+import { canAssignExecutionAgent, canDeleteAgent, canManageAgent } from './agent-authorization';
 
 test('un miembro no puede administrar el agente personal de otro miembro', () => {
   const agent = { ownerMemberId: 'owner-a', visibility: 'personal' };
   assert.equal(canManageAgent(agent, 'member-b', false), false);
   assert.equal(canManageAgent(agent, 'owner-a', false), true);
   assert.equal(canManageAgent(agent, 'admin-c', true), true);
+});
+
+test('cada miembro solo puede eliminar sus agentes y los admins solo los legacy sin dueño', () => {
+  assert.equal(canDeleteAgent({ ownerMemberId: 'owner-a', visibility: 'personal' }, 'owner-a', false), true);
+  assert.equal(canDeleteAgent({ ownerMemberId: 'owner-a', visibility: 'personal' }, 'admin-c', true), false);
+  assert.equal(canDeleteAgent({ ownerMemberId: 'admin-c', visibility: 'public' }, 'admin-c', true), true);
+  assert.equal(canDeleteAgent({ visibility: 'public' }, 'admin-c', true), true);
 });
 
 test('un agente personal solo se asigna por su dueño a su propio issue', () => {

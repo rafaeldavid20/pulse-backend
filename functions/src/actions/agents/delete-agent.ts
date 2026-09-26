@@ -42,7 +42,7 @@ export class DeleteAgentAction extends PlatformActionHandler {
     if (!canDeleteAgent(agent, this.caller.uid!, callerIsAdmin)) {
       throw new Error(agentVisibility(agent) === 'public'
         ? 'Solo el admin que creó este agente público puede eliminarlo.'
-        : 'Solo el dueño o un admin puede eliminar este agente personal.');
+        : 'Solo el dueño de este agente personal puede eliminarlo.');
     }
 
     const [runsSnap, jobsSnap] = await Promise.all([
