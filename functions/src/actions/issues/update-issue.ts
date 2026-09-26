@@ -54,6 +54,20 @@ export class UpdateIssueAction extends PlatformActionHandler {
     }
     const current = snap.data()!;
 
+    if ('defaultAssigneeId' in data && data.defaultAssigneeId) {
+      if (current.type !== 'epic') {
+        throw new Error('El agente por defecto solo se puede configurar en una épica.');
+      }
+      const defaultAgentSnap = await db.collection('agents').doc(data.defaultAssigneeId).get();
+      if (
+        !defaultAgentSnap.exists ||
+        defaultAgentSnap.data()!.workspaceId !== current.workspaceId ||
+        agentVisibility(defaultAgentSnap.data()!) !== 'public'
+      ) {
+        throw new Error('El agente por defecto debe ser público y pertenecer a este workspace.');
+      }
+    }
+
     // Whitelist, not a blind spread of `data`: this can be called from an MCP
     // tool driven by an LLM, and a spread would let it overwrite
     // server-owned fields like `workspaceId`, `identifier` or `creatorId`.
