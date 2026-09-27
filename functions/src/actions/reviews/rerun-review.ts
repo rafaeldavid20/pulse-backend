@@ -108,7 +108,7 @@ export class ReviewsRerunAction extends PlatformActionHandler {
       .where('enabled', '==', true)
       .where('autonomousMode', '==', true)
       .get();
-    const qaDoc = qaSnap.docs.find((d) => d.id !== issue.assigneeId && d.data().reviewRepo === repoFullName);
+    const qaDoc = qaSnap.docs.find((d) => d.id !== issue.assigneeId && !d.data().archivedAt && d.data().reviewRepo === repoFullName);
     if (!qaDoc) {
       throw new Error(`No hay un agente QA habilitado con reviewRepo '${repoFullName}' para re-ejecutar la revisión.`);
     }

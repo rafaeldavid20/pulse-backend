@@ -61,7 +61,7 @@ async function dispatchRework(
   const db = getFirestore();
   const agentSnap = await db.collection('agents').doc(agentId).get();
   const agent = agentSnap.exists ? agentSnap.data()! : null;
-  if (!agent || !agent.enabled || !agent.autonomousMode) {
+  if (!agent || agent.archivedAt || !agent.enabled || !agent.autonomousMode) {
     console.log(`[AgentDispatch] rework for '${issueId}': agent '${agentId}' missing or not enabled/autonomous, skipping.`);
     return;
   }
@@ -275,7 +275,7 @@ async function dispatchHandoff(
   const db = getFirestore();
   const agentSnap = await db.collection('agents').doc(agentId).get();
   const agent = agentSnap.exists ? agentSnap.data()! : null;
-  if (!agent || !agent.enabled || !agent.autonomousMode) {
+  if (!agent || agent.archivedAt || !agent.enabled || !agent.autonomousMode) {
     console.log(`[AgentDispatch] handoff for '${issueId}': agent '${agentId}' missing or not enabled/autonomous, skipping.`);
     return;
   }
@@ -540,6 +540,10 @@ export const agentDispatchTrigger = onDocumentWritten(
         return;
       }
       const agent = agentSnap.data()!;
+      if (agent.archivedAt) {
+        console.log(`[AgentDispatch] agent '${agentId}' is archived, skipping dispatch.`);
+        return;
+      }
       if (!agent.enabled || !agent.autonomousMode) {
         console.log(
           `[AgentDispatch] agent '${agentId}' is not enabled/autonomous (enabled=${!!agent.enabled}, autonomousMode=${!!agent.autonomousMode}), skipping dispatch.`

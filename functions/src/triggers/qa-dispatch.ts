@@ -113,7 +113,7 @@ export const qaDispatchTrigger = onDocumentWritten(
       // Nunca el mismo agente que es el dev asignado, y el `reviewRepo` tiene
       // que matchear el repo del issue (o el de su épica): con varios
       // agentes QA, es lo único que dice cuál corre el workflow acá.
-      const qaDoc = qaSnap.docs.find((d) => d.id !== executionAgentId && d.data().reviewRepo === repoFullName);
+      const qaDoc = qaSnap.docs.find((d) => d.id !== executionAgentId && !d.data().archivedAt && d.data().reviewRepo === repoFullName);
       if (!qaDoc) {
         console.log(`[QaDispatch] no hay agente QA enabled/autonomous con reviewRepo '${repoFullName}' (o el único es el dev asignado), skipping.`);
         return;

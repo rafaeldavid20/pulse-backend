@@ -64,6 +64,7 @@ export class CreateIssueAction extends PlatformActionHandler {
         if (
           defaultAgentSnap.exists &&
           defaultAgentSnap.data()!.workspaceId === data.workspaceId &&
+          !defaultAgentSnap.data()!.archivedAt &&
           agentVisibility(defaultAgentSnap.data()!) === 'public'
         ) {
           execution = {

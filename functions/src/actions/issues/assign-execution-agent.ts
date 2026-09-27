@@ -44,6 +44,7 @@ export class AssignExecutionAgentAction extends PlatformActionHandler {
       throw new Error(`El agente '${agentId}' no existe en este workspace.`);
     }
     const agent = agentSnap.data()!;
+    if (agent.archivedAt) throw new Error('No se puede asignar un agente archivado. Restauralo primero.');
     const visibility = agentVisibility(agent);
     if (!canAssignExecutionAgent(agent, callerUid, responsibleMemberId)) {
       throw new Error(

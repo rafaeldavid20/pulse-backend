@@ -31,6 +31,7 @@ export class ListAgentsAction extends PlatformActionHandler {
     const caller = await getWorkspaceMember(db, data.workspaceId, this.caller.uid!);
     const agents = snap.docs
       .map((d) => d.data())
+      .filter((agent) => data.includeArchived === true ? !!agent.archivedAt : !agent.archivedAt)
       // Los agentes personales son una extensión de la sesión del dueño, no
       // recursos del workspace. Los admins ven el inventario completo para
       // poder operar los agentes públicos.

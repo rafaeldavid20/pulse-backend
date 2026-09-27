@@ -17,6 +17,7 @@ import { ListApiKeysAction } from '../actions/apikeys/list-api-keys';
 import { CreateAgentAction } from '../actions/agents/create-agent';
 import { UpdateAgentAction } from '../actions/agents/update-agent';
 import { DeleteAgentAction } from '../actions/agents/delete-agent';
+import { ArchiveAgentAction, RestoreAgentAction } from '../actions/agents/archive-agent';
 import { ListAgentsAction } from '../actions/agents/list-agents';
 import { GetAgentUsageAction } from '../actions/agents/get-usage';
 import { ConnectRepoAction } from '../actions/agents/connect-repo';
@@ -118,6 +119,10 @@ export async function dispatchPlatformAction(
       return new CreateAgentAction(request, callerUid, callerEmail).run();
     case 'agents.update':
       return new UpdateAgentAction(request, callerUid, callerEmail).run();
+    case 'agents.archive':
+      return new ArchiveAgentAction(request, callerUid, callerEmail).run();
+    case 'agents.restore':
+      return new RestoreAgentAction(request, callerUid, callerEmail).run();
     case 'agents.delete':
       return new DeleteAgentAction(request, callerUid, callerEmail).run();
     case 'agents.list':

@@ -62,6 +62,7 @@ export class UpdateIssueAction extends PlatformActionHandler {
       if (
         !defaultAgentSnap.exists ||
         defaultAgentSnap.data()!.workspaceId !== current.workspaceId ||
+        defaultAgentSnap.data()!.archivedAt ||
         agentVisibility(defaultAgentSnap.data()!) !== 'public'
       ) {
         throw new Error('El agente por defecto debe ser público y pertenecer a este workspace.');
