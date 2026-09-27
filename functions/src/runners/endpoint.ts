@@ -137,7 +137,8 @@ export const pulseRunnerPoll = onRequest(
       res.json({ job: null });
       return;
     }
-    res.json({ job, mcpCredential: fullKey });
+    const agentData = agent.data()!;
+    res.json({ job, agent: { kind: agentData.kind || 'claude', role: agentData.role || 'dev' }, mcpCredential: fullKey });
   },
 );
 
