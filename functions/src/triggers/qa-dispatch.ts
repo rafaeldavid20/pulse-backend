@@ -1,12 +1,14 @@
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { getFirestore, Transaction } from 'firebase-admin/firestore';
 import { nanoid } from 'nanoid';
-import { githubAppId, githubAppPrivateKeyB64 } from '../common/secrets';
+import { githubAppId, githubAppPrivateKeyB64, runnerJobSigningPrivateKey } from '../common/secrets';
 import { dispatchRepositoryEvent, getPullRequestOrigin } from '../github/client';
 import { resolveIssueRepo } from '../common/utils/repo-resolution';
 import { checkWorkspaceDispatchBudget, todayKey } from '../common/utils/dispatch-counter';
 import { checkIssueRunBudget } from '../common/utils/issue-run-budget';
 import { buildNeedsHumanEscalation } from '../common/utils/review-escalation';
+import { enqueueRunnerJob } from '../common/utils/runner-jobs';
+import { isRunnerAvailable } from '../common/utils/runner-availability';
 
 const DEFAULT_MAX_REVIEW_ATTEMPTS = 2;
 
@@ -15,6 +17,18 @@ const DEFAULT_MAX_REVIEW_ATTEMPTS = 2;
 // mire el estado actual del issue no alcanza para separar dos disparos que
 // ocurren antes de que cualquiera llegue a reclamar.
 const DISPATCH_COOLDOWN_MS = 10 * 60 * 1000;
+
+async function assertRunnerCapacity(db: FirebaseFirestore.Firestore, runnerId: string, maxConcurrentJobs: number) {
+  const jobs = await db.collection('runner_jobs').where('runnerId', '==', runnerId).get();
+  const now = Date.now();
+  const active = jobs.docs.filter((doc) => {
+    const job = doc.data();
+    if (!['pending', 'delivered'].includes(job.status)) return false;
+    const expiresAt = new Date(job.expiresAt).getTime();
+    return !Number.isFinite(expiresAt) || expiresAt > now;
+  }).length;
+  if (active >= maxConcurrentJobs) throw new Error('Runner reached its active job limit.');
+}
 
 interface ReviewablePr {
   repoFullName: string;
@@ -69,7 +83,7 @@ export const qaDispatchTrigger = onDocumentWritten(
   {
     document: 'issues/{issueId}',
     region: 'us-east4',
-    secrets: [githubAppId, githubAppPrivateKeyB64],
+    secrets: [githubAppId, githubAppPrivateKeyB64, runnerJobSigningPrivateKey],
   },
   async (event) => {
     try {
@@ -120,6 +134,27 @@ export const qaDispatchTrigger = onDocumentWritten(
       }
       const qaAgent = qaDoc.data();
       const qaAgentId = qaDoc.id;
+      const runnerId = qaAgent.runnerId as string | undefined;
+      let runner: FirebaseFirestore.DocumentData | undefined;
+      if (runnerId) {
+        const runnerSnap = await db.collection('runners').doc(runnerId).get();
+        if (!runnerSnap.exists || runnerSnap.data()!.workspaceId !== workspaceId || !isRunnerAvailable(runnerSnap.data()!)) {
+          console.log(`[QaDispatch] QA Runner '${runnerId}' is missing or offline; skipping review dispatch.`);
+          return;
+        }
+        runner = runnerSnap.data()!;
+        const reviewRepos = [...new Set(prs.map((pr) => pr.repoFullName))];
+        if (reviewRepos.some((repo) => !runner!.connectedRepos?.includes(repo))) {
+          console.log(`[QaDispatch] QA Runner '${runnerId}' is not connected to every repository in issue '${issueId}'.`);
+          return;
+        }
+        try {
+          await assertRunnerCapacity(db, runnerId, runner.maxConcurrentJobs || 1);
+        } catch (error) {
+          console.log(`[QaDispatch] QA Runner '${runnerId}' has no capacity: ${(error as Error).message}`);
+          return;
+        }
+      }
 
       const issueRef = db.collection('issues').doc(issueId);
       const review = after.review as Record<string, any> | undefined;
@@ -242,41 +277,59 @@ export const qaDispatchTrigger = onDocumentWritten(
       }
 
       const nextAttempt = attempt + 1;
-      // El job `verify` de pulse-qa.yml (D6) necesita saber qué PR pushear con
-      // `gh pr checkout` — el de este mismo repo, no necesariamente el único
-      // si el issue es multi-repo (K9/TES-202).
       const prNumber = prs.find((pr) => pr.repoFullName === repoFullName)?.prNumber;
-      // D15/TES-211: el runId se genera ANTES del dispatch para mandarlo en
-      // el `client_payload` — el paso de reporte de `pulse-qa.yml` lo usa
-      // para cerrar este mismo registro vía `runs.complete`.
-      const runId = `run-${nanoid(8)}`;
-      await dispatchRepositoryEvent(installation.installationId, repoFullName, 'pulse_review', {
-        issueId,
-        issueIdentifier: after.identifier,
-        workspaceId,
-        agentId: qaAgentId,
-        agentKind: qaAgent.kind || 'claude',
-        reviewAttempt: nextAttempt,
-        prNumber,
-        runId,
-      });
-
-      // D15/TES-211: registro de runs y costo. El paso de reporte del
-      // workflow es el que completa `endedAt`/`costUsd` vía `runs.complete`.
-      await db.collection('agent_runs').doc(runId).set({
-        id: runId,
-        issueId,
-        workspaceId,
-        agentId: qaAgentId,
-        role: 'qa',
-        mode: 'review',
-        repo: repoFullName,
-        reviewAttempt: nextAttempt,
-        startedAt: new Date().toISOString(),
-        date: todayKey(),
-      });
-
-      console.log(`[QaDispatch] dispatched 'pulse_review' (attempt ${nextAttempt}) for issue '${after.identifier}' (${issueId}) to '${repoFullName}' via QA agent '${qaAgentId}'.`);
+      if (runnerId && runner) {
+        const job = await enqueueRunnerJob(db, {
+          workspaceId,
+          issueId,
+          agentId: qaAgentId,
+          runnerId,
+          repoFullName,
+          contextRepos: [...new Set(prs.map((pr) => pr.repoFullName))],
+          mode: 'review',
+        }, runnerJobSigningPrivateKey.value());
+        await db.collection('agent_runs').doc(job.id).set({
+          id: job.id,
+          issueId,
+          workspaceId,
+          agentId: qaAgentId,
+          runnerId,
+          role: 'qa',
+          mode: 'review',
+          repo: repoFullName,
+          reviewAttempt: nextAttempt,
+          startedAt: new Date().toISOString(),
+          date: todayKey(),
+        });
+        console.log(`[QaDispatch] queued signed Runner review job '${job.id}' for issue '${after.identifier}' to QA '${qaAgentId}'.`);
+      } else {
+        // D15/TES-211: el runId se manda en el evento de GitHub para que el
+        // workflow pulse-qa.yml complete el mismo registro vía runs.complete.
+        const runId = `run-${nanoid(8)}`;
+        await dispatchRepositoryEvent(installation.installationId, repoFullName, 'pulse_review', {
+          issueId,
+          issueIdentifier: after.identifier,
+          workspaceId,
+          agentId: qaAgentId,
+          agentKind: qaAgent.kind || 'claude',
+          reviewAttempt: nextAttempt,
+          prNumber,
+          runId,
+        });
+        await db.collection('agent_runs').doc(runId).set({
+          id: runId,
+          issueId,
+          workspaceId,
+          agentId: qaAgentId,
+          role: 'qa',
+          mode: 'review',
+          repo: repoFullName,
+          reviewAttempt: nextAttempt,
+          startedAt: new Date().toISOString(),
+          date: todayKey(),
+        });
+        console.log(`[QaDispatch] dispatched 'pulse_review' (attempt ${nextAttempt}) for issue '${after.identifier}' to QA '${qaAgentId}' via GitHub Actions.`);
+      }
     } catch (error) {
       console.error('[QaDispatch] error handling issue write, will not retry:', error);
     }

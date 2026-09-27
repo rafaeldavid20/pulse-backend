@@ -6,6 +6,9 @@ import { IssueReview } from '../../common/domain.generated';
 import { resolveIssueRepo } from '../../common/utils/repo-resolution';
 import { checkWorkspaceDispatchBudget, todayKey } from '../../common/utils/dispatch-counter';
 import { dispatchRepositoryEvent } from '../../github/client';
+import { enqueueRunnerJob } from '../../common/utils/runner-jobs';
+import { isRunnerAvailable } from '../../common/utils/runner-availability';
+import { runnerJobSigningPrivateKey } from '../../common/secrets';
 
 const DEFAULT_MAX_REVIEW_ATTEMPTS = 2;
 
@@ -39,7 +42,9 @@ function reviewablePrs(issue: FirebaseFirestore.DocumentData): ReviewablePr[] | 
  * sí se respetan: protegen el costo del workspace sin importar quién dispare,
  * y `agentsPaused` no puede sortearse con un click.
  *
- * Si el intento actual sigue `running` (el caso típico: un run que no
+ * Si todavía no existe un intento (por ejemplo, porque no había un agente QA
+ * elegible al entrar en revisión), se puede despachar después de corregir la
+ * configuración. Si el intento actual sigue `running` (el caso típico: un run que no
  * arrancó o se colgó antes de que el barrido de 30min lo escale), se
  * re-despacha ESE MISMO intento — no consume uno nuevo, y el próximo
  * `pulse_next_review` del agente QA lo retoma vía la rama `resumingSelf` de
@@ -84,10 +89,7 @@ export class ReviewsRerunAction extends PlatformActionHandler {
     }
 
     const review = issue.review as IssueReview | undefined;
-    if (!review) {
-      throw new Error(`El issue '${issue.identifier}' todavía no tiene una revisión de QA.`);
-    }
-    if (review.state === 'needs_human') {
+    if (review?.state === 'needs_human') {
       throw new Error('La revisión está escalada a needs_human: usá "Devolver al agente" o "Aprobar igual" en vez de re-ejecutar.');
     }
 
@@ -108,16 +110,37 @@ export class ReviewsRerunAction extends PlatformActionHandler {
       .where('enabled', '==', true)
       .where('autonomousMode', '==', true)
       .get();
-    const qaDoc = qaSnap.docs.find((d) => d.id !== issue.assigneeId && d.data().reviewRepo === repoFullName);
+    const qaDoc = qaSnap.docs.find((d) => d.id !== issue.assigneeId && !d.data().archivedAt && d.data().reviewRepo === repoFullName);
     if (!qaDoc) {
       throw new Error(`No hay un agente QA habilitado con reviewRepo '${repoFullName}' para re-ejecutar la revisión.`);
     }
     const qaAgent = qaDoc.data();
     const qaAgentId = qaDoc.id;
+    const runnerId = qaAgent.runnerId as string | undefined;
+    let runner: FirebaseFirestore.DocumentData | undefined;
+    if (runnerId) {
+      const runnerSnap = await db.collection('runners').doc(runnerId).get();
+      if (!runnerSnap.exists || runnerSnap.data()!.workspaceId !== issue.workspaceId || !isRunnerAvailable(runnerSnap.data()!)) {
+        throw new Error('El Pulse Runner del agente QA no existe o está desconectado.');
+      }
+      runner = runnerSnap.data()!;
+      const reviewRepos = [...new Set(prs.map((pr) => pr.repoFullName))];
+      if (reviewRepos.some((repo) => !runner!.connectedRepos?.includes(repo))) {
+        throw new Error('El Pulse Runner QA debe tener conectados todos los repos de los PR de esta revisión.');
+      }
+      const jobs = await db.collection('runner_jobs').where('runnerId', '==', runnerId).get();
+      const active = jobs.docs.filter((doc) => {
+        const job = doc.data();
+        if (!['pending', 'delivered'].includes(job.status)) return false;
+        const expiresAt = new Date(job.expiresAt).getTime();
+        return !Number.isFinite(expiresAt) || expiresAt > Date.now();
+      }).length;
+      if (active >= (runner.maxConcurrentJobs || 1)) throw new Error('El Pulse Runner QA ya alcanzó su límite de jobs activos.');
+    }
 
-    const isResendingCurrentAttempt = review.state === 'running';
+    const isResendingCurrentAttempt = review?.state === 'running';
     const maxAttempts = qaAgent.maxReviewAttempts ?? DEFAULT_MAX_REVIEW_ATTEMPTS;
-    const nextAttempt = isResendingCurrentAttempt ? review.attempt || 1 : (review.attempt || 0) + 1;
+    const nextAttempt = isResendingCurrentAttempt ? review!.attempt || 1 : (review?.attempt || 0) + 1;
     if (!isResendingCurrentAttempt && nextAttempt > maxAttempts) {
       throw new Error(
         `El issue '${issue.identifier}' ya agotó sus ${maxAttempts} intentos de revisión. Usá "Devolver al agente" para reiniciarlos, o "Aprobar igual" para forzar un veredicto.`
@@ -152,34 +175,57 @@ export class ReviewsRerunAction extends PlatformActionHandler {
       updatedAt: now,
     });
 
-    const prNumber = prs.find((pr) => pr.repoFullName === repoFullName)?.prNumber;
-    // D15/TES-211: ver el comentario equivalente en `qa-dispatch.ts`.
-    const runId = `run-${nanoid(8)}`;
-    await dispatchRepositoryEvent(installation.installationId, repoFullName, 'pulse_review', {
-      issueId: data.issueId,
-      issueIdentifier: issue.identifier,
-      workspaceId: issue.workspaceId,
-      agentId: qaAgentId,
-      agentKind: qaAgent.kind || 'claude',
-      reviewAttempt: nextAttempt,
-      prNumber,
-      runId,
-    });
-
-    await db.collection('agent_runs').doc(runId).set({
-      id: runId,
-      issueId: data.issueId,
-      workspaceId: issue.workspaceId,
-      agentId: qaAgentId,
-      role: 'qa',
-      mode: 'review',
-      repo: repoFullName,
-      reviewAttempt: nextAttempt,
-      startedAt: now,
-      date: todayKey(),
-    });
-
-    console.log(`[ReviewsRerun] re-despachada 'pulse_review' (intento ${nextAttempt}) para '${issue.identifier}' (${data.issueId}) a '${repoFullName}' vía QA '${qaAgentId}'.`);
+    if (runnerId && runner) {
+      const job = await enqueueRunnerJob(db, {
+        workspaceId: issue.workspaceId,
+        issueId: data.issueId,
+        agentId: qaAgentId,
+        runnerId,
+        repoFullName,
+        contextRepos: [...new Set(prs.map((pr) => pr.repoFullName))],
+        mode: 'review',
+      }, runnerJobSigningPrivateKey.value());
+      await db.collection('agent_runs').doc(job.id).set({
+        id: job.id,
+        issueId: data.issueId,
+        workspaceId: issue.workspaceId,
+        agentId: qaAgentId,
+        runnerId,
+        role: 'qa',
+        mode: 'review',
+        repo: repoFullName,
+        reviewAttempt: nextAttempt,
+        startedAt: now,
+        date: todayKey(),
+      });
+      console.log(`[ReviewsRerun] queued signed Runner review job '${job.id}' for '${issue.identifier}' to QA '${qaAgentId}'.`);
+    } else {
+      const prNumber = prs.find((pr) => pr.repoFullName === repoFullName)?.prNumber;
+      const runId = `run-${nanoid(8)}`;
+      await dispatchRepositoryEvent(installation.installationId, repoFullName, 'pulse_review', {
+        issueId: data.issueId,
+        issueIdentifier: issue.identifier,
+        workspaceId: issue.workspaceId,
+        agentId: qaAgentId,
+        agentKind: qaAgent.kind || 'claude',
+        reviewAttempt: nextAttempt,
+        prNumber,
+        runId,
+      });
+      await db.collection('agent_runs').doc(runId).set({
+        id: runId,
+        issueId: data.issueId,
+        workspaceId: issue.workspaceId,
+        agentId: qaAgentId,
+        role: 'qa',
+        mode: 'review',
+        repo: repoFullName,
+        reviewAttempt: nextAttempt,
+        startedAt: now,
+        date: todayKey(),
+      });
+      console.log(`[ReviewsRerun] re-despachada 'pulse_review' (intento ${nextAttempt}) a '${repoFullName}' vía GitHub Actions QA '${qaAgentId}'.`);
+    }
 
     return { issueId: data.issueId, repoFullName, qaAgentId, attempt: nextAttempt };
   }

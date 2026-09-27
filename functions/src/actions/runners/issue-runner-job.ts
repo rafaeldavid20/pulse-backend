@@ -117,7 +117,17 @@ export class RetryRunnerJobAction extends PlatformActionHandler {
     const issue = issueSnap.data()!;
     if (!isRunnerAvailable(runner)) throw new Error('El Runner debe estar online, no revocado y con un heartbeat reciente para reintentar.');
     if (runner.ownerMemberId !== this.caller.uid && !isWorkspaceAdmin(caller)) throw new Error('Sólo el dueño del Runner o un admin puede reintentar este job.');
-    if (!agent.enabled || agent.workspaceId !== original.workspaceId || agent.runnerId !== runner.id || !agentAllowedRepos(agent).includes(original.repoFullName)) {
+    const reviewRepos = Array.isArray(issue.gitRefs) && issue.gitRefs.length > 0
+      ? issue.gitRefs.filter((ref: any) => ref?.prNumber !== undefined).map((ref: any) => ref.repoFullName)
+      : issue.git?.prNumber !== undefined ? [issue.git.repoFullName] : [];
+    const contextRepos: string[] = original.contextRepos || [original.repoFullName];
+    const reviewContextAllowed = original.mode === 'review' && agent.role === 'qa' &&
+      contextRepos.every((repo) => reviewRepos.includes(repo) && runner.connectedRepos.includes(repo));
+    const agentRepoAllowed = original.repoFullName && agentAllowedRepos(agent).includes(original.repoFullName);
+    const repositoryAccessInvalid = original.mode === 'review' && agent.role === 'qa'
+      ? !reviewContextAllowed
+      : !agentRepoAllowed;
+    if (!agent.enabled || agent.workspaceId !== original.workspaceId || agent.runnerId !== runner.id || repositoryAccessInvalid) {
       throw new Error('El agente ya no está habilitado para este Runner o repo.');
     }
     if (agentVisibility(agent) === 'public') {
@@ -129,7 +139,7 @@ export class RetryRunnerJobAction extends PlatformActionHandler {
     await assertRunnerCapacity(db, original.runnerId, runner.maxConcurrentJobs || 1);
     const job = await enqueueRunnerJob(db, {
       workspaceId: original.workspaceId, issueId: original.issueId, agentId: original.agentId,
-      runnerId: original.runnerId, repoFullName: original.repoFullName, mode: original.mode,
+      runnerId: original.runnerId, repoFullName: original.repoFullName, contextRepos, mode: original.mode,
     }, runnerJobSigningPrivateKey.value());
     await Promise.all([
       createAgentRun(db, job, agent.role || 'dev'),
