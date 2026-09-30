@@ -110,24 +110,42 @@ export class ReviewsRerunAction extends PlatformActionHandler {
       .where('enabled', '==', true)
       .where('autonomousMode', '==', true)
       .get();
-    const qaDoc = qaSnap.docs.find((d) => d.id !== issue.assigneeId && !d.data().archivedAt && d.data().reviewRepo === repoFullName);
-    if (!qaDoc) {
+    const qaCandidates = qaSnap.docs.filter((d) => d.id !== issue.assigneeId && !d.data().archivedAt && d.data().reviewRepo === repoFullName);
+    if (qaCandidates.length === 0) {
       throw new Error(`No hay un agente QA habilitado con reviewRepo '${repoFullName}' para re-ejecutar la revisión.`);
     }
+    const reviewRepos = [...new Set(prs.map((pr) => pr.repoFullName))];
+    let qaDoc: (typeof qaSnap.docs)[number] | undefined;
+    let runner: FirebaseFirestore.DocumentData | undefined;
+    for (const candidate of qaCandidates.filter((item) => !!item.data().runnerId)) {
+      const candidateRunnerSnap = await db.collection('runners').doc(candidate.data().runnerId).get();
+      if (!candidateRunnerSnap.exists || candidateRunnerSnap.data()!.workspaceId !== issue.workspaceId || !isRunnerAvailable(candidateRunnerSnap.data()!)) continue;
+      const candidateRunner = candidateRunnerSnap.data()!;
+      if (reviewRepos.some((repo) => !candidateRunner.connectedRepos?.includes(repo))) continue;
+      const jobs = await db.collection('runner_jobs').where('runnerId', '==', candidateRunner.id).get();
+      const active = jobs.docs.filter((doc) => {
+        const job = doc.data();
+        if (!['pending', 'delivered'].includes(job.status)) return false;
+        const expiresAt = new Date(job.expiresAt).getTime();
+        return !Number.isFinite(expiresAt) || expiresAt > Date.now();
+      }).length;
+      if (active >= (candidateRunner.maxConcurrentJobs || 1)) continue;
+      qaDoc = candidate;
+      runner = candidateRunner;
+      break;
+    }
+    // QA sin Runner sigue disponible vía GitHub Actions cuando ningún Runner
+    // asociado puede aceptar esta revisión ahora.
+    qaDoc ||= qaCandidates.find((candidate) => !candidate.data().runnerId);
+    if (!qaDoc) throw new Error(`No hay un agente QA con Runner disponible para re-ejecutar la revisión de '${repoFullName}'.`);
     const qaAgent = qaDoc.data();
     const qaAgentId = qaDoc.id;
     const runnerId = qaAgent.runnerId as string | undefined;
-    let runner: FirebaseFirestore.DocumentData | undefined;
     if (runnerId) {
       const runnerSnap = await db.collection('runners').doc(runnerId).get();
-      if (!runnerSnap.exists || runnerSnap.data()!.workspaceId !== issue.workspaceId || !isRunnerAvailable(runnerSnap.data()!)) {
-        throw new Error('El Pulse Runner del agente QA no existe o está desconectado.');
-      }
+      if (!runnerSnap.exists || runnerSnap.data()!.workspaceId !== issue.workspaceId || !isRunnerAvailable(runnerSnap.data()!) ||
+        reviewRepos.some((repo) => !runnerSnap.data()!.connectedRepos?.includes(repo))) throw new Error('El Pulse Runner del agente QA dejó de estar disponible o ya no cubre todos los repos.');
       runner = runnerSnap.data()!;
-      const reviewRepos = [...new Set(prs.map((pr) => pr.repoFullName))];
-      if (reviewRepos.some((repo) => !runner!.connectedRepos?.includes(repo))) {
-        throw new Error('El Pulse Runner QA debe tener conectados todos los repos de los PR de esta revisión.');
-      }
       const jobs = await db.collection('runner_jobs').where('runnerId', '==', runnerId).get();
       const active = jobs.docs.filter((doc) => {
         const job = doc.data();
