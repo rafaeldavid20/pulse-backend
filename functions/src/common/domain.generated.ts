@@ -98,6 +98,8 @@ export interface RunnerJob {
   mode: AgentRunMode;
   issuedAt: string;
   expiresAt: string;
+  signatureAlgorithm: 'ed25519';
+  signingKeyId: string;
   signature: string;
 }
 

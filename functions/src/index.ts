@@ -5,6 +5,7 @@ import { PlatformActionRequest } from './common/platform-actions/interfaces';
 import { dispatchPlatformAction } from './router/platform-actions-router';
 import {
   mcpKeyPepper,
+  runnerJobSigningPrivateKey,
   githubAppId,
   githubAppPrivateKeyB64,
   githubAppSlug,
@@ -28,7 +29,7 @@ export { oauthProtectedResourceMetadata, oauthAuthorizationServerMetadata } from
 export { oauthRegister } from './oauth/register';
 export { oauthAuthorize } from './oauth/authorize';
 export { oauthToken } from './oauth/token';
-export { pulseRunnerHeartbeat, pulseRunnerPoll, pulseRunnerComplete } from './runners/endpoint';
+export { pulseRunnerHeartbeat, pulseRunnerPoll, pulseRunnerConfigure, pulseRunnerComplete } from './runners/endpoint';
 export { runnerJobSweeperScheduled } from './scheduled/runner-job-sweeper';
 
 // Initialize Firebase Admin SDK once
@@ -97,6 +98,7 @@ export const pulsePlatformAction = onCall(
     // access token.
     secrets: [
       mcpKeyPepper,
+      runnerJobSigningPrivateKey,
       githubAppId,
       githubAppPrivateKeyB64,
       githubAppSlug,

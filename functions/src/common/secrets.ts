@@ -8,6 +8,9 @@ import { defineSecret } from 'firebase-functions/params';
  */
 export const mcpKeyPepper = defineSecret('MCP_KEY_PEPPER');
 
+/** PEM-encoded Ed25519 private key used only to sign short-lived Runner jobs. */
+export const runnerJobSigningPrivateKey = defineSecret('RUNNER_JOB_SIGNING_PRIVATE_KEY');
+
 /**
  * DSN issued by the Argus project dedicated to Pulse's backend. It is bound
  * only to server Functions and is never available to the static web client.

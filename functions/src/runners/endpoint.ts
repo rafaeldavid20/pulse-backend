@@ -138,6 +138,25 @@ export const pulseRunnerPoll = onRequest(
   },
 );
 
+/** Lets a paired local Runner keep its explicit repository allow-list in sync. */
+export const pulseRunnerConfigure = onRequest(
+  { region: 'us-east4', cors: true, secrets: [mcpKeyPepper] },
+  async (req, res) => {
+    for (const [key, value] of Object.entries(CORS_HEADERS)) res.setHeader(key, value);
+    if (req.method === 'OPTIONS') { res.status(204).send(''); return; }
+    if (req.method !== 'POST') { res.status(405).json({ error: 'Method Not Allowed' }); return; }
+    const runner = await authenticateRunner(req.headers.authorization);
+    if (!runner) { res.status(401).json({ error: 'Invalid runner credential' }); return; }
+    const repos = req.body?.connectedRepos;
+    if (!Array.isArray(repos) || repos.some((repo) => typeof repo !== 'string' || !/^[^/\s]+\/[^/\s]+$/.test(repo))) {
+      res.status(400).json({ error: 'connectedRepos must contain owner/repo strings' }); return;
+    }
+    const connectedRepos = Array.from(new Set(repos));
+    await getFirestore().collection('runners').doc(runner.id).update({ connectedRepos, updatedAt: new Date().toISOString() });
+    res.json({ runnerId: runner.id, connectedRepos });
+  },
+);
+
 /** Completa un job entregado; el resultado queda acotado y no acepta logs/secrets arbitrarios. */
 export const pulseRunnerComplete = onRequest(
   { region: 'us-east4', cors: true, secrets: [mcpKeyPepper] },

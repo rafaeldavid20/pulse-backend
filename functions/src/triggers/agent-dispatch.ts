@@ -1,7 +1,7 @@
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { getFirestore, Transaction } from 'firebase-admin/firestore';
 import { nanoid } from 'nanoid';
-import { githubAppId, githubAppPrivateKeyB64, mcpKeyPepper } from '../common/secrets';
+import { githubAppId, githubAppPrivateKeyB64, mcpKeyPepper, runnerJobSigningPrivateKey } from '../common/secrets';
 import { dispatchRepositoryEvent } from '../github/client';
 import { resolveIssueRepo } from '../common/utils/repo-resolution';
 import { checkWorkspaceDispatchBudget, todayKey } from '../common/utils/dispatch-counter';
@@ -379,7 +379,7 @@ export const agentDispatchTrigger = onDocumentWritten(
   {
     document: 'issues/{issueId}',
     region: 'us-east4',
-    secrets: [githubAppId, githubAppPrivateKeyB64, mcpKeyPepper],
+    secrets: [githubAppId, githubAppPrivateKeyB64, mcpKeyPepper, runnerJobSigningPrivateKey],
   },
   async (event) => {
     try {
@@ -659,7 +659,7 @@ export const agentDispatchTrigger = onDocumentWritten(
           runnerId: agent.runnerId,
           repoFullName,
           mode: 'task',
-        }, mcpKeyPepper.value());
+        }, runnerJobSigningPrivateKey.value());
         await db.collection('agent_runs').doc(job.id).set({
           id: job.id,
           issueId: event.params.issueId,
