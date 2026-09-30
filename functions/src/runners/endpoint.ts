@@ -7,6 +7,7 @@ import { DEV_SCOPES, QA_SCOPES } from '../mcp/scopes';
 import { isRunnerAvailable } from '../common/utils/runner-availability';
 import { parseRunnerUsageReport } from '../common/utils/runner-usage';
 import { recordRunnerCompletion } from './record-completion';
+import { ReportReviewIncompleteAction } from '../actions/reviews/report-review-incomplete';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -136,7 +137,8 @@ export const pulseRunnerPoll = onRequest(
       res.json({ job: null });
       return;
     }
-    res.json({ job, mcpCredential: fullKey });
+    const agentData = agent.data()!;
+    res.json({ job, agent: { kind: agentData.kind || 'claude', role: agentData.role || 'dev' }, mcpCredential: fullKey });
   },
 );
 
@@ -225,6 +227,24 @@ export const pulseRunnerComplete = onRequest(
       });
     }
     await getFirestore().collection('api_keys').where('jobId', '==', jobId).get().then((keys) => Promise.all(keys.docs.map((key) => key.ref.update({ revokedAt: now }))));
+    if (job.mode === 'review') {
+      const issue = await db.collection('issues').doc(job.issueId).get();
+      if (issue.exists && issue.data()?.review?.state === 'running') {
+        try {
+          await new ReportReviewIncompleteAction({
+            actionCode: 'reviews.reportIncomplete',
+            data: {
+              issueId: job.issueId,
+              reason: outcome === 'completed'
+                ? 'El Runner terminó sin que el agente QA enviara un veredicto.'
+                : `El job de revisión del Runner terminó con outcome '${outcome}'.`,
+            },
+          }, job.agentId).run();
+        } catch (error) {
+          console.error(`[pulseRunnerComplete] Could not report incomplete QA review for job '${jobId}':`, error);
+        }
+      }
+    }
     res.json({ jobId, status: outcome, completedAt: now });
   },
 );
