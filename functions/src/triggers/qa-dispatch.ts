@@ -1,5 +1,5 @@
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
-import { getFirestore, Transaction } from 'firebase-admin/firestore';
+import { getFirestore, Transaction, FieldValue } from 'firebase-admin/firestore';
 import { nanoid } from 'nanoid';
 import { githubAppId, githubAppPrivateKeyB64, runnerJobSigningPrivateKey } from '../common/secrets';
 import { dispatchRepositoryEvent, getPullRequestOrigin } from '../github/client';
@@ -8,6 +8,7 @@ import { checkWorkspaceDispatchBudget, todayKey } from '../common/utils/dispatch
 import { checkIssueRunBudget } from '../common/utils/issue-run-budget';
 import { buildNeedsHumanEscalation } from '../common/utils/review-escalation';
 import { enqueueRunnerJob } from '../common/utils/runner-jobs';
+import { qaAssignmentError } from '../common/utils/qa-assignment';
 import { isRunnerAvailable } from '../common/utils/runner-availability';
 
 const DEFAULT_MAX_REVIEW_ATTEMPTS = 2;
@@ -103,6 +104,14 @@ export const qaDispatchTrigger = onDocumentWritten(
 
       const db = getFirestore();
       const workspaceId = after.workspaceId;
+      const issueRef = db.collection('issues').doc(issueId);
+      const recordDispatchError = async (message: string) => {
+        await db.runTransaction(async (tx) => {
+          const current = await tx.get(issueRef);
+          if (current.data()?.status !== 'in_review' || current.data()?.qaAssigneeId !== after.qaAssigneeId) return;
+          tx.update(issueRef, { 'review.dispatchError': message, updatedAt: new Date().toISOString() });
+        });
+      };
 
       // Repo contra el que matchear `reviewRepo`: el del issue, o el de su
       // épica si el issue no tiene uno propio (cascada compartida con el
@@ -113,7 +122,7 @@ export const qaDispatchTrigger = onDocumentWritten(
       const executionAgentId = after.execution?.agentId || after.assigneeId;
       const { repoFullName } = await resolveIssueRepo(db, { ...after, id: issueId }, { agentId: executionAgentId });
       if (!repoFullName) {
-        console.log(`[QaDispatch] issue '${issueId}' no tiene repo resolvable, skipping.`);
+        await recordDispatchError('No se pudo resolver el repo del issue. Configurá su repositorio y volvé a despachar QA.');
         return;
       }
 
@@ -124,40 +133,52 @@ export const qaDispatchTrigger = onDocumentWritten(
         .where('enabled', '==', true)
         .where('autonomousMode', '==', true)
         .get();
-      // Nunca el mismo agente que es el dev asignado, y el `reviewRepo` tiene
-      // que matchear el repo del issue (o el de su épica). Si hay varios QA,
-      // preferimos uno con Runner elegible para que un QA por GitHub Actions
-      // no oculte a otro ya configurado para ejecución local.
-      const qaCandidates = qaSnap.docs.filter((d) => d.id !== executionAgentId && d.data().reviewRepo === repoFullName);
-      if (qaCandidates.length === 0) {
-        console.log(`[QaDispatch] no hay agente QA enabled/autonomous con reviewRepo '${repoFullName}' (o el único es el dev asignado), skipping.`);
+      // Una selección manual prevalece aunque el QA no esté en modo autónomo.
+      // Solo se usa la selección automática cuando el issue no tiene QA elegido.
+      let qaDoc: FirebaseFirestore.DocumentSnapshot | undefined;
+      if (after.qaAssigneeId) {
+        const selected = await db.collection('agents').doc(after.qaAssigneeId).get();
+        const agent = selected.data();
+        const assignmentError = qaAssignmentError(selected.id, agent, workspaceId, executionAgentId, repoFullName);
+        if (assignmentError) {
+          await recordDispatchError(assignmentError);
+          return;
+        }
+        qaDoc = selected;
+      }
+      // El automático conserva los requisitos actuales: enabled, autónomo,
+      // mismo workspace y repo, y nunca el agente que ejecutó el issue.
+      const qaCandidates = qaSnap.docs.filter((d) => d.id !== executionAgentId && !d.data().archivedAt && d.data().reviewRepo === repoFullName);
+      if (!qaDoc && qaCandidates.length === 0) {
+        await recordDispatchError(`No hay QA autónomo habilitado para '${repoFullName}'. Asigná un agente QA manualmente y volvé a despachar.`);
         return;
       }
       const reviewRepos = [...new Set(prs.map((pr) => pr.repoFullName))];
-      let qaDoc: FirebaseFirestore.QueryDocumentSnapshot | undefined;
       let runner: FirebaseFirestore.DocumentData | undefined;
-      for (const candidate of qaCandidates.filter((item) => !!item.data().runnerId)) {
-        const candidateRunnerSnap = await db.collection('runners').doc(candidate.data().runnerId).get();
-        if (!candidateRunnerSnap.exists || candidateRunnerSnap.data()!.workspaceId !== workspaceId || !isRunnerAvailable(candidateRunnerSnap.data()!)) continue;
-        const candidateRunner = candidateRunnerSnap.data()!;
-        if (reviewRepos.some((repo) => !candidateRunner.connectedRepos?.includes(repo))) continue;
-        try {
-          await assertRunnerCapacity(db, candidateRunner.id, candidateRunner.maxConcurrentJobs || 1);
-        } catch {
-          continue;
-        }
-        qaDoc = candidate;
-        runner = candidateRunner;
-        break;
-      }
-      // GitHub Actions sigue siendo el fallback para QA sin Runner. Un agente
-      // cuyo Runner está offline/sin capacidad no debe impedir usar otro QA.
-      qaDoc ||= qaCandidates.find((candidate) => !candidate.data().runnerId);
       if (!qaDoc) {
-        console.log(`[QaDispatch] no hay agente QA con Runner disponible y repos autorizados, ni QA sin Runner para fallback (repo '${repoFullName}').`);
+        for (const candidate of qaCandidates.filter((item) => !!item.data().runnerId)) {
+          const candidateRunnerSnap = await db.collection('runners').doc(candidate.data().runnerId).get();
+          if (!candidateRunnerSnap.exists || candidateRunnerSnap.data()!.workspaceId !== workspaceId || !isRunnerAvailable(candidateRunnerSnap.data()!)) continue;
+          const candidateRunner = candidateRunnerSnap.data()!;
+          if (reviewRepos.some((repo) => !candidateRunner.connectedRepos?.includes(repo))) continue;
+          try {
+            await assertRunnerCapacity(db, candidateRunner.id, candidateRunner.maxConcurrentJobs || 1);
+          } catch {
+            continue;
+          }
+          qaDoc = candidate;
+          runner = candidateRunner;
+          break;
+        }
+        // GitHub Actions sigue siendo el fallback para QA sin Runner.
+        qaDoc ||= qaCandidates.find((candidate) => !candidate.data().runnerId);
+      }
+      if (!qaDoc) {
+        await recordDispatchError(`No hay QA con Runner disponible para '${repoFullName}'. Asigná un QA disponible y volvé a despachar.`);
         return;
       }
       const qaAgent = qaDoc.data();
+      if (!qaAgent) return;
       const qaAgentId = qaDoc.id;
       const runnerId = qaAgent.runnerId as string | undefined;
       if (runnerId) {
@@ -166,14 +187,18 @@ export const qaDispatchTrigger = onDocumentWritten(
         const runnerSnap = await db.collection('runners').doc(runnerId).get();
         if (!runnerSnap.exists || runnerSnap.data()!.workspaceId !== workspaceId || !isRunnerAvailable(runnerSnap.data()!) ||
           reviewRepos.some((repo) => !runnerSnap.data()!.connectedRepos?.includes(repo))) {
-          console.log(`[QaDispatch] QA Runner '${runnerId}' dejó de estar disponible o no cubre todos los repos; skipping review dispatch.`);
+          await recordDispatchError('El Runner QA no está disponible o no cubre todos los repos. Corregí su configuración y volvé a despachar QA.');
           return;
         }
         runner = runnerSnap.data()!;
-        await assertRunnerCapacity(db, runnerId, runner.maxConcurrentJobs || 1);
+        try {
+          await assertRunnerCapacity(db, runnerId, runner.maxConcurrentJobs || 1);
+        } catch {
+          await recordDispatchError('El Runner QA alcanzó su límite de jobs activos. Volvé a despachar QA cuando tenga capacidad.');
+          return;
+        }
       }
 
-      const issueRef = db.collection('issues').doc(issueId);
       const review = after.review as Record<string, any> | undefined;
       const attempt = review?.attempt ?? 0;
       const maxReviewAttempts = qaAgent.maxReviewAttempts ?? DEFAULT_MAX_REVIEW_ATTEMPTS;
@@ -269,6 +294,7 @@ export const qaDispatchTrigger = onDocumentWritten(
         if (!budget.allowed) return { allowed: false, reason: budget.reason } as const;
 
         tx.update(issueRef, {
+          'review.dispatchError': FieldValue.delete(),
           'review.dispatchedAt': new Date().toISOString(),
           'review.dispatchedTo': qaAgentId,
         });

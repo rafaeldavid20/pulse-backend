@@ -1,4 +1,4 @@
-import { getFirestore, Transaction } from 'firebase-admin/firestore';
+import { getFirestore, Transaction, FieldValue } from 'firebase-admin/firestore';
 import { nanoid } from 'nanoid';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
@@ -98,7 +98,7 @@ export class ReviewsRerunAction extends PlatformActionHandler {
       throw new Error(`El issue '${issue.identifier}' no tiene todos sus PRs abiertos (o hay trabajo pendiente en otro repo), no se puede re-ejecutar la revisión.`);
     }
 
-    const { repoFullName } = await resolveIssueRepo(db, { ...issue, id: data.issueId }, { agentId: issue.assigneeId });
+    const { repoFullName } = await resolveIssueRepo(db, { ...issue, id: data.issueId }, { agentId: issue.execution?.agentId || issue.assigneeId });
     if (!repoFullName) {
       throw new Error(`No se pudo resolver el repo del issue '${issue.identifier}'.`);
     }
@@ -108,9 +108,18 @@ export class ReviewsRerunAction extends PlatformActionHandler {
       .where('workspaceId', '==', issue.workspaceId)
       .where('role', '==', 'qa')
       .where('enabled', '==', true)
-      .where('autonomousMode', '==', true)
       .get();
-    const qaCandidates = qaSnap.docs.filter((d) => d.id !== issue.assigneeId && !d.data().archivedAt && d.data().reviewRepo === repoFullName);
+    const assignedQa = issue.qaAssigneeId ? qaSnap.docs.find((d) => d.id === issue.qaAssigneeId) : undefined;
+    if (issue.qaAssigneeId && !assignedQa) {
+      throw new Error('El agente QA asignado ya no está habilitado o no pertenece a este workspace.');
+    }
+    const executionAgentId = issue.execution?.agentId || issue.assigneeId;
+    if (assignedQa && (assignedQa.id === executionAgentId || assignedQa.data().reviewRepo !== repoFullName || assignedQa.data().archivedAt)) {
+      throw new Error(`El agente QA asignado no está configurado para revisar '${repoFullName}'.`);
+    }
+    const qaCandidates = assignedQa
+      ? [assignedQa]
+      : qaSnap.docs.filter((d) => d.data().autonomousMode === true && d.id !== executionAgentId && !d.data().archivedAt && d.data().reviewRepo === repoFullName);
     if (qaCandidates.length === 0) {
       throw new Error(`No hay un agente QA habilitado con reviewRepo '${repoFullName}' para re-ejecutar la revisión.`);
     }
@@ -188,6 +197,7 @@ export class ReviewsRerunAction extends PlatformActionHandler {
 
     const now = new Date().toISOString();
     await issueRef.update({
+      'review.dispatchError': FieldValue.delete(),
       'review.dispatchedAt': now,
       'review.dispatchedTo': qaAgentId,
       updatedAt: now,
