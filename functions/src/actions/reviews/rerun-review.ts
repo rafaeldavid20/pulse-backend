@@ -1,4 +1,4 @@
-import { getFirestore, Transaction } from 'firebase-admin/firestore';
+import { getFirestore, Transaction, FieldValue } from 'firebase-admin/firestore';
 import { nanoid } from 'nanoid';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
@@ -98,7 +98,7 @@ export class ReviewsRerunAction extends PlatformActionHandler {
       throw new Error(`El issue '${issue.identifier}' no tiene todos sus PRs abiertos (o hay trabajo pendiente en otro repo), no se puede re-ejecutar la revisión.`);
     }
 
-    const { repoFullName } = await resolveIssueRepo(db, { ...issue, id: data.issueId }, { agentId: issue.assigneeId });
+    const { repoFullName } = await resolveIssueRepo(db, { ...issue, id: data.issueId }, { agentId: issue.execution?.agentId || issue.assigneeId });
     if (!repoFullName) {
       throw new Error(`No se pudo resolver el repo del issue '${issue.identifier}'.`);
     }
@@ -197,7 +197,7 @@ export class ReviewsRerunAction extends PlatformActionHandler {
 
     const now = new Date().toISOString();
     await issueRef.update({
-      qaAssigneeId: issue.qaAssigneeId || qaAgentId,
+      'review.dispatchError': FieldValue.delete(),
       'review.dispatchedAt': now,
       'review.dispatchedTo': qaAgentId,
       updatedAt: now,

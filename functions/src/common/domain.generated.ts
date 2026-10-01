@@ -5,7 +5,7 @@
 // dominio de Pulse. Para cambiar algo de acá, editá ese archivo y corré
 // `npm run sync:types` desde `pulse-app`.
 //
-// SOURCE_HASH: 480442923b3b76b5
+// SOURCE_HASH: e6e94c6122332783
 // ============================================================
 
 /**
@@ -1040,6 +1040,8 @@ export interface IssueReview extends IssueReviewAttempt {
    */
   dispatchedTo?: string;
   dispatchedAt?: string;
+  /** Motivo visible por el que QA no pudo despacharse; se limpia al despachar. */
+  dispatchError?: string;
   /**
    * Intentos ya cerrados, más viejo primero. Sin esto no hay métricas de D7
    * (intentos promedio, tasa de aprobación al primer intento) — solo
