@@ -798,6 +798,8 @@ export interface Issue {
   /** Default `'task'`. Los issues creados antes de la jerarquía se migran a `'task'`. */
   type: IssueType;
   assigneeId?: string;
+  /** QA elegido manualmente para revisar este issue, independiente del dev asignado. */
+  qaAssigneeId?: string | null;
   /** Responsable humano. En issues anteriores se deriva de `assigneeId`. */
   responsibleMemberId?: string;
   /** Agente que ejecuta el issue, si fue elegido explícitamente. */
@@ -1276,6 +1278,7 @@ export const ISSUE_WRITABLE_FIELDS = [
   'type',
   'projectId',
   'assigneeId',
+  'qaAssigneeId',
   'labelIds',
   'parentId',
   'dueDate',

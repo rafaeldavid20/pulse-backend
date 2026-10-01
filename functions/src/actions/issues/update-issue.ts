@@ -68,6 +68,23 @@ export class UpdateIssueAction extends PlatformActionHandler {
       }
     }
 
+    if ('qaAssigneeId' in data && data.qaAssigneeId) {
+      const qaAgentSnap = await db.collection('agents').doc(data.qaAssigneeId).get();
+      const qaAgent = qaAgentSnap.data();
+      if (!qaAgentSnap.exists || qaAgent?.workspaceId !== current.workspaceId || qaAgent?.role !== 'qa' || !qaAgent.enabled || qaAgent.archivedAt) {
+        throw new Error('El agente QA debe estar habilitado, pertenecer a este workspace y tener rol QA.');
+      }
+      const callerMember = await getWorkspaceMember(db, current.workspaceId, this.caller.uid!);
+      const callerMayAssignQa = isWorkspaceAdmin(callerMember) || (
+        agentVisibility(qaAgent) === 'personal' &&
+        qaAgent.ownerMemberId === this.caller.uid &&
+        (current.responsibleMemberId || current.assigneeId) === this.caller.uid
+      );
+      if (!callerMayAssignQa) {
+        throw new Error('Solo un admin puede asignar agentes QA públicos; un agente personal solo lo puede asignar su dueño a sus propios issues.');
+      }
+    }
+
     // Whitelist, not a blind spread of `data`: this can be called from an MCP
     // tool driven by an LLM, and a spread would let it overwrite
     // server-owned fields like `workspaceId`, `identifier` or `creatorId`.

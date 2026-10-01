@@ -124,40 +124,52 @@ export const qaDispatchTrigger = onDocumentWritten(
         .where('enabled', '==', true)
         .where('autonomousMode', '==', true)
         .get();
-      // Nunca el mismo agente que es el dev asignado, y el `reviewRepo` tiene
-      // que matchear el repo del issue (o el de su épica). Si hay varios QA,
-      // preferimos uno con Runner elegible para que un QA por GitHub Actions
-      // no oculte a otro ya configurado para ejecución local.
-      const qaCandidates = qaSnap.docs.filter((d) => d.id !== executionAgentId && d.data().reviewRepo === repoFullName);
-      if (qaCandidates.length === 0) {
+      // Una selección manual prevalece aunque el QA no esté en modo autónomo.
+      // Solo se usa la selección automática cuando el issue no tiene QA elegido.
+      let qaDoc: FirebaseFirestore.DocumentSnapshot | undefined;
+      if (after.qaAssigneeId) {
+        const selected = await db.collection('agents').doc(after.qaAssigneeId).get();
+        const agent = selected.data();
+        if (!selected.exists || agent?.workspaceId !== workspaceId || agent?.role !== 'qa' || !agent.enabled || agent.archivedAt ||
+          selected.id === executionAgentId || agent.reviewRepo !== repoFullName) {
+          console.log(`[QaDispatch] QA asignado '${after.qaAssigneeId}' no está habilitado/configurado para '${repoFullName}', skipping.`);
+          return;
+        }
+        qaDoc = selected;
+      }
+      // El automático conserva los requisitos actuales: enabled, autónomo,
+      // mismo workspace y repo, y nunca el agente que ejecutó el issue.
+      const qaCandidates = qaSnap.docs.filter((d) => d.id !== executionAgentId && !d.data().archivedAt && d.data().reviewRepo === repoFullName);
+      if (!qaDoc && qaCandidates.length === 0) {
         console.log(`[QaDispatch] no hay agente QA enabled/autonomous con reviewRepo '${repoFullName}' (o el único es el dev asignado), skipping.`);
         return;
       }
       const reviewRepos = [...new Set(prs.map((pr) => pr.repoFullName))];
-      let qaDoc: FirebaseFirestore.QueryDocumentSnapshot | undefined;
       let runner: FirebaseFirestore.DocumentData | undefined;
-      for (const candidate of qaCandidates.filter((item) => !!item.data().runnerId)) {
-        const candidateRunnerSnap = await db.collection('runners').doc(candidate.data().runnerId).get();
-        if (!candidateRunnerSnap.exists || candidateRunnerSnap.data()!.workspaceId !== workspaceId || !isRunnerAvailable(candidateRunnerSnap.data()!)) continue;
-        const candidateRunner = candidateRunnerSnap.data()!;
-        if (reviewRepos.some((repo) => !candidateRunner.connectedRepos?.includes(repo))) continue;
-        try {
-          await assertRunnerCapacity(db, candidateRunner.id, candidateRunner.maxConcurrentJobs || 1);
-        } catch {
-          continue;
+      if (!qaDoc) {
+        for (const candidate of qaCandidates.filter((item) => !!item.data().runnerId)) {
+          const candidateRunnerSnap = await db.collection('runners').doc(candidate.data().runnerId).get();
+          if (!candidateRunnerSnap.exists || candidateRunnerSnap.data()!.workspaceId !== workspaceId || !isRunnerAvailable(candidateRunnerSnap.data()!)) continue;
+          const candidateRunner = candidateRunnerSnap.data()!;
+          if (reviewRepos.some((repo) => !candidateRunner.connectedRepos?.includes(repo))) continue;
+          try {
+            await assertRunnerCapacity(db, candidateRunner.id, candidateRunner.maxConcurrentJobs || 1);
+          } catch {
+            continue;
+          }
+          qaDoc = candidate;
+          runner = candidateRunner;
+          break;
         }
-        qaDoc = candidate;
-        runner = candidateRunner;
-        break;
+        // GitHub Actions sigue siendo el fallback para QA sin Runner.
+        qaDoc ||= qaCandidates.find((candidate) => !candidate.data().runnerId);
       }
-      // GitHub Actions sigue siendo el fallback para QA sin Runner. Un agente
-      // cuyo Runner está offline/sin capacidad no debe impedir usar otro QA.
-      qaDoc ||= qaCandidates.find((candidate) => !candidate.data().runnerId);
       if (!qaDoc) {
         console.log(`[QaDispatch] no hay agente QA con Runner disponible y repos autorizados, ni QA sin Runner para fallback (repo '${repoFullName}').`);
         return;
       }
       const qaAgent = qaDoc.data();
+      if (!qaAgent) return;
       const qaAgentId = qaDoc.id;
       const runnerId = qaAgent.runnerId as string | undefined;
       if (runnerId) {
@@ -269,6 +281,7 @@ export const qaDispatchTrigger = onDocumentWritten(
         if (!budget.allowed) return { allowed: false, reason: budget.reason } as const;
 
         tx.update(issueRef, {
+          qaAssigneeId: issueSnap.data()?.qaAssigneeId || qaAgentId,
           'review.dispatchedAt': new Date().toISOString(),
           'review.dispatchedTo': qaAgentId,
         });
