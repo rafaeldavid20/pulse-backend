@@ -3,7 +3,7 @@ import { RunnerUsageReport } from '../common/utils/runner-usage';
 
 export async function recordRunnerCompletion(
   db: Firestore, jobId: string, runnerId: string, provider: string,
-  outcome: 'completed' | 'failed' | 'canceled', report: RunnerUsageReport, now: string,
+  outcome: 'completed' | 'failed' | 'canceled', report: RunnerUsageReport, now: string, result: string | null = null,
 ): Promise<'written' | 'missing' | 'expired' | 'mismatch' | 'completed' | 'failed' | 'canceled'> {
   const jobRef = db.collection('runner_jobs').doc(jobId);
   const runRef = db.collection('agent_runs').doc(jobId);
@@ -14,7 +14,7 @@ export async function recordRunnerCompletion(
     if (['completed', 'failed', 'canceled'].includes(job.status)) return job.status;
     if (job.status !== 'delivered' || new Date(job.expiresAt).getTime() <= Date.now()) return 'expired';
     if (!runSnap.exists || runSnap.data()!.workspaceId !== job.workspaceId || runSnap.data()!.issueId !== job.issueId || runSnap.data()!.agentId !== job.agentId || runSnap.data()!.runnerId !== runnerId) return 'mismatch';
-    transaction.update(jobRef, { status: outcome, completedAt: now });
+    transaction.update(jobRef, { status: outcome, completedAt: now, result });
     transaction.update(runRef, {
       provider, runnerOutcome: outcome, usage: report.usage,
       ...(report.costUsd === undefined ? {} : { costUsd: report.costUsd }),
