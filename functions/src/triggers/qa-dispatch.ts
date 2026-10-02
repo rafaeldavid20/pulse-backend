@@ -1,12 +1,15 @@
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
-import { getFirestore, Transaction } from 'firebase-admin/firestore';
+import { getFirestore, Transaction, FieldValue } from 'firebase-admin/firestore';
 import { nanoid } from 'nanoid';
-import { githubAppId, githubAppPrivateKeyB64 } from '../common/secrets';
+import { githubAppId, githubAppPrivateKeyB64, runnerJobSigningPrivateKey } from '../common/secrets';
 import { dispatchRepositoryEvent, getPullRequestOrigin } from '../github/client';
 import { resolveIssueRepo } from '../common/utils/repo-resolution';
 import { checkWorkspaceDispatchBudget, todayKey } from '../common/utils/dispatch-counter';
 import { checkIssueRunBudget } from '../common/utils/issue-run-budget';
 import { buildNeedsHumanEscalation } from '../common/utils/review-escalation';
+import { enqueueRunnerJob } from '../common/utils/runner-jobs';
+import { qaAssignmentError } from '../common/utils/qa-assignment';
+import { isRunnerAvailable } from '../common/utils/runner-availability';
 
 const DEFAULT_MAX_REVIEW_ATTEMPTS = 2;
 
@@ -15,6 +18,18 @@ const DEFAULT_MAX_REVIEW_ATTEMPTS = 2;
 // mire el estado actual del issue no alcanza para separar dos disparos que
 // ocurren antes de que cualquiera llegue a reclamar.
 const DISPATCH_COOLDOWN_MS = 10 * 60 * 1000;
+
+async function assertRunnerCapacity(db: FirebaseFirestore.Firestore, runnerId: string, maxConcurrentJobs: number) {
+  const jobs = await db.collection('runner_jobs').where('runnerId', '==', runnerId).get();
+  const now = Date.now();
+  const active = jobs.docs.filter((doc) => {
+    const job = doc.data();
+    if (!['pending', 'delivered'].includes(job.status)) return false;
+    const expiresAt = new Date(job.expiresAt).getTime();
+    return !Number.isFinite(expiresAt) || expiresAt > now;
+  }).length;
+  if (active >= maxConcurrentJobs) throw new Error('Runner reached its active job limit.');
+}
 
 interface ReviewablePr {
   repoFullName: string;
@@ -69,7 +84,7 @@ export const qaDispatchTrigger = onDocumentWritten(
   {
     document: 'issues/{issueId}',
     region: 'us-east4',
-    secrets: [githubAppId, githubAppPrivateKeyB64],
+    secrets: [githubAppId, githubAppPrivateKeyB64, runnerJobSigningPrivateKey],
   },
   async (event) => {
     try {
@@ -89,6 +104,14 @@ export const qaDispatchTrigger = onDocumentWritten(
 
       const db = getFirestore();
       const workspaceId = after.workspaceId;
+      const issueRef = db.collection('issues').doc(issueId);
+      const recordDispatchError = async (message: string) => {
+        await db.runTransaction(async (tx) => {
+          const current = await tx.get(issueRef);
+          if (current.data()?.status !== 'in_review' || current.data()?.qaAssigneeId !== after.qaAssigneeId) return;
+          tx.update(issueRef, { 'review.dispatchError': message, updatedAt: new Date().toISOString() });
+        });
+      };
 
       // Repo contra el que matchear `reviewRepo`: el del issue, o el de su
       // épica si el issue no tiene uno propio (cascada compartida con el
@@ -99,7 +122,7 @@ export const qaDispatchTrigger = onDocumentWritten(
       const executionAgentId = after.execution?.agentId || after.assigneeId;
       const { repoFullName } = await resolveIssueRepo(db, { ...after, id: issueId }, { agentId: executionAgentId });
       if (!repoFullName) {
-        console.log(`[QaDispatch] issue '${issueId}' no tiene repo resolvable, skipping.`);
+        await recordDispatchError('No se pudo resolver el repo del issue. Configurá su repositorio y volvé a despachar QA.');
         return;
       }
 
@@ -110,18 +133,72 @@ export const qaDispatchTrigger = onDocumentWritten(
         .where('enabled', '==', true)
         .where('autonomousMode', '==', true)
         .get();
-      // Nunca el mismo agente que es el dev asignado, y el `reviewRepo` tiene
-      // que matchear el repo del issue (o el de su épica): con varios
-      // agentes QA, es lo único que dice cuál corre el workflow acá.
-      const qaDoc = qaSnap.docs.find((d) => d.id !== executionAgentId && !d.data().archivedAt && d.data().reviewRepo === repoFullName);
+      // Una selección manual prevalece aunque el QA no esté en modo autónomo.
+      // Solo se usa la selección automática cuando el issue no tiene QA elegido.
+      let qaDoc: FirebaseFirestore.DocumentSnapshot | undefined;
+      if (after.qaAssigneeId) {
+        const selected = await db.collection('agents').doc(after.qaAssigneeId).get();
+        const agent = selected.data();
+        const assignmentError = qaAssignmentError(selected.id, agent, workspaceId, executionAgentId, repoFullName);
+        if (assignmentError) {
+          await recordDispatchError(assignmentError);
+          return;
+        }
+        qaDoc = selected;
+      }
+      // El automático conserva los requisitos actuales: enabled, autónomo,
+      // mismo workspace y repo, y nunca el agente que ejecutó el issue.
+      const qaCandidates = qaSnap.docs.filter((d) => d.id !== executionAgentId && !d.data().archivedAt && d.data().reviewRepo === repoFullName);
+      if (!qaDoc && qaCandidates.length === 0) {
+        await recordDispatchError(`No hay QA autónomo habilitado para '${repoFullName}'. Asigná un agente QA manualmente y volvé a despachar.`);
+        return;
+      }
+      const reviewRepos = [...new Set(prs.map((pr) => pr.repoFullName))];
+      let runner: FirebaseFirestore.DocumentData | undefined;
       if (!qaDoc) {
-        console.log(`[QaDispatch] no hay agente QA enabled/autonomous con reviewRepo '${repoFullName}' (o el único es el dev asignado), skipping.`);
+        for (const candidate of qaCandidates.filter((item) => !!item.data().runnerId)) {
+          const candidateRunnerSnap = await db.collection('runners').doc(candidate.data().runnerId).get();
+          if (!candidateRunnerSnap.exists || candidateRunnerSnap.data()!.workspaceId !== workspaceId || !isRunnerAvailable(candidateRunnerSnap.data()!)) continue;
+          const candidateRunner = candidateRunnerSnap.data()!;
+          if (reviewRepos.some((repo) => !candidateRunner.connectedRepos?.includes(repo))) continue;
+          try {
+            await assertRunnerCapacity(db, candidateRunner.id, candidateRunner.maxConcurrentJobs || 1);
+          } catch {
+            continue;
+          }
+          qaDoc = candidate;
+          runner = candidateRunner;
+          break;
+        }
+        // GitHub Actions sigue siendo el fallback para QA sin Runner.
+        qaDoc ||= qaCandidates.find((candidate) => !candidate.data().runnerId);
+      }
+      if (!qaDoc) {
+        await recordDispatchError(`No hay QA con Runner disponible para '${repoFullName}'. Asigná un QA disponible y volvé a despachar.`);
         return;
       }
       const qaAgent = qaDoc.data();
+      if (!qaAgent) return;
       const qaAgentId = qaDoc.id;
+      const runnerId = qaAgent.runnerId as string | undefined;
+      if (runnerId) {
+        // `runner` se preparó al elegir el candidato y se revalida justo antes
+        // de encolar para evitar enviar un job a un Runner que cambió de estado.
+        const runnerSnap = await db.collection('runners').doc(runnerId).get();
+        if (!runnerSnap.exists || runnerSnap.data()!.workspaceId !== workspaceId || !isRunnerAvailable(runnerSnap.data()!) ||
+          reviewRepos.some((repo) => !runnerSnap.data()!.connectedRepos?.includes(repo))) {
+          await recordDispatchError('El Runner QA no está disponible o no cubre todos los repos. Corregí su configuración y volvé a despachar QA.');
+          return;
+        }
+        runner = runnerSnap.data()!;
+        try {
+          await assertRunnerCapacity(db, runnerId, runner.maxConcurrentJobs || 1);
+        } catch {
+          await recordDispatchError('El Runner QA alcanzó su límite de jobs activos. Volvé a despachar QA cuando tenga capacidad.');
+          return;
+        }
+      }
 
-      const issueRef = db.collection('issues').doc(issueId);
       const review = after.review as Record<string, any> | undefined;
       const attempt = review?.attempt ?? 0;
       const maxReviewAttempts = qaAgent.maxReviewAttempts ?? DEFAULT_MAX_REVIEW_ATTEMPTS;
@@ -217,6 +294,7 @@ export const qaDispatchTrigger = onDocumentWritten(
         if (!budget.allowed) return { allowed: false, reason: budget.reason } as const;
 
         tx.update(issueRef, {
+          'review.dispatchError': FieldValue.delete(),
           'review.dispatchedAt': new Date().toISOString(),
           'review.dispatchedTo': qaAgentId,
         });
@@ -242,41 +320,59 @@ export const qaDispatchTrigger = onDocumentWritten(
       }
 
       const nextAttempt = attempt + 1;
-      // El job `verify` de pulse-qa.yml (D6) necesita saber qué PR pushear con
-      // `gh pr checkout` — el de este mismo repo, no necesariamente el único
-      // si el issue es multi-repo (K9/TES-202).
       const prNumber = prs.find((pr) => pr.repoFullName === repoFullName)?.prNumber;
-      // D15/TES-211: el runId se genera ANTES del dispatch para mandarlo en
-      // el `client_payload` — el paso de reporte de `pulse-qa.yml` lo usa
-      // para cerrar este mismo registro vía `runs.complete`.
-      const runId = `run-${nanoid(8)}`;
-      await dispatchRepositoryEvent(installation.installationId, repoFullName, 'pulse_review', {
-        issueId,
-        issueIdentifier: after.identifier,
-        workspaceId,
-        agentId: qaAgentId,
-        agentKind: qaAgent.kind || 'claude',
-        reviewAttempt: nextAttempt,
-        prNumber,
-        runId,
-      });
-
-      // D15/TES-211: registro de runs y costo. El paso de reporte del
-      // workflow es el que completa `endedAt`/`costUsd` vía `runs.complete`.
-      await db.collection('agent_runs').doc(runId).set({
-        id: runId,
-        issueId,
-        workspaceId,
-        agentId: qaAgentId,
-        role: 'qa',
-        mode: 'review',
-        repo: repoFullName,
-        reviewAttempt: nextAttempt,
-        startedAt: new Date().toISOString(),
-        date: todayKey(),
-      });
-
-      console.log(`[QaDispatch] dispatched 'pulse_review' (attempt ${nextAttempt}) for issue '${after.identifier}' (${issueId}) to '${repoFullName}' via QA agent '${qaAgentId}'.`);
+      if (runnerId && runner) {
+        const job = await enqueueRunnerJob(db, {
+          workspaceId,
+          issueId,
+          agentId: qaAgentId,
+          runnerId,
+          repoFullName,
+          contextRepos: [...new Set(prs.map((pr) => pr.repoFullName))],
+          mode: 'review',
+        }, runnerJobSigningPrivateKey.value());
+        await db.collection('agent_runs').doc(job.id).set({
+          id: job.id,
+          issueId,
+          workspaceId,
+          agentId: qaAgentId,
+          runnerId,
+          role: 'qa',
+          mode: 'review',
+          repo: repoFullName,
+          reviewAttempt: nextAttempt,
+          startedAt: new Date().toISOString(),
+          date: todayKey(),
+        });
+        console.log(`[QaDispatch] queued signed Runner review job '${job.id}' for issue '${after.identifier}' to QA '${qaAgentId}'.`);
+      } else {
+        // D15/TES-211: el runId se manda en el evento de GitHub para que el
+        // workflow pulse-qa.yml complete el mismo registro vía runs.complete.
+        const runId = `run-${nanoid(8)}`;
+        await dispatchRepositoryEvent(installation.installationId, repoFullName, 'pulse_review', {
+          issueId,
+          issueIdentifier: after.identifier,
+          workspaceId,
+          agentId: qaAgentId,
+          agentKind: qaAgent.kind || 'claude',
+          reviewAttempt: nextAttempt,
+          prNumber,
+          runId,
+        });
+        await db.collection('agent_runs').doc(runId).set({
+          id: runId,
+          issueId,
+          workspaceId,
+          agentId: qaAgentId,
+          role: 'qa',
+          mode: 'review',
+          repo: repoFullName,
+          reviewAttempt: nextAttempt,
+          startedAt: new Date().toISOString(),
+          date: todayKey(),
+        });
+        console.log(`[QaDispatch] dispatched 'pulse_review' (attempt ${nextAttempt}) for issue '${after.identifier}' to QA '${qaAgentId}' via GitHub Actions.`);
+      }
     } catch (error) {
       console.error('[QaDispatch] error handling issue write, will not retry:', error);
     }

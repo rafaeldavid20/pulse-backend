@@ -35,6 +35,17 @@ export async function enqueueRunnerJob(
   const contextRepos = [...new Set(input.contextRepos || [input.repoFullName])].sort();
   const unsigned = { id: `rjob-${nanoid(12)}`, ...input, contextRepos, issuedAt, expiresAt, signatureAlgorithm: 'ed25519' as const, signingKeyId };
   const job: RunnerJob = { ...unsigned, signature: signRunnerJob(unsigned, privateKey) };
-  await db.collection('runner_jobs').doc(job.id).set({ ...job, status: 'pending', createdAt: issuedAt });
+  const agentRef = db.collection('agents').doc(job.agentId);
+  await db.runTransaction(async (transaction) => {
+    const agent = await transaction.get(agentRef);
+    if (!agent.exists || agent.data()?.workspaceId !== job.workspaceId) {
+      throw new Error('El agente ejecutor ya no existe en este workspace.');
+    }
+    if (agent.data()?.archivedAt) {
+      throw new Error('No se pueden emitir jobs para un agente archivado. Restauralo primero.');
+    }
+    transaction.update(agentRef, { runnerJobDispatchAt: issuedAt });
+    transaction.create(db.collection('runner_jobs').doc(job.id), { ...job, status: 'pending', createdAt: issuedAt });
+  });
   return job;
 }

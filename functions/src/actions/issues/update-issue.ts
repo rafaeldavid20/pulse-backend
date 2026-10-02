@@ -6,6 +6,8 @@ import { normalizeAcceptanceCriteria } from '../../common/utils/acceptance-crite
 import { ISSUE_WRITABLE_FIELDS, pickWritableFields } from '../../common/utils/issue-fields';
 import { canHaveChildren } from '../../common/domain.generated';
 import { validateRepoForWorkspace } from '../../common/utils/repo-field';
+import { resolveIssueRepo } from '../../common/utils/repo-resolution';
+import { qaAssignmentError } from '../../common/utils/qa-assignment';
 import { upsertGitRef } from '../../common/utils/project-repos';
 import { agentVisibility, getWorkspaceMember, isWorkspaceAdmin } from '../../common/utils/agent-authorization';
 import {
@@ -66,6 +68,27 @@ export class UpdateIssueAction extends PlatformActionHandler {
         agentVisibility(defaultAgentSnap.data()!) !== 'public'
       ) {
         throw new Error('El agente por defecto debe ser público y pertenecer a este workspace.');
+      }
+    }
+
+    if ('qaAssigneeId' in data && data.qaAssigneeId) {
+      const qaAgentSnap = await db.collection('agents').doc(data.qaAssigneeId).get();
+      const qaAgent = qaAgentSnap.data();
+      if (!qaAgentSnap.exists || qaAgent?.workspaceId !== current.workspaceId || qaAgent?.role !== 'qa' || !qaAgent.enabled || qaAgent.archivedAt) {
+        throw new Error('El agente QA debe estar habilitado, pertenecer a este workspace y tener rol QA.');
+      }
+      const executionAgentId = current.execution?.agentId || current.assigneeId;
+      const { repoFullName } = await resolveIssueRepo(db, { ...current, id: issueId }, { agentId: executionAgentId });
+      const assignmentError = qaAssignmentError(qaAgentSnap.id, qaAgent, current.workspaceId, executionAgentId, repoFullName);
+      if (assignmentError) throw new Error(assignmentError);
+      const callerMember = await getWorkspaceMember(db, current.workspaceId, this.caller.uid!);
+      const callerMayAssignQa = isWorkspaceAdmin(callerMember) || (
+        agentVisibility(qaAgent) === 'personal' &&
+        qaAgent.ownerMemberId === this.caller.uid &&
+        (current.responsibleMemberId || current.assigneeId) === this.caller.uid
+      );
+      if (!callerMayAssignQa) {
+        throw new Error('Solo un admin puede asignar agentes QA públicos; un agente personal solo lo puede asignar su dueño a sus propios issues.');
       }
     }
 

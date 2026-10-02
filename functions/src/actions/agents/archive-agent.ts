@@ -50,23 +50,27 @@ export class ArchiveAgentAction extends AgentLifecycleAction {
     const { db, agentRef, agent } = await this.getOwnedAgent();
     if (agent.archivedAt) return { agent };
 
-    const jobs = await db.collection('runner_jobs').where('agentId', '==', this.agentId).get();
-    const now = new Date();
-    const hasActiveJobs = jobs.docs.some((job) => {
-      const data = job.data();
-      if (!ACTIVE_JOB_STATUSES.has(data.status)) return false;
-      if (!data.expiresAt) return true;
-      const expiresAt = typeof data.expiresAt?.toDate === 'function'
-        ? data.expiresAt.toDate()
-        : new Date(data.expiresAt);
-      return !Number.isFinite(expiresAt.getTime()) || expiresAt.getTime() > now.getTime();
+    const archivedAt = new Date().toISOString();
+    const jobsQuery = db.collection('runner_jobs').where('agentId', '==', this.agentId);
+    await db.runTransaction(async (transaction) => {
+      const [currentAgent, jobs] = await Promise.all([transaction.get(agentRef), transaction.get(jobsQuery)]);
+      if (!currentAgent.exists) throw new Error(`El agente '${this.agentId}' no existe.`);
+      if (currentAgent.data()?.archivedAt) return;
+      const now = Date.now();
+      const hasActiveJobs = jobs.docs.some((job) => {
+        const data = job.data();
+        if (!ACTIVE_JOB_STATUSES.has(data.status)) return false;
+        if (!data.expiresAt) return true;
+        const expiresAt = typeof data.expiresAt?.toDate === 'function'
+          ? data.expiresAt.toDate().getTime()
+          : new Date(data.expiresAt).getTime();
+        return !Number.isFinite(expiresAt) || expiresAt > now;
+      });
+      if (hasActiveJobs) {
+        throw new Error('No se puede archivar el agente mientras tenga jobs activos. Esperá a que terminen o expiren y volvé a intentarlo.');
+      }
+      transaction.update(agentRef, { archivedAt, archivedBy: this.caller.uid, updatedAt: archivedAt });
     });
-    if (hasActiveJobs) {
-      throw new Error('No se puede archivar el agente mientras tenga jobs activos. Esperá a que terminen o expiren y volvé a intentarlo.');
-    }
-
-    const archivedAt = now.toISOString();
-    await agentRef.update({ archivedAt, archivedBy: this.caller.uid, updatedAt: archivedAt });
     return { agent: { ...agent, archivedAt, archivedBy: this.caller.uid, updatedAt: archivedAt } };
   }
 }

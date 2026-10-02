@@ -5,7 +5,7 @@
 // dominio de Pulse. Para cambiar algo de acá, editá ese archivo y corré
 // `npm run sync:types` desde `pulse-app`.
 //
-// SOURCE_HASH: 10c9ed37153dca44
+// SOURCE_HASH: 0dcd68054eb597b8
 // ============================================================
 
 /**
@@ -357,6 +357,8 @@ export interface Agent {
   /** Marca de archivado lógico; se conserva el documento y su historial. */
   archivedAt?: string;
   archivedBy?: string;
+  /** Updated transactionally whenever a Runner job is issued for this agent. */
+  runnerJobDispatchAt?: string;
   /** Identidad del dispositivo/VM que recibirá los jobs del agente. */
   runnerId?: string;
   /** Límite explícito adicional a las conexiones de repo existentes. */
@@ -801,6 +803,8 @@ export interface Issue {
   /** Default `'task'`. Los issues creados antes de la jerarquía se migran a `'task'`. */
   type: IssueType;
   assigneeId?: string;
+  /** QA elegido manualmente para revisar este issue, independiente del dev asignado. */
+  qaAssigneeId?: string | null;
   /** Responsable humano. En issues anteriores se deriva de `assigneeId`. */
   responsibleMemberId?: string;
   /** Agente que ejecuta el issue, si fue elegido explícitamente. */
@@ -1041,6 +1045,8 @@ export interface IssueReview extends IssueReviewAttempt {
    */
   dispatchedTo?: string;
   dispatchedAt?: string;
+  /** Motivo visible por el que QA no pudo despacharse; se limpia al despachar. */
+  dispatchError?: string;
   /**
    * Intentos ya cerrados, más viejo primero. Sin esto no hay métricas de D7
    * (intentos promedio, tasa de aprobación al primer intento) — solo
@@ -1279,6 +1285,7 @@ export const ISSUE_WRITABLE_FIELDS = [
   'type',
   'projectId',
   'assigneeId',
+  'qaAssigneeId',
   'labelIds',
   'parentId',
   'dueDate',

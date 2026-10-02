@@ -99,7 +99,7 @@ export function registerWorkspaceReadTools(server: McpServer, principal: McpPrin
     {},
     async () => {
       const snap = await db.collection('agents').where('workspaceId', '==', principal.workspaceId).get();
-      return textResult(snap.docs.map((d) => d.data()));
+      return textResult(snap.docs.map((d) => d.data()).filter((agent) => !agent.archivedAt));
     }
   );
 
