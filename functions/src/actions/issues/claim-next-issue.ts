@@ -76,6 +76,10 @@ export class ClaimNextIssueAction extends PlatformActionHandler {
         tx.get(db.collection('agents').doc(actorUid)),
       ]);
 
+      if (agentSnap.exists && agentSnap.data()?.archivedAt) {
+        throw new Error('No se puede ejecutar como un agente archivado. Restauralo primero.');
+      }
+
       if (!dryRun) {
         const now = new Date().toISOString();
         tx.update(ref, {

@@ -70,6 +70,7 @@ export class ConnectRepoAction extends PlatformActionHandler {
       throw new Error(`El agente '${data.agentId}' no existe en este workspace.`);
     }
     const agent = agentSnap.data()!;
+    if (agent.archivedAt) throw new Error('No se puede conectar repos a un agente archivado. Restauralo primero.');
     if (agent.kind === 'codex') {
       throw new Error('Los agentes Codex requieren Pulse Runner y todavía no se pueden conectar al workflow de GitHub Actions.');
     }

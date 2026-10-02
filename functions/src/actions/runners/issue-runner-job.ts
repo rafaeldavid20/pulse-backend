@@ -48,6 +48,7 @@ export class IssueRunnerJobAction extends PlatformActionHandler {
     const agentSnap = await db.collection('agents').doc(agentId).get();
     if (!agentSnap.exists) throw new Error('El agente ejecutor ya no existe.');
     const agent = agentSnap.data()!;
+    if (agent.archivedAt) throw new Error('No se pueden emitir jobs para un agente archivado. Restauralo primero.');
     const caller = await getWorkspaceMember(db, issue.workspaceId, this.caller.uid!);
     if (agentVisibility(agent) === 'public') {
       if (!isWorkspaceAdmin(caller)) throw new Error('Solo un admin puede emitir jobs para agentes públicos.');
@@ -115,6 +116,7 @@ export class RetryRunnerJobAction extends PlatformActionHandler {
     const runner = runnerSnap.data()!;
     const agent = agentSnap.data()!;
     const issue = issueSnap.data()!;
+    if (agent.archivedAt) throw new Error('No se pueden reintentar jobs de un agente archivado. Restauralo primero.');
     if (!isRunnerAvailable(runner)) throw new Error('El Runner debe estar online, no revocado y con un heartbeat reciente para reintentar.');
     if (runner.ownerMemberId !== this.caller.uid && !isWorkspaceAdmin(caller)) throw new Error('Sólo el dueño del Runner o un admin puede reintentar este job.');
     const reviewRepos = Array.isArray(issue.gitRefs) && issue.gitRefs.length > 0

@@ -65,6 +65,9 @@ export class RequestRepoWorkAction extends PlatformActionHandler {
     // quedaría pendiente para siempre sin que nadie se entere.
     const agentId = issue.assigneeId || this.caller.uid;
     const agentSnap = agentId ? await db.collection('agents').doc(agentId).get() : null;
+    if (agentSnap?.exists && agentSnap.data()?.archivedAt) {
+      throw new Error('No se puede solicitar trabajo con un agente archivado. Restauralo primero.');
+    }
     const connected: Array<{ repoFullName: string }> = agentSnap?.exists ? agentSnap.data()!.connectedRepos || [] : [];
     if (!connected.some((r) => r.repoFullName === repoFullName)) {
       throw new Error(

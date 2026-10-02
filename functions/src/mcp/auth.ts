@@ -94,6 +94,13 @@ async function authenticateApiKey(parsed: { keyId: string; secret: string }): Pr
     throw new McpAuthError('Invalid API key.');
   }
 
+  if (record.agentId) {
+    const agentSnap = await db.collection('agents').doc(record.agentId).get();
+    if (!agentSnap.exists || agentSnap.data()!.archivedAt) {
+      throw new McpAuthError('This API key belongs to an archived or unavailable agent.', 403);
+    }
+  }
+
   if (shouldTouchLastUsed(record.lastUsedAt)) {
     keyRef.update({ lastUsedAt: new Date().toISOString(), useCount: FieldValue.increment(1) }).catch((err) => {
       console.warn('[mcp/auth] Failed to update lastUsedAt (non-fatal):', err);

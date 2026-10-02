@@ -5,7 +5,7 @@
 // dominio de Pulse. Para cambiar algo de acá, editá ese archivo y corré
 // `npm run sync:types` desde `pulse-app`.
 //
-// SOURCE_HASH: e6e94c6122332783
+// SOURCE_HASH: 0dcd68054eb597b8
 // ============================================================
 
 /**
@@ -354,6 +354,11 @@ export interface Agent {
   ownerMemberId?: string;
   /** Ausente en agentes anteriores; se trata como `public` solo para admins. */
   visibility?: AgentVisibility;
+  /** Marca de archivado lógico; se conserva el documento y su historial. */
+  archivedAt?: string;
+  archivedBy?: string;
+  /** Updated transactionally whenever a Runner job is issued for this agent. */
+  runnerJobDispatchAt?: string;
   /** Identidad del dispositivo/VM que recibirá los jobs del agente. */
   runnerId?: string;
   /** Límite explícito adicional a las conexiones de repo existentes. */

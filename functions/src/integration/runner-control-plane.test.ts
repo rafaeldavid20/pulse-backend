@@ -5,6 +5,7 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { AssignExecutionAgentAction } from '../actions/issues/assign-execution-agent';
 import { UpdateAgentAction } from '../actions/agents/update-agent';
 import { DeleteAgentAction } from '../actions/agents/delete-agent';
+import { ArchiveAgentAction, RestoreAgentAction } from '../actions/agents/archive-agent';
 import { ListRunnerJobsAction, RevokeRunnerAction } from '../actions/runners/manage-runners';
 import { GetAgentUsageAction } from '../actions/agents/get-usage';
 import { recordRunnerCompletion } from '../runners/record-completion';
@@ -40,6 +41,47 @@ test('emulator: un usuario no puede asignar el agente personal de otra persona',
   const accepted = await new AssignExecutionAgentAction({ actionCode: 'issues.assignExecutionAgent', data: { issueId, agentId } }, ownerId).run();
   assert.equal(accepted.success, true);
   assert.equal((await db.collection('issues').doc(issueId).get()).data()?.execution.agentId, agentId);
+});
+
+test('emulator: archivar y restaurar conserva el historial y exige ownership', async () => {
+  await seed();
+  await db.collection('agent_runs').doc(`run-archive-${suffix}`).set({ agentId, workspaceId, issueId, startedAt: new Date().toISOString() });
+
+  const archived = await new ArchiveAgentAction({ actionCode: 'agents.archive', data: { agentId } }, ownerId).run();
+  assert.equal(archived.success, true);
+  const archivedAgent = (await db.collection('agents').doc(agentId).get()).data();
+  assert.ok(archivedAgent?.archivedAt);
+  assert.equal((await db.collection('agent_runs').doc(`run-archive-${suffix}`).get()).exists, true);
+
+  const denied = await new RestoreAgentAction({ actionCode: 'agents.restore', data: { agentId } }, otherId).run();
+  assert.equal(denied.success, false);
+  const restored = await new RestoreAgentAction({ actionCode: 'agents.restore', data: { agentId } }, ownerId).run();
+  assert.equal(restored.success, true);
+  const restoredAgent = (await db.collection('agents').doc(agentId).get()).data();
+  assert.equal(restoredAgent?.archivedAt, undefined);
+  assert.equal(restoredAgent?.archivedBy, undefined);
+  assert.equal((await db.collection('agent_runs').doc(`run-archive-${suffix}`).get()).exists, true);
+  await db.collection('agent_runs').doc(`run-archive-${suffix}`).delete();
+});
+
+test('emulator: archivar se bloquea con jobs activos y permite reintentar al terminar', async () => {
+  await seed();
+  const jobRef = db.collection('runner_jobs').doc(`job-archive-${suffix}`);
+  await jobRef.set({
+    id: jobRef.id, agentId, workspaceId, issueId, status: 'pending',
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+
+  const blocked = await new ArchiveAgentAction({ actionCode: 'agents.archive', data: { agentId } }, ownerId).run();
+  assert.equal(blocked.success, false);
+  assert.match(blocked.error || '', /jobs activos/);
+  assert.equal((await db.collection('agents').doc(agentId).get()).data()?.archivedAt, undefined);
+
+  await jobRef.update({ status: 'completed' });
+  const archived = await new ArchiveAgentAction({ actionCode: 'agents.archive', data: { agentId } }, ownerId).run();
+  assert.equal(archived.success, true);
+  assert.ok((await db.collection('agents').doc(agentId).get()).data()?.archivedAt);
+  await jobRef.delete();
 });
 
 test('emulator: se elimina un agente personal inactivo y se cortan sus accesos', async () => {
