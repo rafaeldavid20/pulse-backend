@@ -6,6 +6,7 @@ import { mcpKeyPepper } from '../common/secrets';
 import { DEV_SCOPES, QA_SCOPES } from '../mcp/scopes';
 import { isRunnerAvailable } from '../common/utils/runner-availability';
 import { parseRunnerUsageReport } from '../common/utils/runner-usage';
+import { safeRunnerJobResult } from '../common/utils/runner-result';
 import { recordRunnerCompletion } from './record-completion';
 import { ReportReviewIncompleteAction } from '../actions/reviews/report-review-incomplete';
 
@@ -193,7 +194,9 @@ export const pulseRunnerComplete = onRequest(
       res.status(400).json({ error: (error as Error).message }); return;
     }
     const now = new Date().toISOString();
-    const completion = await recordRunnerCompletion(db, jobId, runner.id, provider, outcome, report, now);
+    const completion = await recordRunnerCompletion(
+      db, jobId, runner.id, provider, outcome, report, now, safeRunnerJobResult(req.body?.result),
+    );
     if (completion !== 'written') {
       if (['completed', 'failed', 'canceled'].includes(completion)) { res.json({ jobId, status: completion, alreadyCompleted: true }); return; }
       res.status(completion === 'missing' ? 404 : 409).json({ error: 'Runner job is not completable' }); return;
