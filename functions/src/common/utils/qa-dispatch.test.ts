@@ -8,6 +8,7 @@ const originalLoad = Module._load;
 let issue: Record<string, any>;
 let agents: Record<string, any>[];
 let dispatches: string[];
+let runners: Record<string, any> = {};
 const deleted = Symbol('delete');
 const snapshot = (data: any, id = 'issue') => ({ id, exists: !!data, data: () => data });
 const update = (patch: Record<string, any>) => {
@@ -34,6 +35,7 @@ const db = {
       },
       doc: (id: string) => name === 'issues' ? issueRef : name === 'agents'
         ? { get: async () => snapshot(agents.find((agent) => agent.id === id), id) }
+        : name === 'runners' ? { get: async () => snapshot(runners[id], id) }
         : { get: async () => snapshot(undefined, id), set: async () => {} },
     };
     return query;
@@ -46,6 +48,7 @@ Module._load = function (name: string, ...args: any[]) {
     getPullRequestOrigin: async () => ({ headRepoFullName: 'owner/repo', headRef: 'pul/test', headSha: 'new' }),
     dispatchRepositoryEvent: async (_install: any, _repo: any, _event: any, payload: any) => { dispatches.push(payload.agentId); },
   };
+  if (name.endsWith('/common/utils/runner-jobs')) return { enqueueRunnerJob: async (_db: any, input: any) => { dispatches.push(input.agentId); return { ...input, id: 'job-test' }; } };
   if (name.endsWith('/common/utils/repo-resolution')) return { resolveIssueRepo: async () => ({ repoFullName: 'owner/repo' }) };
   if (name.endsWith('/common/utils/dispatch-counter')) return { checkWorkspaceDispatchBudget: async () => ({ allowed: true }), todayKey: () => '2026-10-01' };
   if (name.endsWith('/common/utils/issue-run-budget')) return { checkIssueRunBudget: async () => ({ withinBudget: true }) };
@@ -62,7 +65,7 @@ const qa = (id: string, extra = {}) => ({ id, workspaceId: 'ws', role: 'qa', ena
 function reset() {
   issue = { workspaceId: 'ws', identifier: 'TES-303', status: 'in_review', assigneeId: 'human', execution: { agentId: 'dev' },
     git: { repoFullName: 'owner/repo', prNumber: 1, prState: 'open', branch: 'pul/test' } };
-  dispatches = [];
+  dispatches = []; runners = {};
 }
 const run = () => qaDispatchTrigger.run({ params: { issueId: 'issue' }, data: { before: snapshot({ status: 'in_progress' }), after: snapshot(structuredClone(issue)) } });
 
@@ -121,4 +124,13 @@ test('automatic selection falls back when the first QA Runner is unavailable', a
   await run();
   assert.deepEqual(dispatches, ['fallback']);
   assert.equal(issue.qaAssigneeId, undefined);
+});
+
+test('automatic QA skips a Runner with an incompatible local identity and selects a prepared Runner', async () => {
+  reset(); agents = [qa('first', { runnerId: 'runner-first', kind: 'codex' }), qa('second', { runnerId: 'runner-second', kind: 'codex' })];
+  for (const id of ['first', 'second']) runners[`runner-${id}`] = { id: `runner-${id}`, workspaceId: 'ws', status: 'online', lastHeartbeatAt: new Date().toISOString(), readinessCheckedAt: new Date().toISOString(), connectedRepos: ['owner/repo'], readiness: { workspaceId: 'ws', identities: [{ agentId: id, kind: 'codex', role: id === 'first' ? 'dev' : 'qa' }], providers: { codex: { cli: true, session: true } }, repositories: [{ repo: 'owner/repo', accessible: true }] } };
+  await run();
+  assert.deepEqual(dispatches, ['second']);
+  assert.equal(issue.review.dispatchedTo, 'second');
+  assert.equal(issue.review.dispatchError, undefined);
 });

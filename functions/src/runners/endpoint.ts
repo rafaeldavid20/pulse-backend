@@ -1,3 +1,4 @@
+import { parseRunnerReadiness, runnerPreflight } from '../common/utils/runner-preflight';
 import { timingSafeEqual } from 'crypto';
 import { FieldValue, getFirestore } from 'firebase-admin/firestore';
 import { onRequest } from 'firebase-functions/v2/https';
@@ -6,7 +7,7 @@ import { mcpKeyPepper } from '../common/secrets';
 import { DEV_SCOPES, QA_SCOPES } from '../mcp/scopes';
 import { isRunnerAvailable } from '../common/utils/runner-availability';
 import { parseRunnerUsageReport } from '../common/utils/runner-usage';
-import { safeRunnerJobResult } from '../common/utils/runner-result';
+import { safeRunnerJobResult, safeRunnerFailure } from '../common/utils/runner-result';
 import { recordRunnerCompletion } from './record-completion';
 import { ReportReviewIncompleteAction } from '../actions/reviews/report-review-incomplete';
 
@@ -70,7 +71,14 @@ export const pulseRunnerHeartbeat = onRequest(
       return;
     }
     const now = new Date().toISOString();
-    await getFirestore().collection('runners').doc(runner.id).update({ status, lastHeartbeatAt: now, updatedAt: now });
+    let readiness;
+    try {
+      readiness = req.body?.readiness === undefined ? undefined : parseRunnerReadiness(req.body.readiness);
+      if (readiness && readiness.workspaceId !== runner.data.workspaceId) throw new Error('Runner workspace mismatch.');
+    } catch { res.status(400).json({ error: 'Invalid Runner readiness' }); return; }
+    await getFirestore().collection('runners').doc(runner.id).update({ status, lastHeartbeatAt: now, updatedAt: now,
+      ...(readiness ? { readiness, readinessCheckedAt: now } : {}),
+    });
     res.json({ runnerId: runner.id, status, lastHeartbeatAt: now });
   },
 );
@@ -116,17 +124,33 @@ export const pulseRunnerPoll = onRequest(
       res.json({ job: null });
       return;
     }
+    const preflight = runnerPreflight({ ...agent.data(), id: job.agentId }, { ...runner.data, id: runner.id }, job.workspaceId, job.contextRepos || [job.repoFullName], job.mode);
+    if (!preflight.ready) {
+      await db.collection('runner_jobs').doc(job.id).update({ status: 'canceled', completedAt: deliveredAt, result: preflight.problems.map((problem) => problem.message).join(' '), failure: { phase: 'preflight', category: 'configuration', correlationId: job.id } });
+      res.json({ job: null }); return;
+    }
     // Esta credencial sólo viaja en la respuesta HTTPS al Runner que probó
     // posesión de la credencial de dispositivo. No queda en runner_jobs.
     const { keyId, secret, fullKey, prefix } = generateApiKey();
+    let deliveredAgent = agent.data()!;
     const delivered = await db.runTransaction(async (transaction) => {
       const current = await transaction.get(db.collection('runner_jobs').doc(job.id));
       if (!current.exists || current.data()!.status !== 'pending') return false;
+      const [currentAgent, currentRunner] = await Promise.all([
+        transaction.get(db.collection('agents').doc(job.agentId)),
+        transaction.get(db.collection('runners').doc(runner.id)),
+      ]);
+      const check = runnerPreflight(currentAgent.exists ? { ...currentAgent.data(), id: job.agentId } : null, currentRunner.exists ? { ...currentRunner.data(), id: runner.id } : null, job.workspaceId, job.contextRepos || [job.repoFullName], job.mode);
+      if (!check.ready) {
+        transaction.update(current.ref, { status: 'canceled', completedAt: deliveredAt, result: check.problems.map((problem) => problem.message).join(' '), failure: { phase: 'preflight', category: 'configuration', correlationId: job.id } });
+        return false;
+      }
+      deliveredAgent = currentAgent.data()!;
       transaction.update(current.ref, { status: 'delivered', deliveredAt });
       transaction.set(db.collection('api_keys').doc(keyId), {
         id: keyId, workspaceId: job.workspaceId, name: `Runner job ${job.id}`,
         hash: hashApiKeySecret(secret, mcpKeyPepper.value()), prefix,
-        scopes: agent.data()!.role === 'qa' ? QA_SCOPES : DEV_SCOPES,
+        scopes: deliveredAgent.role === 'qa' ? QA_SCOPES : DEV_SCOPES,
         agentId: job.agentId, createdBy: runner.data.ownerMemberId, jobId: job.id,
         issueId: job.issueId, runnerId: runner.id, repoFullName: job.repoFullName,
         repoFullNames: job.contextRepos || [job.repoFullName],
@@ -138,7 +162,7 @@ export const pulseRunnerPoll = onRequest(
       res.json({ job: null });
       return;
     }
-    const agentData = agent.data()!;
+    const agentData = deliveredAgent;
     res.json({ job, agent: { kind: agentData.kind || 'claude', role: agentData.role || 'dev' }, mcpCredential: fullKey });
   },
 );
@@ -195,7 +219,7 @@ export const pulseRunnerComplete = onRequest(
     }
     const now = new Date().toISOString();
     const completion = await recordRunnerCompletion(
-      db, jobId, runner.id, provider, outcome, report, now, safeRunnerJobResult(req.body?.result),
+      db, jobId, runner.id, provider, outcome, report, now, safeRunnerJobResult(req.body?.result), safeRunnerFailure(req.body?.failure, jobId),
     );
     if (completion !== 'written') {
       if (['completed', 'failed', 'canceled'].includes(completion)) { res.json({ jobId, status: completion, alreadyCompleted: true }); return; }

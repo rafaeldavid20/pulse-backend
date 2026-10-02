@@ -1,6 +1,7 @@
 import { Firestore } from 'firebase-admin/firestore';
 import { sign } from 'crypto';
 import { nanoid } from 'nanoid';
+import { runnerPreflight } from './runner-preflight';
 import { RunnerJob } from '../domain.generated';
 
 // Un adaptador local puede necesitar instalar dependencias, ejecutar tests y
@@ -44,6 +45,20 @@ export async function enqueueRunnerJob(
     if (agent.data()?.archivedAt) {
       throw new Error('No se pueden emitir jobs para un agente archivado. Restauralo primero.');
     }
+    const runner = await transaction.get(db.collection('runners').doc(job.runnerId));
+    const preflight = runnerPreflight({ ...agent.data(), id: job.agentId }, runner.exists ? { ...runner.data(), id: job.runnerId } : null, job.workspaceId, contextRepos, job.mode);
+    if (!preflight.ready) throw new Error(`Preflight: ${preflight.problems.map((problem) => `${problem.message} ${problem.action}`).join(' ')}`);
+    const active = await transaction.get(db.collection('runner_jobs').where('runnerId', '==', job.runnerId));
+    const count = active.docs.filter((snap) => ['pending', 'delivered'].includes(snap.data().status) && (!Number.isFinite(Date.parse(snap.data().expiresAt)) || Date.parse(snap.data().expiresAt) > Date.now())).length;
+    if (count >= (runner.data()!.maxConcurrentJobs || 1)) throw new Error('El Runner ya alcanzó su capacidad de jobs activos.');
+    const issue = await transaction.get(db.collection('issues').doc(job.issueId));
+    const data = issue.data();
+    if (!issue.exists || data?.workspaceId !== job.workspaceId) throw new Error('El issue no existe en este workspace.');
+    if (job.mode === 'review') {
+      const reviewRepos = data?.gitRefs?.length ? data.gitRefs.filter((ref: any) => ref.prNumber !== undefined).map((ref: any) => ref.repoFullName) : data?.git?.prNumber !== undefined ? [data.git.repoFullName] : [];
+      if (!issue.exists || data?.workspaceId !== job.workspaceId || contextRepos.some((repo) => !reviewRepos.includes(repo))) throw new Error('Los repos de revisión deben pertenecer a los PRs del issue en este workspace.');
+    }
+    transaction.update(db.collection('runners').doc(job.runnerId), { lastDispatchAt: issuedAt });
     transaction.update(agentRef, { runnerJobDispatchAt: issuedAt });
     transaction.create(db.collection('runner_jobs').doc(job.id), { ...job, status: 'pending', createdAt: issuedAt });
   });

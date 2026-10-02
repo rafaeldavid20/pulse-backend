@@ -1,3 +1,4 @@
+import { runnerPreflight } from '../common/utils/runner-preflight';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { getFirestore, Transaction, FieldValue } from 'firebase-admin/firestore';
 import { nanoid } from 'nanoid';
@@ -160,6 +161,7 @@ export const qaDispatchTrigger = onDocumentWritten(
           const candidateRunnerSnap = await db.collection('runners').doc(candidate.data().runnerId).get();
           if (!candidateRunnerSnap.exists || candidateRunnerSnap.data()!.workspaceId !== workspaceId || !isRunnerAvailable(candidateRunnerSnap.data()!)) continue;
           const candidateRunner = candidateRunnerSnap.data()!;
+          if (!runnerPreflight({ ...candidate.data(), id: candidate.id }, { ...candidateRunner, id: candidateRunnerSnap.id }, workspaceId, reviewRepos, 'review').ready) continue;
           if (reviewRepos.some((repo) => !candidateRunner.connectedRepos?.includes(repo))) continue;
           try {
             await assertRunnerCapacity(db, candidateRunner.id, candidateRunner.maxConcurrentJobs || 1);
@@ -191,6 +193,8 @@ export const qaDispatchTrigger = onDocumentWritten(
           return;
         }
         runner = runnerSnap.data()!;
+        const preflight = runnerPreflight({ ...qaAgent, id: qaAgentId }, { ...runner, id: runnerId }, workspaceId, reviewRepos, 'review');
+        if (!preflight.ready) { await recordDispatchError(preflight.problems.map((problem) => `${problem.message} ${problem.action}`).join(' ')); return; }
         try {
           await assertRunnerCapacity(db, runnerId, runner.maxConcurrentJobs || 1);
         } catch {
