@@ -4,6 +4,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { McpPrincipal } from '../auth';
 import { textResult, findTeamByKey } from './read';
+import { filterUnarchivedAgents } from '../../common/utils/agent-lifecycle';
 
 export function registerWorkspaceReadTools(server: McpServer, principal: McpPrincipal) {
   const db = getFirestore();
@@ -99,7 +100,7 @@ export function registerWorkspaceReadTools(server: McpServer, principal: McpPrin
     {},
     async () => {
       const snap = await db.collection('agents').where('workspaceId', '==', principal.workspaceId).get();
-      return textResult(snap.docs.map((d) => d.data()).filter((agent) => !agent.archivedAt));
+      return textResult(filterUnarchivedAgents(snap.docs.map((d) => d.data())));
     }
   );
 
