@@ -1,3 +1,4 @@
+import { PreflightAgentAction } from '../actions/runners/preflight-agent';
 import { PlatformActionRequest, PlatformActionResponse } from '../common/platform-actions/interfaces';
 import { CreateIssueAction } from '../actions/issues/create-issue';
 import { UpdateIssueAction } from '../actions/issues/update-issue';
@@ -135,6 +136,8 @@ export async function dispatchPlatformAction(
       return new DisconnectRepoAction(request, callerUid, callerEmail).run();
     case 'agents.getQaCalibration':
       return new GetQaCalibrationAction(request, callerUid, callerEmail).run();
+    case 'runners.preflight':
+      return new PreflightAgentAction(request, callerUid, callerEmail).run();
     case 'runners.register':
       return new RegisterRunnerAction(request, callerUid, callerEmail).run();
     case 'runners.issueJob':

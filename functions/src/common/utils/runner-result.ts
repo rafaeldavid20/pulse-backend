@@ -9,3 +9,9 @@ export function safeRunnerJobResult(value: unknown): string | null {
   const summary = redacted.slice(-500).trim();
   return summary || null;
 }
+
+export interface RunnerFailure { phase: string; category: 'configuration' | 'local_preparation' | 'execution'; correlationId: string }
+export function safeRunnerFailure(value: any, jobId: string): RunnerFailure | null {
+  if (!value || typeof value.phase !== 'string' || !/^[a-z-]{1,60}$/.test(value.phase) || !['configuration', 'local_preparation', 'execution'].includes(value.category)) return null;
+  return { phase: value.phase, category: value.category, correlationId: jobId };
+}

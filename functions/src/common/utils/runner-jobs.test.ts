@@ -31,13 +31,21 @@ test('emitir un job comprueba que el agente siga activo y serializa el alta con 
   const writes: Array<{ kind: string; ref: any; value: any }> = [];
   const db = {
     collection(name: string) {
-      return { doc(id: string) { return { collection: name, id }; } };
+      return { doc(id: string) { return { collection: name, id }; }, where() { return { collection: name }; } };
     },
     async runTransaction(work: (transaction: any) => Promise<void>) {
       const transaction = {
         async get(ref: any) {
-          assert.equal(ref.collection, 'agents');
-          return { exists: true, data: () => ({ workspaceId: 'ws-1' }) };
+          if (ref.collection === 'issues') return { exists: true, data: () => ({ workspaceId: 'ws-1' }) };
+          if (ref.collection === 'runner_jobs') return { docs: [] };
+          if (ref.collection === 'runners') return { exists: true, data: () => ({
+            workspaceId: 'ws-1', id: 'runner-123456789012', status: 'online', lastHeartbeatAt: new Date().toISOString(),
+            connectedRepos: ['owner/repo'], readinessCheckedAt: new Date().toISOString(), readiness: {
+              workspaceId: 'ws-1', identities: [{ agentId: 'agent-1', kind: 'codex', role: 'dev' }],
+              providers: { codex: { cli: true, session: true } }, repositories: [{ repo: 'owner/repo', accessible: true }],
+            },
+          }) };
+          return { exists: true, data: () => ({ workspaceId: 'ws-1', enabled: true, kind: 'codex', role: 'dev', runnerId: 'runner-123456789012', allowedRepos: ['owner/repo'] }) };
         },
         update(ref: any, value: any) { writes.push({ kind: 'update', ref, value }); },
         create(ref: any, value: any) { writes.push({ kind: 'create', ref, value }); },
@@ -51,7 +59,8 @@ test('emitir un job comprueba que el agente siga activo y serializa el alta con 
     repoFullName: 'owner/repo', mode: 'task',
   }, privateKey.export({ type: 'pkcs8', format: 'pem' }).toString());
 
-  assert.equal(writes.length, 2);
+  assert.equal(writes.length, 3);
+  assert.equal(writes.shift()!.ref.collection, 'runners');
   assert.equal(writes[0].kind, 'update');
   assert.equal(writes[0].ref.collection, 'agents');
   assert.equal(writes[0].value.runnerJobDispatchAt, job.issuedAt);
@@ -65,7 +74,7 @@ test('la emisión de jobs rechaza agentes archivados antes de escribir el job', 
   const writes: unknown[] = [];
   const db = {
     collection(name: string) {
-      return { doc(id: string) { return { collection: name, id }; } };
+      return { doc(id: string) { return { collection: name, id }; }, where() { return { collection: name }; } };
     },
     async runTransaction(work: (transaction: any) => Promise<void>) {
       await work({
