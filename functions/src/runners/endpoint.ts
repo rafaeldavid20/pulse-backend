@@ -1,3 +1,4 @@
+import { configureRunnerRepos } from './configure-repos';
 import { parseRunnerReadiness, runnerPreflight } from '../common/utils/runner-preflight';
 import { timingSafeEqual } from 'crypto';
 import { FieldValue, getFirestore } from 'firebase-admin/firestore';
@@ -76,10 +77,21 @@ export const pulseRunnerHeartbeat = onRequest(
       readiness = req.body?.readiness === undefined ? undefined : parseRunnerReadiness(req.body.readiness);
       if (readiness && readiness.workspaceId !== runner.data.workspaceId) throw new Error('Runner workspace mismatch.');
     } catch { res.status(400).json({ error: 'Invalid Runner readiness' }); return; }
+    const jobId = req.body?.jobId;
+    if (jobId !== undefined && typeof jobId !== 'string') { res.status(400).json({ error: 'Invalid jobId' }); return; }
+    let cancelRequested = false;
+    if (jobId) {
+      const snap = await getFirestore().collection('runner_jobs').doc(jobId).get();
+      if (!snap.exists || snap.data()!.runnerId !== runner.id || snap.data()!.workspaceId !== runner.data.workspaceId) {
+        res.status(404).json({ error: 'Runner job not found' }); return;
+      }
+      const job = snap.data()!;
+      cancelRequested = !!job.cancelRequestedAt || job.status !== 'delivered' || Date.parse(job.expiresAt) <= Date.now();
+    }
     await getFirestore().collection('runners').doc(runner.id).update({ status, lastHeartbeatAt: now, updatedAt: now,
       ...(readiness ? { readiness, readinessCheckedAt: now } : {}),
     });
-    res.json({ runnerId: runner.id, status, lastHeartbeatAt: now });
+    res.json({ runnerId: runner.id, status, lastHeartbeatAt: now, cancelRequested });
   },
 );
 
@@ -176,13 +188,13 @@ export const pulseRunnerConfigure = onRequest(
     if (req.method !== 'POST') { res.status(405).json({ error: 'Method Not Allowed' }); return; }
     const runner = await authenticateRunner(req.headers.authorization);
     if (!runner) { res.status(401).json({ error: 'Invalid runner credential' }); return; }
-    const repos = req.body?.connectedRepos;
-    if (!Array.isArray(repos) || repos.some((repo) => typeof repo !== 'string' || !/^[^/\s]+\/[^/\s]+$/.test(repo))) {
-      res.status(400).json({ error: 'connectedRepos must contain owner/repo strings' }); return;
+    try {
+      const connectedRepos = await configureRunnerRepos(getFirestore(), runner.id, req.body?.connectedRepos);
+      res.json({ runnerId: runner.id, connectedRepos });
+    } catch (error) {
+      const status = [400, 401, 403].includes((error as any).status) ? (error as any).status : 500;
+      res.status(status).json({ error: status === 500 ? 'Could not configure Runner repositories.' : 'Invalid repository scope; expansion requires owner/admin approval in Pulse.' });
     }
-    const connectedRepos = Array.from(new Set(repos));
-    await getFirestore().collection('runners').doc(runner.id).update({ connectedRepos, updatedAt: new Date().toISOString() });
-    res.json({ runnerId: runner.id, connectedRepos });
   },
 );
 
@@ -196,7 +208,7 @@ export const pulseRunnerComplete = onRequest(
     const runner = await authenticateRunner(req.headers.authorization);
     if (!runner) { res.status(401).json({ error: 'Invalid runner credential' }); return; }
     const jobId = req.body?.jobId;
-    const outcome = req.body?.outcome;
+    let outcome = req.body?.outcome;
     if (typeof jobId !== 'string' || !['completed', 'failed', 'canceled'].includes(outcome)) {
       res.status(400).json({ error: 'jobId y outcome válido son obligatorios' }); return;
     }
@@ -225,6 +237,7 @@ export const pulseRunnerComplete = onRequest(
       if (['completed', 'failed', 'canceled'].includes(completion)) { res.json({ jobId, status: completion, alreadyCompleted: true }); return; }
       res.status(completion === 'missing' ? 404 : 409).json({ error: 'Runner job is not completable' }); return;
     }
+    outcome = (await jobRef.get()).data()!.status;
     // Un job exitoso puede liberar un handoff inmediatamente. El proceso
     // local todavía envía su heartbeat final en el `finally`, pero marcarlo
     // online acá evita que ese trigger vea el estado transitorio `busy` y

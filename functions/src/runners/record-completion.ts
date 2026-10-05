@@ -15,9 +15,10 @@ export async function recordRunnerCompletion(
     if (['completed', 'failed', 'canceled'].includes(job.status)) return job.status;
     if (job.status !== 'delivered' || new Date(job.expiresAt).getTime() <= Date.now()) return 'expired';
     if (!runSnap.exists || runSnap.data()!.workspaceId !== job.workspaceId || runSnap.data()!.issueId !== job.issueId || runSnap.data()!.agentId !== job.agentId || runSnap.data()!.runnerId !== runnerId) return 'mismatch';
-    transaction.update(jobRef, { status: outcome, completedAt: now, result, failure });
+    const finalOutcome = job.cancelRequestedAt ? 'canceled' : outcome;
+    transaction.update(jobRef, { status: finalOutcome, completedAt: now, result, failure: finalOutcome === 'canceled' ? null : failure });
     transaction.update(runRef, {
-      provider, runnerOutcome: outcome, usage: report.usage,
+      provider, runnerOutcome: finalOutcome, usage: report.usage,
       ...(report.costUsd === undefined ? {} : { costUsd: report.costUsd }),
     });
     return 'written';

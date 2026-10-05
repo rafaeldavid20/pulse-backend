@@ -37,6 +37,7 @@ export type PlatformActionCode =
   | 'runners.rotateCredential'
   | 'runners.listJobs'
   | 'runners.retryJob'
+  | 'runners.cancelJob'
   | 'issues.claim'
   | 'issues.claimNext'
   | 'issues.release'
