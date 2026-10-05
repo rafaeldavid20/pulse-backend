@@ -66,6 +66,7 @@ import { DismissFindingAction } from '../actions/reviews/dismiss-finding';
 import { ReviewsRerunAction } from '../actions/reviews/rerun-review';
 import { ReturnToAgentAction } from '../actions/reviews/return-to-agent';
 import { RegisterRunnerAction } from '../actions/runners/register-runner';
+import { CancelRunnerJobAction } from '../actions/runners/cancel-runner-job';
 import { IssueRunnerJobAction, RetryRunnerJobAction } from '../actions/runners/issue-runner-job';
 import { ListRunnerJobsAction, ListRunnersAction, RevokeRunnerAction, RotateRunnerCredentialAction } from '../actions/runners/manage-runners';
 
@@ -142,6 +143,8 @@ export async function dispatchPlatformAction(
       return new RegisterRunnerAction(request, callerUid, callerEmail).run();
     case 'runners.issueJob':
       return new IssueRunnerJobAction(request, callerUid, callerEmail).run();
+    case 'runners.cancelJob':
+      return new CancelRunnerJobAction(request, callerUid, callerEmail).run();
     case 'runners.retryJob':
       return new RetryRunnerJobAction(request, callerUid, callerEmail).run();
     case 'runners.list':
