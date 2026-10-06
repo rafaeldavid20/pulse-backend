@@ -133,20 +133,22 @@ test('emulator: la credencial de job sólo puede señalar su issue y repo', asyn
   assert.equal(await jobCanAccessArgs(principal, { identifier: issueId }, jobToolRequiresExplicitRepo('pulse_create_branch')), false);
 });
 
-test('emulator: no se vincula un agente a un Runner que no cubre sus repos existentes', async () => {
+test('emulator: vincular un agente no requiere duplicar los repos del proyecto en el Runner', async () => {
   await seed();
   await db.collection('agents').doc(agentId).update({ allowedRepos: ['owner/repo'] });
   await db.collection('runners').doc(runnerId).update({ connectedRepos: ['owner/other'] });
   const result = await new UpdateAgentAction({ actionCode: 'agents.update', data: { agentId, runnerId } }, ownerId).run();
-  assert.equal(result.success, false);
+  assert.equal(result.success, true);
+  assert.equal((await db.collection('agents').doc(agentId).get()).data()?.runnerId, runnerId);
 });
 
-test('emulator: un admin tampoco puede vincular un agente público a un Runner sin sus repos', async () => {
+test('emulator: un admin puede vincular un agente público sin allowlist duplicada', async () => {
   await seed();
   await db.collection('agents').doc(agentId).update({ visibility: 'public', allowedRepos: ['owner/repo'] });
   await db.collection('runners').doc(runnerId).update({ connectedRepos: ['owner/other'] });
   const result = await new UpdateAgentAction({ actionCode: 'agents.update', data: { agentId, runnerId } }, adminId).run();
-  assert.equal(result.success, false);
+  assert.equal(result.success, true);
+  assert.equal((await db.collection('agents').doc(agentId).get()).data()?.runnerId, runnerId);
 });
 
 test('emulator: el historial de jobs no filtra actividad de Runners ajenos', async () => {

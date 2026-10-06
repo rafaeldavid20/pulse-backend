@@ -58,4 +58,3 @@ export class CancelRunnerJobAction extends PlatformActionHandler {
     return result;
   }
 }
-

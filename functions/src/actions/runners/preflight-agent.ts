@@ -24,7 +24,7 @@ export class PreflightAgentAction extends PlatformActionHandler {
     if (runner && (runner as any).ownerMemberId !== this.caller.uid && !isWorkspaceAdmin(caller)) throw new Error('Solo el dueño o un admin puede consultar este Runner.');
     const requested = this.action.data.repos;
     if (!Array.isArray(requested) || requested.length > 100 || requested.some((repo) => typeof repo !== 'string' || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo))) throw new Error('repos debe contener repositorios owner/repo.');
-    const result = runnerPreflight(agent, runner, agent.workspaceId, requested, agent.role === 'qa' ? 'review' : 'task');
+    const result = runnerPreflight(agent, runner, agent.workspaceId, requested, agent.role === 'qa' ? 'review' : 'task', Date.now(), true);
     if (runner) {
       const jobs = await db.collection('runner_jobs').where('runnerId', '==', agent.runnerId).get();
       const active = jobs.docs.filter((job) => ['pending', 'delivered'].includes(job.data().status) && Date.parse(job.data().expiresAt) > Date.now()).length;

@@ -5,7 +5,7 @@ import { enqueueRunnerJob, signRunnerJob, runnerJobPayload } from './runner-jobs
 import { isRunnerAvailable } from './runner-availability';
 
 const unsigned = {
-  id: 'rjob-example', workspaceId: 'ws-1', issueId: 'issue-1', agentId: 'agent-1',
+  id: 'rjob-example', workspaceId: 'ws-1', projectId: 'project-1', protocolVersion: 2 as const, issueId: 'issue-1', agentId: 'agent-1',
   runnerId: 'runner-123456789012', repoFullName: 'owner/repo', contextRepos: ['owner/app', 'owner/repo'], mode: 'task' as const,
   issuedAt: '2026-09-24T00:00:00.000Z', expiresAt: '2026-09-24T00:05:00.000Z',
   signatureAlgorithm: 'ed25519' as const, signingKeyId: 'runner-job-v1',
@@ -31,17 +31,19 @@ test('emitir un job comprueba que el agente siga activo y serializa el alta con 
   const writes: Array<{ kind: string; ref: any; value: any }> = [];
   const db = {
     collection(name: string) {
-      return { doc(id: string) { return { collection: name, id }; }, where() { return { collection: name }; } };
+      return { doc(id: string) { return { collection: name, id }; }, where() { return { collection: name, limit() { return this; } }; } };
     },
     async runTransaction(work: (transaction: any) => Promise<void>) {
       const transaction = {
         async get(ref: any) {
-          if (ref.collection === 'issues') return { exists: true, data: () => ({ workspaceId: 'ws-1' }) };
+          if (ref.collection === 'issues') return { exists: true, data: () => ({ workspaceId: 'ws-1', projectId: 'project-1' }) };
+          if (ref.collection === 'projects') return { exists: true, data: () => ({ workspaceId: 'ws-1', repoFullNames: ['owner/repo'] }) };
+          if (ref.collection === 'github_installations') return { empty: false, docs: [{ data: () => ({repositoryFullNames: ['owner/repo']}) }] };
           if (ref.collection === 'runner_jobs') return { docs: [] };
           if (ref.collection === 'runners') return { exists: true, data: () => ({
             workspaceId: 'ws-1', id: 'runner-123456789012', status: 'online', lastHeartbeatAt: new Date().toISOString(),
             connectedRepos: ['owner/repo'], readinessCheckedAt: new Date().toISOString(), readiness: {
-              workspaceId: 'ws-1', identities: [{ agentId: 'agent-1', kind: 'codex', role: 'dev' }],
+              workspaceId: 'ws-1', jobProtocolVersion: 2, identities: [{ agentId: 'agent-1', kind: 'codex', role: 'dev' }],
               providers: { codex: { cli: true, session: true } }, repositories: [{ repo: 'owner/repo', accessible: true }],
             },
           }) };
@@ -74,7 +76,7 @@ test('la emisión de jobs rechaza agentes archivados antes de escribir el job', 
   const writes: unknown[] = [];
   const db = {
     collection(name: string) {
-      return { doc(id: string) { return { collection: name, id }; }, where() { return { collection: name }; } };
+      return { doc(id: string) { return { collection: name, id }; }, where() { return { collection: name, limit() { return this; } }; } };
     },
     async runTransaction(work: (transaction: any) => Promise<void>) {
       await work({

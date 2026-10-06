@@ -2,6 +2,7 @@ import { Firestore } from 'firebase-admin/firestore';
 import { sign } from 'crypto';
 import { nanoid } from 'nanoid';
 import { runnerPreflight } from './runner-preflight';
+import { currentRunnerProjectAccess } from './project-repos';
 import { RunnerJob } from '../domain.generated';
 
 // Un adaptador local puede necesitar instalar dependencias, ejecutar tests y
@@ -17,7 +18,8 @@ export function runnerJobPayload(job: Omit<RunnerJob, 'signature'>): string {
   // La lista explícita evita que campos operativos agregados al documento de
   // Firestore (p. ej. deliveredAt) alteren la verificación del Runner.
   const contextRepos = [...new Set(job.contextRepos || [job.repoFullName])].sort().join(',');
-  return [job.id, job.workspaceId, job.issueId, job.agentId, job.runnerId, job.repoFullName, contextRepos, job.mode, job.issuedAt, job.expiresAt, job.signatureAlgorithm, job.signingKeyId].join('.');
+  const fields = [job.id, job.workspaceId, job.issueId, job.agentId, job.runnerId, job.repoFullName, contextRepos, job.mode, job.issuedAt, job.expiresAt, job.signatureAlgorithm, job.signingKeyId];
+  return (job.protocolVersion === 2 ? [...fields, job.protocolVersion, job.projectId] : fields).join('.');
 }
 
 export function signRunnerJob(job: Omit<RunnerJob, 'signature'>, privateKey: string): string {
@@ -35,7 +37,7 @@ export async function enqueueRunnerJob(
   const expiresAt = new Date(Date.now() + JOB_TTL_MS).toISOString();
   const contextRepos = [...new Set(input.contextRepos || [input.repoFullName])].sort();
   const unsigned = { id: `rjob-${nanoid(12)}`, ...input, contextRepos, issuedAt, expiresAt, signatureAlgorithm: 'ed25519' as const, signingKeyId };
-  const job: RunnerJob = { ...unsigned, signature: signRunnerJob(unsigned, privateKey) };
+  let job: RunnerJob = { ...unsigned, signature: '' };
   const agentRef = db.collection('agents').doc(job.agentId);
   await db.runTransaction(async (transaction) => {
     const agent = await transaction.get(agentRef);
@@ -46,18 +48,15 @@ export async function enqueueRunnerJob(
       throw new Error('No se pueden emitir jobs para un agente archivado. Restauralo primero.');
     }
     const runner = await transaction.get(db.collection('runners').doc(job.runnerId));
-    const preflight = runnerPreflight({ ...agent.data(), id: job.agentId }, runner.exists ? { ...runner.data(), id: job.runnerId } : null, job.workspaceId, contextRepos, job.mode);
+    const preflight = runnerPreflight({ ...agent.data(), id: job.agentId }, runner.exists ? { ...runner.data(), id: job.runnerId } : null, job.workspaceId, contextRepos, job.mode, Date.now(), true);
     if (!preflight.ready) throw new Error(`Preflight: ${preflight.problems.map((problem) => `${problem.message} ${problem.action}`).join(' ')}`);
     const active = await transaction.get(db.collection('runner_jobs').where('runnerId', '==', job.runnerId));
     const count = active.docs.filter((snap) => ['pending', 'delivered'].includes(snap.data().status) && (!Number.isFinite(Date.parse(snap.data().expiresAt)) || Date.parse(snap.data().expiresAt) > Date.now())).length;
     if (count >= (runner.data()!.maxConcurrentJobs || 1)) throw new Error('El Runner ya alcanzó su capacidad de jobs activos.');
-    const issue = await transaction.get(db.collection('issues').doc(job.issueId));
-    const data = issue.data();
-    if (!issue.exists || data?.workspaceId !== job.workspaceId) throw new Error('El issue no existe en este workspace.');
-    if (job.mode === 'review') {
-      const reviewRepos = data?.gitRefs?.length ? data.gitRefs.filter((ref: any) => ref.prNumber !== undefined).map((ref: any) => ref.repoFullName) : data?.git?.prNumber !== undefined ? [data.git.repoFullName] : [];
-      if (!issue.exists || data?.workspaceId !== job.workspaceId || contextRepos.some((repo) => !reviewRepos.includes(repo))) throw new Error('Los repos de revisión deben pertenecer a los PRs del issue en este workspace.');
-    }
+    const access = await currentRunnerProjectAccess(db, job, transaction);
+    if (!access) throw new Error('El proyecto del issue debe declarar repos autorizados en este workspace; el contexto de revisión debe pertenecer a sus PRs.');
+    const envelope = { ...unsigned, projectId: access.projectId, protocolVersion: 2 as const };
+    job = { ...envelope, signature: signRunnerJob(envelope, privateKey) };
     transaction.update(db.collection('runners').doc(job.runnerId), { lastDispatchAt: issuedAt });
     transaction.update(agentRef, { runnerJobDispatchAt: issuedAt });
     transaction.create(db.collection('runner_jobs').doc(job.id), { ...job, status: 'pending', createdAt: issuedAt });

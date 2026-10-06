@@ -10,7 +10,8 @@ import { buildNeedsHumanEscalation } from '../common/utils/review-escalation';
 import { agentAllowedRepos, agentVisibility } from '../common/utils/agent-authorization';
 import { enqueueRunnerJob } from '../common/utils/runner-jobs';
 import { isRunnerAvailable } from '../common/utils/runner-availability';
-import { allowedReposForIssue } from '../common/utils/project-repos';
+import { runnerPreflightForDispatch } from '../common/utils/runner-preflight';
+import { runnerProjectAccessForDispatch } from '../common/utils/project-repos';
 
 // Un run tarda ~30s en arrancar y reclamar el issue (ver `agent.state ===
 // 'claimed'` en claim-issue.ts), así que ese guard solo no alcanza para
@@ -20,21 +21,6 @@ import { allowedReposForIssue } from '../common/utils/project-repos';
 const DISPATCH_COOLDOWN_MS = 10 * 60 * 1000;
 
 const DEFAULT_MAX_REVIEW_ATTEMPTS = 2;
-
-/** Repos que un Runner puede montar juntos para un único job, sin salir del proyecto ni de sus allow-lists. */
-async function runnerContextRepos(
-  db: FirebaseFirestore.Firestore,
-  issue: FirebaseFirestore.DocumentData,
-  agent: FirebaseFirestore.DocumentData,
-  runner: FirebaseFirestore.DocumentData,
-  installationRepos: string[],
-): Promise<string[]> {
-  const projectRepos = await allowedReposForIssue(db, issue, installationRepos);
-  const agentRepos = agentAllowedRepos(agent);
-  return projectRepos.filter((repo) =>
-    runner.connectedRepos?.includes(repo) && (agentRepos.length === 0 || agentRepos.includes(repo))
-  );
-}
 
 /**
  * Despacha el run de re-trabajo del dev tras un rechazo de QA (D9): sin este
@@ -127,6 +113,11 @@ async function dispatchRework(
     return;
   }
   const installation = installSnap.docs[0].data();
+  if (agent.runnerId) {
+    const snap = await db.collection('runners').doc(agent.runnerId).get();
+    const runner = snap.exists ? { ...snap.data(), id: agent.runnerId } : null;
+    if (!await runnerPreflightForDispatch(db, issueId, { ...agent, id: agentId }, runner, workspaceId, [], 'rework')) return;
+  }
 
   const issueRef = db.collection('issues').doc(issueId);
   const decision = await db.runTransaction(async (tx: Transaction) => {
@@ -200,13 +191,14 @@ async function dispatchRework(
       console.log(`[AgentDispatch] rework for '${issueId}': runner '${agent.runnerId}' is offline, revoked, or has an expired heartbeat, skipping.`);
       return;
     }
-    if (!Array.isArray(runner.connectedRepos) || !runner.connectedRepos.includes(repoFullName)) {
-      console.log(`[AgentDispatch] rework for '${issueId}': runner '${agent.runnerId}' is not connected to '${repoFullName}', skipping.`);
+    const projectAccess = await runnerProjectAccessForDispatch(db, { ...after, id: issueId, workspaceId }, authorized, repoFullName);
+    if (!projectAccess) {
+      console.log(`[AgentDispatch] rework for '${issueId}': '${repoFullName}' is not authorized by its project, skipping.`);
       return;
     }
-    const contextRepos = await runnerContextRepos(db, after, agent, runner, authorized);
+    const contextRepos = projectAccess.repos;
     const job = await enqueueRunnerJob(db, {
-      workspaceId, issueId, agentId, runnerId: agent.runnerId, repoFullName, contextRepos, mode: 'rework',
+      workspaceId, projectId: projectAccess.projectId, issueId, agentId, runnerId: agent.runnerId, repoFullName, contextRepos, mode: 'rework',
     }, runnerJobSigningPrivateKey.value());
     await db.collection('agent_runs').doc(job.id).set({
       id: job.id, issueId, workspaceId, agentId, role: 'dev', mode: 'rework', repo: repoFullName,
@@ -343,6 +335,7 @@ async function dispatchHandoff(
   // sin el repo, el entry quedaría marcado como enviado sin ningún job que lo
   // pueda completar (exactamente el estado que después no se puede reintentar).
   let runner: FirebaseFirestore.DocumentData | undefined;
+  let projectAccess: Awaited<ReturnType<typeof runnerProjectAccessForDispatch>> = null;
   if (agent.runnerId) {
     const runnerSnap = await db.collection('runners').doc(agent.runnerId).get();
     if (!runnerSnap.exists || runnerSnap.data()!.workspaceId !== workspaceId) {
@@ -350,10 +343,12 @@ async function dispatchHandoff(
       return;
     }
     runner = runnerSnap.data()!;
-    if (!isRunnerAvailable(runner) || !runner.connectedRepos?.includes(targetRepo)) {
-      console.log(`[AgentDispatch] handoff for '${issueId}': runner '${agent.runnerId}' is unavailable or lacks '${targetRepo}', skipping.`);
+    projectAccess = await runnerProjectAccessForDispatch(db, { ...after, id: issueId, workspaceId }, authorized, targetRepo);
+    if (!projectAccess) {
+      console.log(`[AgentDispatch] handoff for '${issueId}': Runner unavailable or '${targetRepo}' is not authorized by its project, skipping.`);
       return;
     }
+    if (!await runnerPreflightForDispatch(db, issueId, { ...agent, id: agentId }, { ...runner, id: agent.runnerId }, workspaceId, projectAccess.repos, 'handoff')) return;
   }
 
   const issueRef = db.collection('issues').doc(issueId);
@@ -384,9 +379,9 @@ async function dispatchHandoff(
   // GitHub Actions dejaba el Runner sin el repo destino y el workflow podía
   // quedar skipped para adaptadores locales.
   if (agent.runnerId) {
-    const contextRepos = await runnerContextRepos(db, after, agent, runner!, authorized);
+    const contextRepos = projectAccess!.repos;
     const job = await enqueueRunnerJob(db, {
-      workspaceId, issueId, agentId, runnerId: agent.runnerId, repoFullName: targetRepo, contextRepos, mode: 'handoff',
+      workspaceId, projectId: projectAccess!.projectId, issueId, agentId, runnerId: agent.runnerId, repoFullName: targetRepo, contextRepos, mode: 'handoff',
     }, runnerJobSigningPrivateKey.value());
     await db.collection('agent_runs').doc(job.id).set({
       id: job.id, issueId, workspaceId, agentId, role: 'dev', mode: 'handoff', repo: targetRepo,
@@ -466,6 +461,7 @@ export const agentDispatchTrigger = onDocumentWritten(
     try {
       const before = event.data?.before.data();
       const after = event.data?.after.data();
+      if (after) after.id = event.params.issueId;
       if (!after) return; // deleted
 
       // Dispara cuando el issue *se vuelve* despachable: está en `todo` con un
@@ -624,17 +620,16 @@ export const agentDispatchTrigger = onDocumentWritten(
         console.log(`[AgentDispatch] '${preflightRepo.repoFullName}' is not in this workspace's GitHub installation, skipping dispatch.`);
         return;
       }
-      if (allowedRepos.length > 0 && !allowedRepos.includes(preflightRepo.repoFullName)) {
+      if (!agent.runnerId && allowedRepos.length > 0 && !allowedRepos.includes(preflightRepo.repoFullName)) {
         console.log(`[AgentDispatch] agent '${agentId}' is not connected to '${preflightRepo.repoFullName}', skipping dispatch.`);
         return;
       }
       if (agent.runnerId) {
         const runnerSnap = await db.collection('runners').doc(agent.runnerId).get();
         const runner = runnerSnap.exists ? runnerSnap.data()! : null;
-        if (!runner || runner.workspaceId !== workspaceId || !isRunnerAvailable(runner) || !runner.connectedRepos?.includes(preflightRepo.repoFullName)) {
-          console.log(`[AgentDispatch] runner '${agent.runnerId}' is missing, offline, or lacks '${preflightRepo.repoFullName}', skipping dispatch.`);
-          return;
-        }
+        const projectAccess = await runnerProjectAccessForDispatch(db, { ...after, workspaceId }, preflightAuthorized, preflightRepo.repoFullName);
+        if (!projectAccess) return;
+        if (!await runnerPreflightForDispatch(db, event.params.issueId, { ...agent, id: agentId }, runner ? { ...runner, id: agent.runnerId } : null, workspaceId, projectAccess.repos, 'task')) return;
       }
 
       const issueRef = db.collection('issues').doc(event.params.issueId);
@@ -710,7 +705,7 @@ export const agentDispatchTrigger = onDocumentWritten(
         );
         return;
       }
-      if (allowedRepos.length > 0 && !allowedRepos.includes(repoFullName)) {
+      if (!agent.runnerId && allowedRepos.length > 0 && !allowedRepos.includes(repoFullName)) {
         console.log(
           `[AgentDispatch] agent '${agentId}' is not connected to '${repoFullName}', skipping dispatch.`
         );
@@ -733,13 +728,15 @@ export const agentDispatchTrigger = onDocumentWritten(
           console.log(`[AgentDispatch] runner '${agent.runnerId}' is offline, revoked, or has an expired heartbeat, skipping dispatch.`);
           return;
         }
-        if (!Array.isArray(runner.connectedRepos) || !runner.connectedRepos.includes(repoFullName)) {
-          console.log(`[AgentDispatch] runner '${agent.runnerId}' is not connected to '${repoFullName}', skipping dispatch.`);
+        const projectAccess = await runnerProjectAccessForDispatch(db, { ...after, id: event.params.issueId, workspaceId }, authorized, repoFullName);
+        if (!projectAccess) {
+          console.log(`[AgentDispatch] '${repoFullName}' is not authorized by the issue project, skipping Runner dispatch.`);
           return;
         }
-        const contextRepos = await runnerContextRepos(db, after, agent, runner, authorized);
+        const contextRepos = projectAccess.repos;
         const job = await enqueueRunnerJob(db, {
           workspaceId,
+          projectId: projectAccess.projectId,
           issueId: event.params.issueId,
           agentId,
           runnerId: agent.runnerId,

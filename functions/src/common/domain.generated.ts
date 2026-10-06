@@ -5,7 +5,7 @@
 // dominio de Pulse. Para cambiar algo de acá, editá ese archivo y corré
 // `npm run sync:types` desde `pulse-app`.
 //
-// SOURCE_HASH: 0dcd68054eb597b8
+// SOURCE_HASH: 503f144b390cfb98
 // ============================================================
 
 /**
@@ -79,7 +79,8 @@ export interface Runner {
   publicKey: string;
   status: RunnerStatus;
   maxConcurrentJobs: number;
-  connectedRepos: string[];
+  /** @deprecated La autorización de repos se deriva del proyecto del issue. */
+  connectedRepos?: string[];
   lastHeartbeatAt?: string;
   /** Revocar desactiva la credencial del dispositivo sin borrar la auditoría. */
   revokedAt?: string;
@@ -89,8 +90,12 @@ export interface Runner {
 
 /** Payload mínimo, firmado y de vida corta que un runner acepta ejecutar. */
 export interface RunnerJob {
+  /** Absent for queued v1 jobs. V2 signs projectId with the existing Ed25519 key. */
+  protocolVersion?: 2;
   id: string;
   workspaceId: string;
+  /** Signed in protocol v2; absent only on queued legacy jobs. */
+  projectId?: string;
   issueId: string;
   agentId: string;
   runnerId: string;

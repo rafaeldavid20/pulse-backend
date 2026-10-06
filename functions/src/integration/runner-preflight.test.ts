@@ -16,7 +16,9 @@ async function fixture(role = 'dev') {
   const owner = `owner-${suffix}`; const other = `other-${suffix}`; const admin = `admin-${suffix}`;
   for (const [id, memberRole] of [[owner, 'member'], [other, 'member'], [admin, 'admin']]) await db.collection('members').doc(`${workspaceId}_${id}`).set({ workspaceId, userId: id, role: memberRole });
   await db.collection('agents').doc(agentId).set({ id: agentId, workspaceId, ownerMemberId: owner, visibility: 'personal', enabled: true, kind: 'codex', role, runnerId, allowedRepos: ['owner/repo'] });
-  await db.collection('runners').doc(runnerId).set({ id: runnerId, workspaceId, ownerMemberId: owner, status: 'online', maxConcurrentJobs: 1, connectedRepos: ['owner/repo'], lastHeartbeatAt: new Date().toISOString(), readinessCheckedAt: new Date().toISOString(), readiness: { workspaceId, identities: [{ agentId, kind: 'codex', role }], providers: { codex: { cli: true, session: true } }, repositories: [{ repo: 'owner/repo', accessible: true }] } });
+  await db.collection('runners').doc(runnerId).set({ id: runnerId, workspaceId, ownerMemberId: owner, status: 'online', maxConcurrentJobs: 1, connectedRepos: ['owner/repo'], lastHeartbeatAt: new Date().toISOString(), readinessCheckedAt: new Date().toISOString(), readiness: { workspaceId, jobProtocolVersion: 2, identities: [{ agentId, kind: 'codex', role }], providers: { codex: { cli: true, session: true } }, repositories: [{ repo: 'owner/repo', accessible: true }] } });
+  await db.collection('projects').doc(workspaceId).set({workspaceId,repoFullNames:['owner/repo']});
+  await db.collection('github_installations').doc(workspaceId).set({workspaceId,repositoryFullNames:['owner/repo']});
   return { workspaceId, agentId, runnerId, owner, other, admin };
 }
 test('preflight rejects unrelated members and cross-workspace Runner details', async () => {
@@ -34,7 +36,7 @@ test('preflight rejects unrelated members and cross-workspace Runner details', a
 test('concurrent dispatches respect Runner capacity and changed identities prevent writes', async () => {
   const f = await fixture();
   const input = { workspaceId: f.workspaceId, agentId: f.agentId, runnerId: f.runnerId, issueId: 'issue-pf', repoFullName: 'owner/repo', mode: 'task' as const };
-  await db.collection('issues').doc(input.issueId).set({ workspaceId: f.workspaceId });
+  await db.collection('issues').doc(input.issueId).set({ workspaceId: f.workspaceId, projectId: f.workspaceId });
   const results = await Promise.allSettled([enqueueRunnerJob(db, input, privateKey), enqueueRunnerJob(db, input, privateKey)]);
   assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
   assert.equal((await db.collection('runner_jobs').where('runnerId', '==', f.runnerId).get()).size, 1);
@@ -45,8 +47,8 @@ test('concurrent dispatches respect Runner capacity and changed identities preve
 test('QA jobs require explicit QA identity and repositories from the issue PRs', async () => {
   const f = await fixture('qa'); const issueId = `issue-${f.agentId}`;
   const input = { workspaceId: f.workspaceId, agentId: f.agentId, runnerId: f.runnerId, issueId, repoFullName: 'owner/repo', mode: 'review' as const };
-  await db.collection('issues').doc(issueId).set({ workspaceId: f.workspaceId, git: { repoFullName: 'owner/other', prNumber: 1 } });
-  await assert.rejects(enqueueRunnerJob(db, input, privateKey), /repos de revisión/);
+  await db.collection('issues').doc(issueId).set({ workspaceId: f.workspaceId, projectId: f.workspaceId, git: { repoFullName: 'owner/other', prNumber: 1 } });
+  await assert.rejects(enqueueRunnerJob(db, input, privateKey), /contexto de revisión/);
   await db.collection('issues').doc(issueId).update({ git: { repoFullName: 'owner/repo', prNumber: 1 } });
   assert.ok((await enqueueRunnerJob(db, input, privateKey)).id);
 });

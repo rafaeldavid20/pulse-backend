@@ -131,8 +131,7 @@ export class ReviewsRerunAction extends PlatformActionHandler {
       const candidateRunnerSnap = await db.collection('runners').doc(candidate.data().runnerId).get();
       if (!candidateRunnerSnap.exists || candidateRunnerSnap.data()!.workspaceId !== issue.workspaceId || !isRunnerAvailable(candidateRunnerSnap.data()!)) continue;
       const candidateRunner = candidateRunnerSnap.data()!;
-      if (!runnerPreflight({ ...candidate.data(), id: candidate.id }, { ...candidateRunner, id: candidateRunnerSnap.id }, issue.workspaceId, reviewRepos, 'review').ready) continue;
-      if (reviewRepos.some((repo) => !candidateRunner.connectedRepos?.includes(repo))) continue;
+      if (!runnerPreflight({ ...candidate.data(), id: candidate.id }, { ...candidateRunner, id: candidateRunnerSnap.id }, issue.workspaceId, reviewRepos, 'review', Date.now(), true).ready) continue;
       const jobs = await db.collection('runner_jobs').where('runnerId', '==', candidateRunner.id).get();
       const active = jobs.docs.filter((doc) => {
         const job = doc.data();
@@ -154,10 +153,9 @@ export class ReviewsRerunAction extends PlatformActionHandler {
     const runnerId = qaAgent.runnerId as string | undefined;
     if (runnerId) {
       const runnerSnap = await db.collection('runners').doc(runnerId).get();
-      if (!runnerSnap.exists || runnerSnap.data()!.workspaceId !== issue.workspaceId || !isRunnerAvailable(runnerSnap.data()!) ||
-        reviewRepos.some((repo) => !runnerSnap.data()!.connectedRepos?.includes(repo))) throw new Error('El Pulse Runner del agente QA dejó de estar disponible o ya no cubre todos los repos.');
+      if (!runnerSnap.exists || runnerSnap.data()!.workspaceId !== issue.workspaceId || !isRunnerAvailable(runnerSnap.data()!)) throw new Error('El Pulse Runner del agente QA dejó de estar disponible o ya no cubre todos los repos.');
       runner = runnerSnap.data()!;
-      const preflight = runnerPreflight({ ...qaAgent, id: qaAgentId }, { ...runner, id: runnerId }, issue.workspaceId, reviewRepos, 'review');
+      const preflight = runnerPreflight({ ...qaAgent, id: qaAgentId }, { ...runner, id: runnerId }, issue.workspaceId, reviewRepos, 'review', Date.now(), true);
       if (!preflight.ready) throw new Error(preflight.problems.map((problem) => `${problem.message} ${problem.action}`).join(' '));
       const jobs = await db.collection('runner_jobs').where('runnerId', '==', runnerId).get();
       const active = jobs.docs.filter((doc) => {

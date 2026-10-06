@@ -1,4 +1,5 @@
 import { configureRunnerRepos } from './configure-repos';
+import { currentRunnerProjectAccess } from '../common/utils/project-repos';
 import { parseRunnerReadiness, runnerPreflight } from '../common/utils/runner-preflight';
 import { timingSafeEqual } from 'crypto';
 import { FieldValue, getFirestore } from 'firebase-admin/firestore';
@@ -131,16 +132,6 @@ export const pulseRunnerPoll = onRequest(
     const db = getFirestore();
     const deliveredAt = new Date().toISOString();
     const agent = await db.collection('agents').doc(job.agentId).get();
-    if (!agent.exists) {
-      await db.collection('runner_jobs').doc(job.id).update({ status: 'canceled', completedAt: deliveredAt, result: 'El agente ya no existe.' });
-      res.json({ job: null });
-      return;
-    }
-    const preflight = runnerPreflight({ ...agent.data(), id: job.agentId }, { ...runner.data, id: runner.id }, job.workspaceId, job.contextRepos || [job.repoFullName], job.mode);
-    if (!preflight.ready) {
-      await db.collection('runner_jobs').doc(job.id).update({ status: 'canceled', completedAt: deliveredAt, result: preflight.problems.map((problem) => problem.message).join(' '), failure: { phase: 'preflight', category: 'configuration', correlationId: job.id } });
-      res.json({ job: null }); return;
-    }
     // Esta credencial sólo viaja en la respuesta HTTPS al Runner que probó
     // posesión de la credencial de dispositivo. No queda en runner_jobs.
     const { keyId, secret, fullKey, prefix } = generateApiKey();
@@ -152,7 +143,12 @@ export const pulseRunnerPoll = onRequest(
         transaction.get(db.collection('agents').doc(job.agentId)),
         transaction.get(db.collection('runners').doc(runner.id)),
       ]);
-      const check = runnerPreflight(currentAgent.exists ? { ...currentAgent.data(), id: job.agentId } : null, currentRunner.exists ? { ...currentRunner.data(), id: runner.id } : null, job.workspaceId, job.contextRepos || [job.repoFullName], job.mode);
+      const access = await currentRunnerProjectAccess(db, job, transaction);
+      if (!access) {
+        transaction.update(current.ref, { status: 'canceled', completedAt: deliveredAt, result: 'El acceso al proyecto cambió desde que se creó este job.' });
+        return false;
+      }
+      const check = runnerPreflight(currentAgent.exists ? { ...currentAgent.data(), id: job.agentId } : null, currentRunner.exists ? { ...currentRunner.data(), id: runner.id } : null, job.workspaceId, job.contextRepos || [job.repoFullName], job.mode, Date.now(), job.protocolVersion === 2);
       if (!check.ready) {
         transaction.update(current.ref, { status: 'canceled', completedAt: deliveredAt, result: check.problems.map((problem) => problem.message).join(' '), failure: { phase: 'preflight', category: 'configuration', correlationId: job.id } });
         return false;
@@ -190,7 +186,7 @@ export const pulseRunnerConfigure = onRequest(
     if (!runner) { res.status(401).json({ error: 'Invalid runner credential' }); return; }
     try {
       const connectedRepos = await configureRunnerRepos(getFirestore(), runner.id, req.body?.connectedRepos);
-      res.json({ runnerId: runner.id, connectedRepos });
+      res.json({ runnerId: runner.id, connectedRepos, deprecated: true, message: 'New jobs derive repository access from the issue project.' });
     } catch (error) {
       const status = [400, 401, 403].includes((error as any).status) ? (error as any).status : 500;
       res.status(status).json({ error: status === 500 ? 'Could not configure Runner repositories.' : 'Invalid repository scope; expansion requires owner/admin approval in Pulse.' });

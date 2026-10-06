@@ -1,4 +1,4 @@
-import { Firestore } from 'firebase-admin/firestore';
+import { Firestore, Transaction } from 'firebase-admin/firestore';
 
 /**
  * Repos en los que se puede trabajar un issue.
@@ -30,6 +30,48 @@ export async function allowedReposForIssue(
   // instalación no es utilizable, y conviene que falle como "no permitido" y no
   // como un 404 de GitHub más adelante.
   return declared.filter((r) => installationRepos.includes(r));
+}
+
+/** Strict project boundary for signed local Runner jobs (TES-298). Legacy
+ * GitHub Actions issues may still use the installation fallback above, but a
+ * Runner envelope must always be scoped to an explicitly configured project. */
+export async function runnerProjectRepoAccess(
+  db: Firestore,
+  issue: FirebaseFirestore.DocumentData,
+  installationRepos: string[],
+): Promise<{ projectId: string; repos: string[] } | null> {
+  if (!issue.projectId) return null;
+  const snap = await db.collection('projects').doc(issue.projectId).get();
+  if (!snap.exists) return null;
+  const project = snap.data()!;
+  if (project.workspaceId !== issue.workspaceId) return null;
+  const declared = Array.isArray(project.repoFullNames) ? project.repoFullNames : [];
+  if (declared.length === 0) return null;
+  return {
+    projectId: issue.projectId,
+    repos: [...new Set(declared.filter((repo: string) => installationRepos.includes(repo)))],
+  };
+}
+
+/** Read inside the delivery/enqueue transaction so revocation cannot race a job. */
+export async function currentRunnerProjectAccess(db: Firestore, job: any, transaction: Transaction) {
+  const issue = await transaction.get(db.collection('issues').doc(job.issueId));
+  const data = issue.data();
+  if (!data || data.workspaceId !== job.workspaceId || !data.projectId || (job.projectId && data.projectId !== job.projectId)) return null;
+  const project = await transaction.get(db.collection('projects').doc(data.projectId));
+  const installations = await transaction.get(db.collection('github_installations').where('workspaceId', '==', job.workspaceId).limit(1));
+  if (!project.exists || project.data()!.workspaceId !== job.workspaceId || installations.empty) return null;
+  const declared = project.data()!.repoFullNames;
+  const installed: string[] = installations.docs[0].data().repositoryFullNames || [];
+  if (!Array.isArray(declared) || !declared.length) return null;
+  const repos = declared.filter((repo: string) => installed.includes(repo));
+  const context: string[] = job.contextRepos || [job.repoFullName];
+  if (!context.includes(job.repoFullName) || context.some((repo) => !repos.includes(repo))) return null;
+  if (job.mode === 'review') {
+    const reviewRepos = data.gitRefs?.length ? data.gitRefs.filter((ref: any) => ref.prNumber !== undefined).map((ref: any) => ref.repoFullName) : data.git?.prNumber !== undefined ? [data.git.repoFullName] : [];
+    if (context.some((repo) => !reviewRepos.includes(repo))) return null;
+  }
+  return { projectId: data.projectId as string, repos };
 }
 
 export function assertRepoAllowed(
@@ -110,4 +152,20 @@ export function statusFromGitRefs(refs: any[] | undefined): string | null {
   // entraba nunca a `in_review`, así que el QA no corría y el issue cerraba
   // sin revisión y sin ninguna señal de que eso pasó.
   return 'in_review';
+}
+
+/** Strict, current project authorization for a local Runner job. */
+export async function runnerProjectAccessForDispatch(
+  db: FirebaseFirestore.Firestore,
+  issue: FirebaseFirestore.DocumentData,
+  installationRepos: string[],
+  targetRepo: string,
+) {
+  const access = await runnerProjectRepoAccess(db, issue, installationRepos);
+  if (!access || !access.repos.includes(targetRepo)) {
+    if (issue.id) await db.collection('issues').doc(issue.id).update({ 'agent.state': 'blocked', 'agent.blockedReason': 'Configurá repositorios en el proyecto y habilitalos en la instalación GitHub; el repositorio destino debe pertenecer a ambos.', updatedAt: new Date().toISOString() });
+    return null;
+  }
+  if (issue.id && issue.agent?.blockedReason) await db.collection('issues').doc(issue.id).update({ 'agent.blockedReason': null, updatedAt: new Date().toISOString() });
+  return access;
 }

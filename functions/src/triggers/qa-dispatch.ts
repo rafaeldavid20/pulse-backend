@@ -161,8 +161,7 @@ export const qaDispatchTrigger = onDocumentWritten(
           const candidateRunnerSnap = await db.collection('runners').doc(candidate.data().runnerId).get();
           if (!candidateRunnerSnap.exists || candidateRunnerSnap.data()!.workspaceId !== workspaceId || !isRunnerAvailable(candidateRunnerSnap.data()!)) continue;
           const candidateRunner = candidateRunnerSnap.data()!;
-          if (!runnerPreflight({ ...candidate.data(), id: candidate.id }, { ...candidateRunner, id: candidateRunnerSnap.id }, workspaceId, reviewRepos, 'review').ready) continue;
-          if (reviewRepos.some((repo) => !candidateRunner.connectedRepos?.includes(repo))) continue;
+          if (!runnerPreflight({ ...candidate.data(), id: candidate.id }, { ...candidateRunner, id: candidateRunnerSnap.id }, workspaceId, reviewRepos, 'review', Date.now(), true).ready) continue;
           try {
             await assertRunnerCapacity(db, candidateRunner.id, candidateRunner.maxConcurrentJobs || 1);
           } catch {
@@ -187,13 +186,12 @@ export const qaDispatchTrigger = onDocumentWritten(
         // `runner` se preparó al elegir el candidato y se revalida justo antes
         // de encolar para evitar enviar un job a un Runner que cambió de estado.
         const runnerSnap = await db.collection('runners').doc(runnerId).get();
-        if (!runnerSnap.exists || runnerSnap.data()!.workspaceId !== workspaceId || !isRunnerAvailable(runnerSnap.data()!) ||
-          reviewRepos.some((repo) => !runnerSnap.data()!.connectedRepos?.includes(repo))) {
+        if (!runnerSnap.exists || runnerSnap.data()!.workspaceId !== workspaceId || !isRunnerAvailable(runnerSnap.data()!)) {
           await recordDispatchError('El Runner QA no está disponible o no cubre todos los repos. Corregí su configuración y volvé a despachar QA.');
           return;
         }
         runner = runnerSnap.data()!;
-        const preflight = runnerPreflight({ ...qaAgent, id: qaAgentId }, { ...runner, id: runnerId }, workspaceId, reviewRepos, 'review');
+        const preflight = runnerPreflight({ ...qaAgent, id: qaAgentId }, { ...runner, id: runnerId }, workspaceId, reviewRepos, 'review', Date.now(), true);
         if (!preflight.ready) { await recordDispatchError(preflight.problems.map((problem) => `${problem.message} ${problem.action}`).join(' ')); return; }
         try {
           await assertRunnerCapacity(db, runnerId, runner.maxConcurrentJobs || 1);

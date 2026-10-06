@@ -33,3 +33,13 @@ test('report parser strips output, account and credential fields, rejects malfor
   assert.throws(() => parseRunnerReadiness({ ...readiness, providers: {} }));
   assert.throws(() => parseRunnerReadiness({ ...readiness, repositories: [{ repo: 'https://token@host/repo', accessible: true }] }));
 });
+
+test('project-scoped preflight gates old Runners and does not require duplicate allowlists', () => {
+  const old = runnerPreflight(agent, runner, 'ws-1', [], 'task', now, true);
+  assert.equal(old.ready, false);
+  assert.match(old.problems.find((p) => p.code === 'runner_upgrade')!.action, /npm install/);
+  const upgraded = { ...runner, connectedRepos: [], readiness: { ...readiness, repositories: [], jobProtocolVersion: 2 } };
+  assert.equal(runnerPreflight({ ...agent, allowedRepos: [] }, upgraded, 'ws-1', ['owner/private'], 'task', now, true).ready, true);
+  assert.equal(parseRunnerReadiness(upgraded.readiness).jobProtocolVersion, 2);
+  assert.throws(() => parseRunnerReadiness({ ...readiness, jobProtocolVersion: 99 }));
+});
