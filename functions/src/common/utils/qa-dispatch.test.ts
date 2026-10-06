@@ -8,7 +8,9 @@ const originalLoad = Module._load;
 let issue: Record<string, any>;
 let agents: Record<string, any>[];
 let dispatches: string[];
+let runnerJobs: Record<string, any>[];
 let runners: Record<string, any> = {};
+let project: Record<string, any> = { repoFullNames: ['owner/repo', 'owner/backend', 'owner/runner'] };
 const deleted = Symbol('delete');
 const snapshot = (data: any, id = 'issue') => ({ id, exists: !!data, data: () => data });
 const update = (patch: Record<string, any>) => {
@@ -36,6 +38,7 @@ const db = {
       doc: (id: string) => name === 'issues' ? issueRef : name === 'agents'
         ? { get: async () => snapshot(agents.find((agent) => agent.id === id), id) }
         : name === 'runners' ? { get: async () => snapshot(runners[id], id) }
+        : name === 'projects' ? { get: async () => snapshot(project, id) }
         : { get: async () => snapshot(undefined, id), set: async () => {} },
     };
     return query;
@@ -48,7 +51,7 @@ Module._load = function (name: string, ...args: any[]) {
     getPullRequestOrigin: async () => ({ headRepoFullName: 'owner/repo', headRef: 'pul/test', headSha: 'new' }),
     dispatchRepositoryEvent: async (_install: any, _repo: any, _event: any, payload: any) => { dispatches.push(payload.agentId); },
   };
-  if (name.endsWith('/common/utils/runner-jobs')) return { enqueueRunnerJob: async (_db: any, input: any) => { dispatches.push(input.agentId); return { ...input, id: 'job-test' }; } };
+  if (name.endsWith('/common/utils/runner-jobs')) return { enqueueRunnerJob: async (_db: any, input: any) => { dispatches.push(input.agentId); runnerJobs.push(input); return { ...input, id: 'job-test' }; } };
   if (name.endsWith('/common/utils/repo-resolution')) return { resolveIssueRepo: async () => ({ repoFullName: 'owner/repo' }) };
   if (name.endsWith('/common/utils/dispatch-counter')) return { checkWorkspaceDispatchBudget: async () => ({ allowed: true }), todayKey: () => '2026-10-01' };
   if (name.endsWith('/common/utils/issue-run-budget')) return { checkIssueRunBudget: async () => ({ withinBudget: true }) };
@@ -65,7 +68,7 @@ const qa = (id: string, extra = {}) => ({ id, workspaceId: 'ws', role: 'qa', ena
 function reset() {
   issue = { workspaceId: 'ws', identifier: 'TES-303', status: 'in_review', assigneeId: 'human', execution: { agentId: 'dev' },
     git: { repoFullName: 'owner/repo', prNumber: 1, prState: 'open', branch: 'pul/test' } };
-  dispatches = []; runners = {};
+  dispatches = []; runnerJobs = []; runners = {}; project = { repoFullNames: ['owner/repo', 'owner/backend', 'owner/runner'] };
 }
 const run = () => qaDispatchTrigger.run({ params: { issueId: 'issue' }, data: { before: snapshot({ status: 'in_progress' }), after: snapshot(structuredClone(issue)) } });
 
@@ -119,11 +122,12 @@ test('explicit rerun also keeps automatic QA separate from manual selection', as
   assert.equal(issue.review.dispatchedTo, 'second');
   assert.equal(issue.assigneeId, 'human');
 });
-test('automatic selection falls back when the first QA Runner is unavailable', async () => {
+test('automatic QA does not silently fall back to Actions when a project QA Runner is unavailable', async () => {
   reset(); agents = [qa('offline', { runnerId: 'offline-runner' }), qa('fallback')];
   await run();
-  assert.deepEqual(dispatches, ['fallback']);
+  assert.deepEqual(dispatches, []);
   assert.equal(issue.qaAssigneeId, undefined);
+  assert.match(issue.review.dispatchError, /no se enviará el issue a GitHub Actions/);
 });
 
 test('automatic QA skips a Runner with an incompatible local identity and selects a prepared Runner', async () => {
@@ -133,4 +137,30 @@ test('automatic QA skips a Runner with an incompatible local identity and select
   assert.deepEqual(dispatches, ['second']);
   assert.equal(issue.review.dispatchedTo, 'second');
   assert.equal(issue.review.dispatchError, undefined);
+});
+
+test('project QA Codex Runner is selected without reviewRepo and receives all project repos', async () => {
+  reset();
+  agents = [qa('qa-codex', { reviewRepo: undefined, runnerId: 'runner-codex', kind: 'codex' })];
+  runners['runner-codex'] = { id: 'runner-codex', workspaceId: 'ws', status: 'online', lastHeartbeatAt: new Date().toISOString(), readinessCheckedAt: new Date().toISOString(), connectedRepos: [], readiness: { jobProtocolVersion: 2, qaSourceProtocolVersion: 1, workspaceId: 'ws', identities: [{ agentId: 'qa-codex', kind: 'codex', role: 'qa' }], providers: { codex: { cli: true, session: true } }, repositories: [] } };
+
+  await run();
+
+  assert.deepEqual(dispatches, ['qa-codex']);
+  assert.deepEqual(runnerJobs[0].contextRepos, ['owner/repo', 'owner/backend', 'owner/runner']);
+  assert.equal(runnerJobs[0].mode, 'review');
+  assert.equal(issue.review.dispatchedTo, 'qa-codex');
+  assert.equal(issue.review.dispatchError, undefined);
+});
+
+test('manual QA rerun accepts the assigned project Codex Runner without reviewRepo', async () => {
+  reset();
+  agents = [qa('qa-codex', { reviewRepo: undefined, runnerId: 'runner-codex', kind: 'codex', autonomousMode: false })];
+  issue.qaAssigneeId = 'qa-codex';
+  runners['runner-codex'] = { id: 'runner-codex', workspaceId: 'ws', status: 'online', lastHeartbeatAt: new Date().toISOString(), readinessCheckedAt: new Date().toISOString(), connectedRepos: [], readiness: { jobProtocolVersion: 2, qaSourceProtocolVersion: 1, workspaceId: 'ws', identities: [{ agentId: 'qa-codex', kind: 'codex', role: 'qa' }], providers: { codex: { cli: true, session: true } }, repositories: [] } };
+
+  await new ReviewsRerunAction({ data: { issueId: 'issue' } }).handleAction();
+
+  assert.deepEqual(dispatches, ['qa-codex']);
+  assert.deepEqual(runnerJobs[0].contextRepos, ['owner/repo', 'owner/backend', 'owner/runner']);
 });

@@ -147,9 +147,10 @@ export const qaDispatchTrigger = onDocumentWritten(
         }
         qaDoc = selected;
       }
-      // El automático conserva los requisitos actuales: enabled, autónomo,
-      // mismo workspace y repo, y nunca el agente que ejecutó el issue.
-      const qaCandidates = qaSnap.docs.filter((d) => d.id !== executionAgentId && !d.data().archivedAt && d.data().reviewRepo === repoFullName);
+      // Actions revisa un repo configurado. Runner QA trabaja con snapshots
+      // de todo el proyecto y por eso no necesita un reviewRepo por agente.
+      // La elegibilidad Runner se termina de validar con runnerPreflight.
+      const qaCandidates = qaSnap.docs.filter((d) => d.id !== executionAgentId && !d.data().archivedAt && (d.data().runnerId || d.data().reviewRepo === repoFullName));
       if (!qaDoc && qaCandidates.length === 0) {
         await recordDispatchError(`No hay QA autónomo habilitado para '${repoFullName}'. Asigná un agente QA manualmente y volvé a despachar.`);
         return;
@@ -157,7 +158,8 @@ export const qaDispatchTrigger = onDocumentWritten(
       const reviewRepos = [...new Set(prs.map((pr) => pr.repoFullName))];
       let runner: FirebaseFirestore.DocumentData | undefined;
       if (!qaDoc) {
-        for (const candidate of qaCandidates.filter((item) => !!item.data().runnerId)) {
+        const runnerCandidates = qaCandidates.filter((item) => !!item.data().runnerId);
+        for (const candidate of runnerCandidates) {
           const candidateRunnerSnap = await db.collection('runners').doc(candidate.data().runnerId).get();
           if (!candidateRunnerSnap.exists || candidateRunnerSnap.data()!.workspaceId !== workspaceId || !isRunnerAvailable(candidateRunnerSnap.data()!)) continue;
           const candidateRunner = candidateRunnerSnap.data()!;
@@ -171,8 +173,13 @@ export const qaDispatchTrigger = onDocumentWritten(
           runner = candidateRunner;
           break;
         }
-        // GitHub Actions sigue siendo el fallback para QA sin Runner.
-        qaDoc ||= qaCandidates.find((candidate) => !candidate.data().runnerId);
+        // No degradar silenciosamente a otro proveedor cuando hay QA Runner
+        // configurado; Actions queda como compatibilidad sin QA Runner.
+        if (!qaDoc && runnerCandidates.length === 0) qaDoc = qaCandidates.find((candidate) => !candidate.data().runnerId);
+        if (!qaDoc && runnerCandidates.length > 0) {
+          await recordDispatchError(`El QA Runner del proyecto no está disponible para '${repoFullName}'. Revisá su identidad, sesión y conexión, y volvé a despachar; no se enviará el issue a GitHub Actions.`);
+          return;
+        }
       }
       if (!qaDoc) {
         await recordDispatchError(`No hay QA con Runner disponible para '${repoFullName}'. Asigná un QA disponible y volvé a despachar.`);
