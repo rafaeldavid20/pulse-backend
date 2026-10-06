@@ -3,14 +3,15 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { authenticateRequest } from '../mcp/auth';
 import { findIssue } from '../mcp/tools/read';
 import { githubAppId, githubAppPrivateKeyB64, mcpKeyPepper } from '../common/secrets';
-import { qaArchive, qaProjectRepos, resolveQaRepo, withQaRepo } from './source';
+import { QA_SOURCE_CREDENTIAL_HEADER, qaArchive, qaProjectRepos, qaSourceAuthorization, resolveQaRepo, withQaRepo } from './source';
 
 /** Transport for trusted preparation only: no GitHub identity leaves the server. */
 export const pulseQaSource = onRequest({ region: 'us-east4', timeoutSeconds: 540, memory: '512MiB', secrets: [githubAppId, githubAppPrivateKeyB64, mcpKeyPepper] }, async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   if (req.method !== 'POST') { res.status(405).end(); return; }
   try {
-    const principal = await authenticateRequest(req.headers.authorization);
+    // Avoid the Cloud Run Authorization/IAM collision for JWT-shaped Pulse keys.
+    const principal = await authenticateRequest(qaSourceAuthorization(req.headers[QA_SOURCE_CREDENTIAL_HEADER], req.headers.authorization));
     if (!principal.agentId || !principal.scopes.includes('reviews:read')) throw new Error('Identidad QA requerida.');
     const db = getFirestore();
     const agent = (await db.collection('agents').doc(principal.agentId).get()).data();

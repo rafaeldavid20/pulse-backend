@@ -1,6 +1,12 @@
 import { signAppJwt } from '../github/app-auth';
 
 export interface QaRepo { repo: string; sha: string; prNumber?: number }
+export const QA_SOURCE_CREDENTIAL_HEADER = 'x-pulse-qa-credential';
+export function qaSourceAuthorization(credential: unknown, legacyAuthorization?: string): string | undefined {
+  return typeof credential === 'string' && credential.trim()
+    ? `Bearer ${credential.trim()}`
+    : legacyAuthorization;
+}
 const validRepo = (repo: string) => /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo);
 export function qaProjectRepos(project: any, workspaceId: string, refs: any[]): string[] {
   if (!project || project.workspaceId !== workspaceId || !Array.isArray(project.repoFullNames) || !project.repoFullNames.length) throw new Error('Configurá repositorios en el proyecto de este workspace.');
