@@ -32,11 +32,15 @@ const db = {
       get: async () => {
         const rows = name === 'agents'
           ? agents.filter((agent) => filters.every(([field, value]) => agent[field] === value))
+          : name === 'runners' ? Object.values(runners).filter((runner: any) => filters.every(([field, value]) => runner[field] === value))
           : name === 'github_installations' ? [{ installationId: 1 }] : [];
         return { empty: rows.length === 0, docs: rows.map((row) => snapshot(row, row.id)) };
       },
       doc: (id: string) => name === 'issues' ? issueRef : name === 'agents'
-        ? { get: async () => snapshot(agents.find((agent) => agent.id === id), id) }
+        ? {
+          get: async () => snapshot(agents.find((agent) => agent.id === id), id),
+          update: async (patch: any) => Object.assign(agents.find((agent) => agent.id === id) || {}, patch),
+        }
         : name === 'runners' ? { get: async () => snapshot(runners[id], id) }
         : name === 'projects' ? { get: async () => snapshot(project, id) }
         : { get: async () => snapshot(undefined, id), set: async () => {} },
@@ -127,7 +131,7 @@ test('automatic QA does not silently fall back to Actions when a project QA Runn
   await run();
   assert.deepEqual(dispatches, []);
   assert.equal(issue.qaAssigneeId, undefined);
-  assert.match(issue.review.dispatchError, /no se enviará el issue a GitHub Actions/);
+  assert.match(issue.review.dispatchError, /No se enviará el issue a GitHub Actions/);
 });
 
 test('automatic QA skips a Runner with an incompatible local identity and selects a prepared Runner', async () => {
@@ -153,6 +157,20 @@ test('project QA Codex Runner is selected without reviewRepo and receives all pr
   assert.equal(issue.review.dispatchError, undefined);
 });
 
+test('automatic QA reuses a same-owner Runner that advertises the QA identity and repairs the stale binding', async () => {
+  reset();
+  agents = [qa('qa-codex', { reviewRepo: undefined, runnerId: 'runner-old', ownerMemberId: 'owner', kind: 'codex' })];
+  runners['runner-old'] = { id: 'runner-old', ownerMemberId: 'owner', workspaceId: 'ws', status: 'offline' };
+  runners['runner-dev'] = { id: 'runner-dev', ownerMemberId: 'owner', workspaceId: 'ws', status: 'online', lastHeartbeatAt: new Date().toISOString(), readinessCheckedAt: new Date().toISOString(), connectedRepos: [], readiness: { jobProtocolVersion: 2, qaSourceProtocolVersion: 1, workspaceId: 'ws', identities: [{ agentId: 'qa-codex', kind: 'codex', role: 'qa' }], providers: { codex: { cli: true, session: true } }, repositories: [] } };
+
+  await run();
+
+  assert.deepEqual(dispatches, ['qa-codex']);
+  assert.equal(runnerJobs[0].runnerId, 'runner-dev');
+  assert.equal(agents[0].runnerId, 'runner-dev');
+  assert.equal(issue.review.dispatchError, undefined);
+});
+
 test('manual QA rerun accepts the assigned project Codex Runner without reviewRepo', async () => {
   reset();
   agents = [qa('qa-codex', { reviewRepo: undefined, runnerId: 'runner-codex', kind: 'codex', autonomousMode: false })];
@@ -163,4 +181,18 @@ test('manual QA rerun accepts the assigned project Codex Runner without reviewRe
 
   assert.deepEqual(dispatches, ['qa-codex']);
   assert.deepEqual(runnerJobs[0].contextRepos, ['owner/repo', 'owner/backend', 'owner/runner']);
+});
+
+test('manual QA rerun resolves and repairs a stale Runner binding from a same-owner QA identity', async () => {
+  reset();
+  agents = [qa('qa-codex', { reviewRepo: undefined, runnerId: 'runner-old', ownerMemberId: 'owner', kind: 'codex', autonomousMode: false })];
+  issue.qaAssigneeId = 'qa-codex';
+  runners['runner-old'] = { id: 'runner-old', ownerMemberId: 'owner', workspaceId: 'ws', status: 'offline' };
+  runners['runner-dev'] = { id: 'runner-dev', ownerMemberId: 'owner', workspaceId: 'ws', status: 'online', lastHeartbeatAt: new Date().toISOString(), readinessCheckedAt: new Date().toISOString(), connectedRepos: [], readiness: { jobProtocolVersion: 2, qaSourceProtocolVersion: 1, workspaceId: 'ws', identities: [{ agentId: 'qa-codex', kind: 'codex', role: 'qa' }], providers: { codex: { cli: true, session: true } }, repositories: [] } };
+
+  await new ReviewsRerunAction({ data: { issueId: 'issue' } }).handleAction();
+
+  assert.deepEqual(dispatches, ['qa-codex']);
+  assert.equal(runnerJobs[0].runnerId, 'runner-dev');
+  assert.equal(agents[0].runnerId, 'runner-dev');
 });

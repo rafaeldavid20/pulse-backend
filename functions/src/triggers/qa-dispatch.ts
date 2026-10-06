@@ -11,6 +11,7 @@ import { buildNeedsHumanEscalation } from '../common/utils/review-escalation';
 import { enqueueRunnerJob } from '../common/utils/runner-jobs';
 import { qaAssignmentError } from '../common/utils/qa-assignment';
 import { isRunnerAvailable } from '../common/utils/runner-availability';
+import { findProjectQaRunner } from '../common/utils/qa-runner';
 
 const DEFAULT_MAX_REVIEW_ATTEMPTS = 2;
 
@@ -157,27 +158,30 @@ export const qaDispatchTrigger = onDocumentWritten(
       }
       const reviewRepos = [...new Set(prs.map((pr) => pr.repoFullName))];
       let runner: FirebaseFirestore.DocumentData | undefined;
+      let runnerProblems: string[] = [];
+      if (qaDoc?.data()?.runnerId) {
+        const selectedQa = { ...qaDoc.data()!, id: qaDoc.id };
+        const result = await findProjectQaRunner(db, selectedQa, workspaceId, reviewRepos);
+        if (!result.runner) {
+          await recordDispatchError(result.problems.join(' ') || 'No hay un Pulse Runner activo con la identidad QA configurada.');
+          return;
+        }
+        runner = result.runner;
+      }
       if (!qaDoc) {
         const runnerCandidates = qaCandidates.filter((item) => !!item.data().runnerId);
         for (const candidate of runnerCandidates) {
-          const candidateRunnerSnap = await db.collection('runners').doc(candidate.data().runnerId).get();
-          if (!candidateRunnerSnap.exists || candidateRunnerSnap.data()!.workspaceId !== workspaceId || !isRunnerAvailable(candidateRunnerSnap.data()!)) continue;
-          const candidateRunner = candidateRunnerSnap.data()!;
-          if (!runnerPreflight({ ...candidate.data(), id: candidate.id }, { ...candidateRunner, id: candidateRunnerSnap.id }, workspaceId, reviewRepos, 'review', Date.now(), true).ready) continue;
-          try {
-            await assertRunnerCapacity(db, candidateRunner.id, candidateRunner.maxConcurrentJobs || 1);
-          } catch {
-            continue;
-          }
+          const result = await findProjectQaRunner(db, { ...candidate.data(), id: candidate.id }, workspaceId, reviewRepos);
+          if (!result.runner) { runnerProblems = result.problems; continue; }
           qaDoc = candidate;
-          runner = candidateRunner;
+          runner = result.runner;
           break;
         }
         // No degradar silenciosamente a otro proveedor cuando hay QA Runner
         // configurado; Actions queda como compatibilidad sin QA Runner.
         if (!qaDoc && runnerCandidates.length === 0) qaDoc = qaCandidates.find((candidate) => !candidate.data().runnerId);
         if (!qaDoc && runnerCandidates.length > 0) {
-          await recordDispatchError(`El QA Runner del proyecto no está disponible para '${repoFullName}'. Revisá su identidad, sesión y conexión, y volvé a despachar; no se enviará el issue a GitHub Actions.`);
+          await recordDispatchError(`El QA Runner del proyecto no está disponible para '${repoFullName}'. ${runnerProblems.join(' ') || 'Revisá su identidad, sesión y conexión.'} No se enviará el issue a GitHub Actions.`);
           return;
         }
       }
@@ -188,7 +192,7 @@ export const qaDispatchTrigger = onDocumentWritten(
       const qaAgent = qaDoc.data();
       if (!qaAgent) return;
       const qaAgentId = qaDoc.id;
-      const runnerId = qaAgent.runnerId as string | undefined;
+      const runnerId = runner?.id || (qaAgent.runnerId as string | undefined);
       if (runnerId) {
         // `runner` se preparó al elegir el candidato y se revalida justo antes
         // de encolar para evitar enviar un job a un Runner que cambió de estado.
@@ -198,13 +202,17 @@ export const qaDispatchTrigger = onDocumentWritten(
           return;
         }
         runner = runnerSnap.data()!;
-        const preflight = runnerPreflight({ ...qaAgent, id: qaAgentId }, { ...runner, id: runnerId }, workspaceId, reviewRepos, 'review', Date.now(), true);
+        const preflight = runnerPreflight({ ...qaAgent, id: qaAgentId, runnerId }, { ...runner, id: runnerId }, workspaceId, reviewRepos, 'review', Date.now(), true);
         if (!preflight.ready) { await recordDispatchError(preflight.problems.map((problem) => `${problem.message} ${problem.action}`).join(' ')); return; }
         try {
           await assertRunnerCapacity(db, runnerId, runner.maxConcurrentJobs || 1);
         } catch {
           await recordDispatchError('El Runner QA alcanzó su límite de jobs activos. Volvé a despachar QA cuando tenga capacidad.');
           return;
+        }
+        if (qaAgent.runnerId !== runnerId) {
+          await db.collection('agents').doc(qaAgentId).update({ runnerId, updatedAt: new Date().toISOString() });
+          qaAgent.runnerId = runnerId;
         }
       }
 
