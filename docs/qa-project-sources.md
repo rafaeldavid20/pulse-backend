@@ -5,7 +5,9 @@ El preflight consulta la configuración actual del proyecto y las instalaciones
 GitHub del mismo workspace. Todos los repos declarados deben estar disponibles;
 no se elimina silenciosamente un repo privado o revocado del conjunto.
 
-`pulseQaSource` autentica la key QA de Actions o la key efímera del job local.
+`pulseQaSource` autentica la key QA de Actions o la key efímera del job local
+mediante `X-Pulse-QA-Credential`, separado de `Authorization` para evitar que
+Cloud Run interprete la key de Pulse como credencial IAM de invocación.
 Exige una revisión asignada a esa identidad y valida workspace/proyecto/job.
 Para cada repo mintea una identidad de instalación nueva, limitada a ese repo,
 con `contents:read` y `pull_requests:read`. Sólo el servidor la usa; la revoca

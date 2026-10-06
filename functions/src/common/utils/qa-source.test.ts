@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { assertQaReviewedHeads, assertQaPrepared, qaArchive, qaProjectRepos, resolveQaRepo, withQaRepo } from '../../qa/source';
+import { assertQaReviewedHeads, assertQaPrepared, qaArchive, qaProjectRepos, qaSourceAuthorization, resolveQaRepo, withQaRepo } from '../../qa/source';
 import { QA_SOURCE_SCRIPT } from '../../github/templates/qa-source-step';
 import { renderQaWorkflow } from '../../github/templates/pulse-qa-workflow';
 const sha = 'a'.repeat(40);
@@ -17,6 +17,14 @@ test('project boundary includes private/context repos, catches additions, remova
   assert.throws(() => qaProjectRepos(project, 'other', refs));
   assert.throws(() => assertQaPrepared({ ...proof, downloaded: {} }, project, 'ws', refs));
   assert.throws(() => assertQaPrepared({ ...proof, checkedAt: new Date(0).toISOString() }, project, 'ws', refs));
+});
+
+test('QA source uses a separate application credential header and preserves legacy bearer callers', () => {
+  assert.equal(qaSourceAuthorization('pulse-fixture-key'), 'Bearer pulse-fixture-key');
+  assert.equal(qaSourceAuthorization('  pulse-fixture-key  '), 'Bearer pulse-fixture-key');
+  assert.equal(qaSourceAuthorization('', 'Bearer legacy-fixture-key'), 'Bearer legacy-fixture-key');
+  assert.equal(qaSourceAuthorization(undefined), undefined);
+  assert(QA_SOURCE_SCRIPT.includes("'X-Pulse-QA-Credential': os.environ['PULSE_QA_CREDENTIAL']"));
 });
 
 test('preflight resolves exact PR heads, context default heads, metadata and content', async () => {

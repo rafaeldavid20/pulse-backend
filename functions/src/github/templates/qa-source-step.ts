@@ -13,7 +13,7 @@ import zipfile
 def call(body):
     request = urllib.request.Request(os.environ['PULSE_QA_SOURCE_URL'],
         data=json.dumps(body).encode(), headers={
-            'Authorization': 'Bearer ' + os.environ['PULSE_QA_CREDENTIAL'],
+            'X-Pulse-QA-Credential': os.environ['PULSE_QA_CREDENTIAL'],
             'Content-Type': 'application/json'})
     try:
         with urllib.request.urlopen(request, timeout=540) as response:
