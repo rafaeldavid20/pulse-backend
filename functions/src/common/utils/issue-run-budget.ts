@@ -4,8 +4,8 @@ import { Firestore } from 'firebase-admin/firestore';
  * Default de `Workspace.maxRunsPerIssue` (D8/TES-153): el bug que motivó esta
  * historia — un issue con dos rechazos consume dev + QA + re-trabajo + QA +
  * re-trabajo = 5 runs, agotando `DAILY_DISPATCH_LIMIT` con un solo issue. Este
- * tope es sobre el TOTAL de runs de un issue (task + traspasos + QA, contados
- * en `agent_runs`), no sobre los intentos de revisión — cubre bucles que
+ * tope es sobre los runs de la tanda de un issue (task + traspasos + QA, contados
+ * en `agent_runs`; una devolución humana abre una tanda nueva), no sobre los intentos de revisión — cubre bucles que
  * nunca llegan a QA, como un traspaso que se re-pide una y otra vez.
  */
 export const DEFAULT_MAX_RUNS_PER_ISSUE = 6;
@@ -18,7 +18,7 @@ export type IssueRunBudgetDecision =
 
 /**
  * Chequeo previo a despachar un run (task, traspaso o revisión) para un issue
- * puntual: cuenta y suma `agent_runs` de ese issue contra
+ * puntual: cuenta la tanda vigente y suma el costo histórico de `agent_runs` contra
  * `Workspace.maxRunsPerIssue` (default `DEFAULT_MAX_RUNS_PER_ISSUE`) y
  * `Workspace.issueCostCapUsd` (sin tope si no está seteado).
  *
@@ -37,8 +37,18 @@ export async function checkIssueRunBudget(
   const maxRuns: number = workspace.maxRunsPerIssue ?? DEFAULT_MAX_RUNS_PER_ISSUE;
   const costCapUsd: number | undefined = workspace.issueCostCapUsd;
 
+  // A human return opens a new per-issue batch. Cost caps still use ALL runs.
   const runsSnap = await db.collection('agent_runs').where('issueId', '==', issueId).get();
-  if (runsSnap.size >= maxRuns) {
+  const issueSnap = await db.collection('issues').doc(issueId).get();
+  const issue = issueSnap.exists ? issueSnap.data()! : {};
+  const resetAt = issue.workspaceId === workspaceId && issue.runBudgetResetBy ? Date.parse(issue.runBudgetResetAt) : NaN;
+  const validReset = Number.isFinite(resetAt) && resetAt <= Date.now();
+  // Unknown run timestamps remain counted; an invalid/future reset grants nothing.
+  const countedRuns = validReset ? runsSnap.docs.filter((doc) => {
+    const startedAt = Date.parse(doc.data().startedAt);
+    return !Number.isFinite(startedAt) || startedAt >= resetAt;
+  }).length : runsSnap.size;
+  if (countedRuns >= maxRuns) {
     return { withinBudget: false, reason: 'issue-run-limit', limit: maxRuns };
   }
   if (costCapUsd) {
