@@ -12,9 +12,9 @@ import { IssueReview } from '../../common/domain.generated';
  * diferencia del reporte del dev (`pulse_release_issue`), acá **nunca se
  * libera la revisión** — si terminó en un veredicto real (`pulse_submit_review`
  * ya corrió y cerró el intento), este llamado es un no-op idempotente. Si no,
- * es la señal de que el run se cortó a mitad de camino (crash, timeout de
- * `--max-turns`, o el propio job nunca arrancó del lado de GitHub) y escala a
- * `needs_human` de inmediato, sin esperar los ~30-40min del barrido
+ * cierra el intento incompleto (incluido un agente que nunca lo reclamó).
+ * En enforce escala a `needs_human`; en shadow registra el diagnóstico sin
+ * cambiar el flujo humano. No espera los ~30-40min del barrido
  * (`scheduled/review-sweeper.ts`) que cubre el resto de los casos (por
  * ejemplo, que el `repository_dispatch` nunca haya llegado a arrancar el job).
  */
@@ -51,9 +51,9 @@ export class ReportReviewIncompleteAction extends PlatformActionHandler {
 
     const review = issue.review as IssueReview | undefined;
     // Ya cerrado (por `reviews.submit`, o por un llamado previo de esta misma
-    // acción) — nada que hacer. Idempotente a propósito: el paso de reporte
-    // llama a esto siempre, gane o pierda la carrera contra un veredicto real.
-    if (!review || review.state !== 'running') {
+    // acción) — nada que hacer. También cubre intentos que el agente no llegó
+    // a reclamar (`state` ausente/pending).
+    if (!review || ['approved', 'changes_requested', 'needs_human'].includes(review.state || '')) {
       return { issueId: data.issueId, escalated: false, reviewState: review?.state };
     }
     // Solo el agente QA al que qa-dispatch le asignó este intento (reclamado
@@ -63,9 +63,12 @@ export class ReportReviewIncompleteAction extends PlatformActionHandler {
       throw new Error('Solo el agente QA al que se le despachó esta revisión puede reportarla incompleta.');
     }
 
-    const leadId = await resolveReviewLead(db, issue);
+    const agent = await db.collection('agents').doc(actorUid).get();
+    const shadowMode = agent.data()?.qaMode !== 'enforce';
+
+    const leadId = shadowMode ? undefined : await resolveReviewLead(db, issue);
     const currentLabels: string[] = Array.isArray(issue.labelIds) ? issue.labelIds : [];
-    const labelId = await ensureNeedsHumanLabel(db, issue.workspaceId, issue.teamId);
+    const labelId = shadowMode ? undefined : await ensureNeedsHumanLabel(db, issue.workspaceId, issue.teamId);
 
     const nextReview: IssueReview = {
       ...review,
@@ -74,15 +77,15 @@ export class ReportReviewIncompleteAction extends PlatformActionHandler {
     };
 
     const now = new Date().toISOString();
-    await issueRef.update(
-      cleanUndefined({
-        review: nextReview,
+    await issueRef.update(cleanUndefined({
+      review: nextReview,
+      ...(!shadowMode ? {
         assigneeId: leadId || null,
-        labelIds: currentLabels.includes(labelId) ? currentLabels : [...currentLabels, labelId],
-        updatedAt: now,
-        updatedBy: actorUid,
-      })
-    );
+        labelIds: currentLabels.includes(labelId!) ? currentLabels : [...currentLabels, labelId!],
+      } : {}),
+      updatedAt: now,
+      updatedBy: actorUid,
+    }));
 
     const reason = data.reason ? String(data.reason).trim() : 'sin detalle.';
     await new CreateCommentAction(
@@ -90,22 +93,24 @@ export class ReportReviewIncompleteAction extends PlatformActionHandler {
         actionCode: 'comments.create',
         data: {
           issueId: data.issueId,
-          body: `**Revisión de QA incompleta (intento ${review.attempt})** — el run terminó sin emitir un veredicto y se escala a needs_human.\n\n${reason}`,
+          body: `**Revisión de QA incompleta (intento ${review.attempt})** — el run terminó sin emitir un veredicto.${shadowMode ? ' El modo shadow mantiene intactos el estado y la asignación del issue.' : ' Se escala a needs_human.'}\n\n${reason}`,
           source: 'mcp',
         },
       },
       actorUid
     ).run();
 
-    await notifyNeedsHuman(
-      db,
-      issue,
-      data.issueId,
-      leadId,
-      actorUid,
-      `El run de QA (intento ${review.attempt}) terminó sin emitir un veredicto. ${reason}`
-    );
+    if (!shadowMode) {
+      await notifyNeedsHuman(
+        db,
+        issue,
+        data.issueId,
+        leadId,
+        actorUid,
+        `El run de QA (intento ${review.attempt}) terminó sin emitir un veredicto. ${reason}`
+      );
+    }
 
-    return { issueId: data.issueId, escalated: true, attempt: review.attempt };
+    return { issueId: data.issueId, escalated: !shadowMode, attempt: review.attempt, qaMode: shadowMode ? 'shadow' : 'enforce' };
   }
 }
