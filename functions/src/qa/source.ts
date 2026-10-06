@@ -26,7 +26,9 @@ export async function withQaRepo<T>(installationId: string, repo: string, work: 
   const headers = { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
   try {
     return await work(async (path) => {
-      const response = await fetcher(`https://api.github.com/repos/${repo}/${path}`, { headers, signal: AbortSignal.timeout(120_000) });
+      const normalizedPath = path.replace(/^\/+/, '');
+      const url = `https://api.github.com/repos/${repo}${normalizedPath ? `/${normalizedPath}` : ''}`;
+      const response = await fetcher(url, { headers, signal: AbortSignal.timeout(120_000) });
       if (!response.ok) throw new Error(`${repo}: lectura GitHub no disponible (HTTP ${response.status}).`);
       return response;
     });

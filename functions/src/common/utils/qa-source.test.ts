@@ -47,7 +47,11 @@ test('fresh per-repo read-only identity, archive access and immediate revocation
     if (url.endsWith('/access_tokens')) return Response.json({ token: 'fixture-only' });
     return new Response('snapshot');
   }) as typeof fetch;
-  await withQaRepo('1', repos[2], async (get) => { assert.equal((await qaArchive(get, sha)).toString(), 'snapshot'); }, fetcher, () => 'fixture-jwt');
+  await withQaRepo('1', repos[2], async (get) => {
+    await get('');
+    assert.equal((await qaArchive(get, sha)).toString(), 'snapshot');
+  }, fetcher, () => 'fixture-jwt');
+  assert.equal(calls[1].url, `https://api.github.com/repos/${repos[2]}`);
   assert.deepEqual(JSON.parse(calls[0].init!.body as string), { repositories: ['private-runner'], permissions: { contents: 'read', pull_requests: 'read' } });
   assert.equal(calls.at(-1)!.init!.method, 'DELETE');
   calls.length = 0;
