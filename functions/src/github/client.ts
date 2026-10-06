@@ -223,10 +223,14 @@ export async function listPullRequestFiles(
   repoFullName: string,
   prNumber: number
 ): Promise<PullRequestFile[]> {
-  const files = (await githubInstallationFetch(
-    installationId,
-    `/repos/${repoFullName}/pulls/${prNumber}/files?per_page=100`
-  )) as Array<Record<string, any>>;
+  const files: Array<Record<string, any>> = [];
+  for (let page = 1; page <= 30; page++) {
+    const batch = await githubInstallationFetch(
+      installationId, `/repos/${repoFullName}/pulls/${prNumber}/files?per_page=100&page=${page}`,
+    ) as Array<Record<string, any>>;
+    files.push(...batch);
+    if (batch.length < 100) break;
+  }
   return files.map((f) => ({
     filename: f.filename,
     status: f.status,

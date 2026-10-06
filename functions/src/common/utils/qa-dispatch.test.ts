@@ -128,7 +128,7 @@ test('automatic selection falls back when the first QA Runner is unavailable', a
 
 test('automatic QA skips a Runner with an incompatible local identity and selects a prepared Runner', async () => {
   reset(); agents = [qa('first', { runnerId: 'runner-first', kind: 'codex' }), qa('second', { runnerId: 'runner-second', kind: 'codex' })];
-  for (const id of ['first', 'second']) runners[`runner-${id}`] = { id: `runner-${id}`, workspaceId: 'ws', status: 'online', lastHeartbeatAt: new Date().toISOString(), readinessCheckedAt: new Date().toISOString(), connectedRepos: ['owner/repo'], readiness: { jobProtocolVersion: 2, workspaceId: 'ws', identities: [{ agentId: id, kind: 'codex', role: id === 'first' ? 'dev' : 'qa' }], providers: { codex: { cli: true, session: true } }, repositories: [{ repo: 'owner/repo', accessible: true }] } };
+  for (const id of ['first', 'second']) runners[`runner-${id}`] = { id: `runner-${id}`, workspaceId: 'ws', status: 'online', lastHeartbeatAt: new Date().toISOString(), readinessCheckedAt: new Date().toISOString(), connectedRepos: ['owner/repo'], readiness: { jobProtocolVersion: 2, qaSourceProtocolVersion: 1, workspaceId: 'ws', identities: [{ agentId: id, kind: 'codex', role: id === 'first' ? 'dev' : 'qa' }], providers: { codex: { cli: true, session: true } }, repositories: [{ repo: 'owner/repo', accessible: true }] } };
   await run();
   assert.deepEqual(dispatches, ['second']);
   assert.equal(issue.review.dispatchedTo, 'second');

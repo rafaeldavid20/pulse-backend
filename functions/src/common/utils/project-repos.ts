@@ -59,17 +59,17 @@ export async function currentRunnerProjectAccess(db: Firestore, job: any, transa
   const data = issue.data();
   if (!data || data.workspaceId !== job.workspaceId || !data.projectId || (job.projectId && data.projectId !== job.projectId)) return null;
   const project = await transaction.get(db.collection('projects').doc(data.projectId));
-  const installations = await transaction.get(db.collection('github_installations').where('workspaceId', '==', job.workspaceId).limit(1));
+  const installations = await transaction.get(db.collection('github_installations').where('workspaceId', '==', job.workspaceId));
   if (!project.exists || project.data()!.workspaceId !== job.workspaceId || installations.empty) return null;
   const declared = project.data()!.repoFullNames;
-  const installed: string[] = installations.docs[0].data().repositoryFullNames || [];
+  const installed: string[] = installations.docs.flatMap((doc) => doc.data().suspendedAt ? [] : doc.data().repositoryFullNames || []);
   if (!Array.isArray(declared) || !declared.length) return null;
   const repos = declared.filter((repo: string) => installed.includes(repo));
   const context: string[] = job.contextRepos || [job.repoFullName];
   if (!context.includes(job.repoFullName) || context.some((repo) => !repos.includes(repo))) return null;
   if (job.mode === 'review') {
     const reviewRepos = data.gitRefs?.length ? data.gitRefs.filter((ref: any) => ref.prNumber !== undefined).map((ref: any) => ref.repoFullName) : data.git?.prNumber !== undefined ? [data.git.repoFullName] : [];
-    if (context.some((repo) => !reviewRepos.includes(repo))) return null;
+    if (reviewRepos.some((repo: string) => !context.includes(repo)) || declared.some((repo: string) => !context.includes(repo)) || declared.some((repo: string) => !installed.includes(repo))) return null;
   }
   return { projectId: data.projectId as string, repos };
 }

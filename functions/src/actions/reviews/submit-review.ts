@@ -1,3 +1,4 @@
+import { assertQaReviewedHeads, qaProjectRepos } from '../../qa/source';
 import { getFirestore } from 'firebase-admin/firestore';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
@@ -104,6 +105,10 @@ export class ReviewsSubmitAction extends PlatformActionHandler {
       throw new Error('Un agente no puede revisar su propio trabajo: este agente es el asignado dev de este issue.');
     }
 
+    const proof = (await db.collection('qa_source_preflights').doc(`${data.issueId}_${actorUid}`).get()).data();
+    const project = issue.projectId ? (await db.collection('projects').doc(issue.projectId).get()).data() : null;
+    const currentRepos = qaProjectRepos(project, issue.workspaceId, issue.gitRefs?.length ? issue.gitRefs.filter((entry: any) => entry.prNumber) : [issue.git]);
+    if (proof?.projectId !== issue.projectId || proof?.repositories.length !== currentRepos.length || currentRepos.some((repo) => !proof?.repositories.some((entry: any) => entry.repo === repo))) throw new Error('QA infraestructura: cambió el alcance del proyecto; repetí el preflight.');
     const findings = normalizeFindings(data.findings);
     const criteriaResults = normalizeCriteriaResults(data.criteriaResults);
     const verdict = String(data.verdict).trim();
@@ -114,13 +119,15 @@ export class ReviewsSubmitAction extends PlatformActionHandler {
     const prs = reviewablePrs(issue);
     const prRefs: ReviewPrRef[] = [];
     let installation: FirebaseFirestore.DocumentData | null = null;
+    const installationsByRepo = new Map<string, FirebaseFirestore.DocumentData>();
     if (prs.length > 0) {
-      const installSnap = await db.collection('github_installations').where('workspaceId', '==', issue.workspaceId).limit(1).get();
+      const installSnap = await db.collection('github_installations').where('workspaceId', '==', issue.workspaceId).get();
+      for (const doc of installSnap.docs) for (const repo of doc.data().repositoryFullNames || []) if (!doc.data().suspendedAt) installationsByRepo.set(repo, doc.data());
       installation = installSnap.empty ? null : installSnap.docs[0].data();
       if (installation) {
         for (const pr of prs) {
           try {
-            const headSha = await getPullRequestHeadSha(installation.installationId, pr.repoFullName, pr.prNumber);
+            const headSha = await getPullRequestHeadSha(installationsByRepo.get(pr.repoFullName)!.installationId, pr.repoFullName, pr.prNumber);
             prRefs.push({ repoFullName: pr.repoFullName, prNumber: pr.prNumber, headSha });
           } catch (error) {
             console.error(`[ReviewsSubmit] no se pudo leer el head SHA de ${pr.repoFullName}#${pr.prNumber}:`, error);
@@ -128,6 +135,9 @@ export class ReviewsSubmitAction extends PlatformActionHandler {
         }
       }
     }
+
+    // Never stamp the latest remote head as reviewed when the snapshot was older.
+    assertQaReviewedHeads(review.prs, prs, prRefs);
 
     // O5/TES-255: una validación de Salesforce fallida sobre el código revisado
     // es un blocker aunque el modelo no lo haya puesto. Lo agrega el servidor,
@@ -229,7 +239,7 @@ export class ReviewsSubmitAction extends PlatformActionHandler {
     await new CreateCommentAction({ actionCode: 'comments.create', data: { issueId: data.issueId, body: commentBody, source: 'mcp' } }, actorUid).run();
 
     if (installation) {
-      await this.publishGithubReviews(installation, prs, outcome, verdict, findings, criteriaResults, issue, qaMode);
+      await this.publishGithubReviews(installation, prs, outcome, verdict, findings, criteriaResults, issue, qaMode, installationsByRepo);
     }
 
     return { issueId: data.issueId, outcome, attempt: review.attempt, status: updates.status || issue.status, qaMode };
@@ -405,7 +415,8 @@ export class ReviewsSubmitAction extends PlatformActionHandler {
     findings: ReviewFinding[],
     criteriaResults: ReviewCriterionResult[],
     issue: FirebaseFirestore.DocumentData,
-    qaMode: 'shadow' | 'enforce'
+    qaMode: 'shadow' | 'enforce',
+    installationsByRepo: Map<string, FirebaseFirestore.DocumentData>
   ): Promise<void> {
     const criteriaById = new Map<string, string>(((issue.acceptanceCriteria || []) as AcceptanceCriterion[]).map((c) => [c.id, c.text]));
     const outcomeLabel = outcome === 'approved' ? 'Approved' : outcome === 'changes_requested' ? 'Changes requested' : 'Needs a human';
@@ -438,7 +449,7 @@ export class ReviewsSubmitAction extends PlatformActionHandler {
       }));
 
       try {
-        await createPullRequestReview(installation.installationId, pr.repoFullName, pr.prNumber, bodyLines.join('\n'), comments);
+        await createPullRequestReview((installationsByRepo.get(pr.repoFullName) || installation).installationId, pr.repoFullName, pr.prNumber, bodyLines.join('\n'), comments);
       } catch (error) {
         // Best-effort: la fuente de verdad es la revisión en Pulse. Un fallo
         // acá (ej. una línea fuera del rango del diff) no debe tumbar

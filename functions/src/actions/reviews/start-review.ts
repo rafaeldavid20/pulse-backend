@@ -1,3 +1,4 @@
+import { assertQaPrepared } from '../../qa/source';
 import { getFirestore, Transaction } from 'firebase-admin/firestore';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
@@ -71,6 +72,12 @@ export class ReviewsStartAction extends PlatformActionHandler {
       }
 
       const { ref, issue } = candidates[0];
+      const proof = (await tx.get(db.collection('qa_source_preflights').doc(`${ref.id}_${actorUid}`))).data();
+      const project = issue.projectId ? (await tx.get(db.collection('projects').doc(issue.projectId))).data() : null;
+      const refs = (issue.gitRefs?.length ? issue.gitRefs : [issue.git]).filter((entry: any) => entry?.prNumber);
+      if (proof?.projectId !== issue.projectId) throw new Error('QA infraestructura: cambió el proyecto; repetí el preflight.');
+      const sources = assertQaPrepared(proof, project, issue.workspaceId, refs);
+      const snapshotPrs = sources.filter((entry) => entry.prNumber).map((entry) => ({ repoFullName: entry.repo, prNumber: entry.prNumber!, headSha: entry.sha }));
       const review = (issue.review as IssueReview | undefined) || undefined;
       const now = new Date().toISOString();
 
@@ -114,6 +121,7 @@ export class ReviewsStartAction extends PlatformActionHandler {
           : { verdict: review?.verdict, findings: review?.findings, criteriaResults: review?.criteriaResults, prs: review?.prs }),
       };
 
+      nextReview.prs = snapshotPrs;
       tx.update(ref, {
         review: cleanUndefined(nextReview),
         updatedAt: now,

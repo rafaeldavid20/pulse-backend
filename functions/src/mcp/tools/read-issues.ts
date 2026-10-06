@@ -250,17 +250,18 @@ export function registerIssueReadTools(server: McpServer, principal: McpPrincipa
         const installSnap = await db
           .collection('github_installations')
           .where('workspaceId', '==', principal.workspaceId)
-          .limit(1)
           .get();
         if (installSnap.empty) {
           prs = refs.map((r) => ({ repoFullName: r.repoFullName, prNumber: r.prNumber, error: 'GitHub no está conectado en este workspace.' }));
         } else {
-          const installationId = installSnap.docs[0].data().installationId;
+          const installationFor = (repo: string) => installSnap.docs.map((doc) => doc.data()).find((installation) => !installation.suspendedAt && installation.repositoryFullNames?.includes(repo));
           prs = await Promise.all(
             refs
               .filter((r) => r?.prNumber !== undefined)
               .map(async (r) => {
                 try {
+                  const installationId = installationFor(r.repoFullName)?.installationId;
+                  if (!installationId) throw new Error(`${r.repoFullName}: falta acceso de la instalación GitHub del workspace.`);
                   const diff = await getPullRequestDiff(installationId, r.repoFullName, r.prNumber);
                   if (diff.length <= REVIEW_DIFF_SIZE_CAP) {
                     return { repoFullName: r.repoFullName, prNumber: r.prNumber, diff };
@@ -270,7 +271,7 @@ export function registerIssueReadTools(server: McpServer, principal: McpPrincipa
                     repoFullName: r.repoFullName,
                     prNumber: r.prNumber,
                     diffTooLarge: true,
-                    note: `El diff supera ${REVIEW_DIFF_SIZE_CAP} caracteres — hacé checkout de la rama y leé estos archivos.`,
+                    note: `El diff supera ${REVIEW_DIFF_SIZE_CAP} caracteres — leé estos archivos en el snapshot del SHA registrado en qa-sources.json.`,
                     files,
                   };
                 } catch (error: any) {

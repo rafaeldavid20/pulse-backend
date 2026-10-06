@@ -54,7 +54,7 @@ export async function enqueueRunnerJob(
     const count = active.docs.filter((snap) => ['pending', 'delivered'].includes(snap.data().status) && (!Number.isFinite(Date.parse(snap.data().expiresAt)) || Date.parse(snap.data().expiresAt) > Date.now())).length;
     if (count >= (runner.data()!.maxConcurrentJobs || 1)) throw new Error('El Runner ya alcanzó su capacidad de jobs activos.');
     const access = await currentRunnerProjectAccess(db, job, transaction);
-    if (!access) throw new Error('El proyecto del issue debe declarar repos autorizados en este workspace; el contexto de revisión debe pertenecer a sus PRs.');
+    if (!access) throw new Error('El proyecto del issue debe declarar repos autorizados en este workspace; el contexto de revisión debe incluir todos los repos actuales del proyecto y sus PRs.');
     const envelope = { ...unsigned, projectId: access.projectId, protocolVersion: 2 as const };
     job = { ...envelope, signature: signRunnerJob(envelope, privateKey) };
     transaction.update(db.collection('runners').doc(job.runnerId), { lastDispatchAt: issuedAt });

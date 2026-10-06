@@ -8,9 +8,10 @@
  * dev: estampada en un comentario del YAML generado, para poder detectar
  * repos con una versión vieja sin diffear el archivo entero.
  */
+import { qaSourceStep } from './qa-source-step';
 import { RUN_CONFIG_CLAUDE_ARGS, runConfigStep } from './run-config-step';
 
-export const QA_WORKFLOW_VERSION = 6;
+export const QA_WORKFLOW_VERSION = 7;
 
 export const QA_WORKFLOW_PATH = '.github/workflows/pulse-qa.yml';
 
@@ -46,21 +47,28 @@ on:
     types: [pulse_review]
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      head_sha: \${{ steps.sources.outputs.head_sha }}
+    steps:
+${qaSourceStep(true)}
+
   # Compila y testea el PR sin que el código revisado tenga secrets al
   # alcance — ni la key de QA ni el token de Claude viven en este job. Un
   # \`postinstall\` malicioso en el PR como mucho ve un runner vacío.
   verify:
+    needs: prepare
     if: \${{ github.event.client_payload.agentKind == 'claude' || github.event.client_payload.agentKind == '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v4
-
-      - name: Checkout del head del PR
-        env:
-          GH_TOKEN: \${{ github.token }}
-        run: gh pr checkout \${{ github.event.client_payload.prNumber }}
+        with:
+          ref: \${{ needs.prepare.outputs.head_sha }}
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
@@ -137,11 +145,11 @@ jobs:
           retention-days: 7
 
   review:
-    needs: verify
+    needs: [prepare, verify]
     # \`always()\`: un \`verify\` que falla (build roto) es información para el
     # veredicto, no un motivo para no emitir ninguno — \`needs_human\` sin
     # explicación es peor que un \`changes_requested\` claro.
-    if: \${{ always() && (github.event.client_payload.agentKind == 'claude' || github.event.client_payload.agentKind == '') }}
+    if: \${{ always() && needs.prepare.result == 'success' && (github.event.client_payload.agentKind == 'claude' || github.event.client_payload.agentKind == '') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -153,12 +161,7 @@ jobs:
       # ejecutara. El job de dev ya lo tenía.
       id-token: write
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Checkout del head del PR
-        env:
-          GH_TOKEN: \${{ github.token }}
-        run: gh pr checkout \${{ github.event.client_payload.prNumber }}
+${qaSourceStep()}
 
       - uses: actions/download-artifact@v4
         with:

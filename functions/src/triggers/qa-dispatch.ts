@@ -330,7 +330,7 @@ export const qaDispatchTrigger = onDocumentWritten(
           agentId: qaAgentId,
           runnerId,
           repoFullName,
-          contextRepos: [...new Set(prs.map((pr) => pr.repoFullName))],
+          contextRepos: (await db.collection('projects').doc(after.projectId).get()).data()?.repoFullNames || [],
           mode: 'review',
         }, runnerJobSigningPrivateKey.value());
         await db.collection('agent_runs').doc(job.id).set({

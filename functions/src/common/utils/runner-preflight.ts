@@ -7,6 +7,7 @@ export interface RunnerReadiness {
   providers: { codex: { cli: boolean; session: boolean }; claude: { cli: boolean; session: boolean } };
   repositories: Array<{ repo: string; accessible: boolean }>;
   jobProtocolVersion?: 2;
+  qaSourceProtocolVersion?: 1;
 }
 
 /** Explicit allow-list: CLI output, account data and credentials never reach storage. */
@@ -26,7 +27,8 @@ export function parseRunnerReadiness(value: any): RunnerReadiness {
     return { repo: entry.repo, accessible: entry.accessible };
   });
   if (value.jobProtocolVersion !== undefined && value.jobProtocolVersion !== 2) throw new Error('Invalid Runner job protocol.');
-  return { workspaceId: value.workspaceId, identities, providers, repositories, ...(value.jobProtocolVersion === 2 ? { jobProtocolVersion: 2 as const } : {}) };
+  if (value.qaSourceProtocolVersion !== undefined && value.qaSourceProtocolVersion !== 1) throw new Error('Invalid QA source protocol.');
+  return { workspaceId: value.workspaceId, identities, providers, repositories, ...(value.qaSourceProtocolVersion === 1 ? { qaSourceProtocolVersion: 1 as const } : {}), ...(value.jobProtocolVersion === 2 ? { jobProtocolVersion: 2 as const } : {}) };
 }
 
 export function runnerPreflight(agent: any, runner: any, workspaceId: string, repos: string[], mode: string, now = Date.now(), projectScoped = false) {
@@ -40,6 +42,7 @@ export function runnerPreflight(agent: any, runner: any, workspaceId: string, re
   if (agent?.role !== role) fail('role', 'El rol del agente es incompatible con el job.', 'Usá un agente QA para revisiones y Dev para tareas.');
   const readiness = runner?.readiness as RunnerReadiness | undefined;
   if (projectScoped && readiness?.jobProtocolVersion !== 2) fail('runner_upgrade', 'El Runner instalado no admite jobs autorizados por proyecto.', 'En la máquina del Runner ejecutá npm install -g @pulsehub/runner@latest, reinstalá/reiniciá el servicio y ejecutá pulse-runner diagnose. Se conserva el pairing y la clave existentes.');
+  if (projectScoped && role === 'qa' && readiness?.qaSourceProtocolVersion !== 1) fail('qa_source_upgrade', 'El Runner instalado no admite snapshots QA sin credenciales Git globales.', 'Actualizá @pulsehub/runner a 0.1.7 o superior y reiniciá el servicio.');
   const checked = Date.parse(runner?.readinessCheckedAt || '');
   if (!readiness || !Number.isFinite(checked) || checked > now || now - checked > RUNNER_HEARTBEAT_TTL_MS) fail('readiness', 'La preparación local no tiene una verificación reciente.', 'Actualizá el Runner y ejecutá pulse-runner diagnose; luego reintentá la verificación.');
   const identity = readiness?.identities?.find((entry) => entry.agentId === agent?.id);
