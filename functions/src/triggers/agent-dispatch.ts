@@ -10,7 +10,8 @@ import { buildNeedsHumanEscalation } from '../common/utils/review-escalation';
 import { agentAllowedRepos, agentVisibility } from '../common/utils/agent-authorization';
 import { enqueueRunnerJob } from '../common/utils/runner-jobs';
 import { isRunnerAvailable } from '../common/utils/runner-availability';
-import { runnerProjectRepoAccess } from '../common/utils/project-repos';
+import { runnerPreflight } from '../common/utils/runner-preflight';
+import { runnerProjectAccessForDispatch } from '../common/utils/project-repos';
 
 // Un run tarda ~30s en arrancar y reclamar el issue (ver `agent.state ===
 // 'claimed'` en claim-issue.ts), así que ese guard solo no alcanza para
@@ -20,17 +21,6 @@ import { runnerProjectRepoAccess } from '../common/utils/project-repos';
 const DISPATCH_COOLDOWN_MS = 10 * 60 * 1000;
 
 const DEFAULT_MAX_REVIEW_ATTEMPTS = 2;
-
-/** Strict, current project authorization for a local Runner job. */
-async function runnerProjectAccess(
-  db: FirebaseFirestore.Firestore,
-  issue: FirebaseFirestore.DocumentData,
-  installationRepos: string[],
-  targetRepo: string,
-) {
-  const access = await runnerProjectRepoAccess(db, issue, installationRepos);
-  return access && access.repos.includes(targetRepo) ? access : null;
-}
 
 /**
  * Despacha el run de re-trabajo del dev tras un rechazo de QA (D9): sin este
@@ -57,7 +47,7 @@ async function dispatchRework(
   const db = getFirestore();
   const agentSnap = await db.collection('agents').doc(agentId).get();
   const agent = agentSnap.exists ? agentSnap.data()! : null;
-  if (!agent || !agent.enabled || !agent.autonomousMode) {
+  if (!agent || agent.archivedAt || !agent.enabled || !agent.autonomousMode) {
     console.log(`[AgentDispatch] rework for '${issueId}': agent '${agentId}' missing or not enabled/autonomous, skipping.`);
     return;
   }
@@ -196,7 +186,7 @@ async function dispatchRework(
       console.log(`[AgentDispatch] rework for '${issueId}': runner '${agent.runnerId}' is offline, revoked, or has an expired heartbeat, skipping.`);
       return;
     }
-    const projectAccess = await runnerProjectAccess(db, { ...after, workspaceId }, authorized, repoFullName);
+    const projectAccess = await runnerProjectAccessForDispatch(db, { ...after, workspaceId }, authorized, repoFullName);
     if (!projectAccess) {
       console.log(`[AgentDispatch] rework for '${issueId}': '${repoFullName}' is not authorized by its project, skipping.`);
       return;
@@ -272,7 +262,7 @@ async function dispatchHandoff(
   const db = getFirestore();
   const agentSnap = await db.collection('agents').doc(agentId).get();
   const agent = agentSnap.exists ? agentSnap.data()! : null;
-  if (!agent || !agent.enabled || !agent.autonomousMode) {
+  if (!agent || agent.archivedAt || !agent.enabled || !agent.autonomousMode) {
     console.log(`[AgentDispatch] handoff for '${issueId}': agent '${agentId}' missing or not enabled/autonomous, skipping.`);
     return;
   }
@@ -340,7 +330,7 @@ async function dispatchHandoff(
   // sin el repo, el entry quedaría marcado como enviado sin ningún job que lo
   // pueda completar (exactamente el estado que después no se puede reintentar).
   let runner: FirebaseFirestore.DocumentData | undefined;
-  let projectAccess: Awaited<ReturnType<typeof runnerProjectAccess>> = null;
+  let projectAccess: Awaited<ReturnType<typeof runnerProjectAccessForDispatch>> = null;
   if (agent.runnerId) {
     const runnerSnap = await db.collection('runners').doc(agent.runnerId).get();
     if (!runnerSnap.exists || runnerSnap.data()!.workspaceId !== workspaceId) {
@@ -348,7 +338,7 @@ async function dispatchHandoff(
       return;
     }
     runner = runnerSnap.data()!;
-    projectAccess = await runnerProjectAccess(db, { ...after, workspaceId }, authorized, targetRepo);
+    projectAccess = await runnerProjectAccessForDispatch(db, { ...after, workspaceId }, authorized, targetRepo);
     if (!isRunnerAvailable(runner) || !projectAccess) {
       console.log(`[AgentDispatch] handoff for '${issueId}': Runner unavailable or '${targetRepo}' is not authorized by its project, skipping.`);
       return;
@@ -465,6 +455,7 @@ export const agentDispatchTrigger = onDocumentWritten(
     try {
       const before = event.data?.before.data();
       const after = event.data?.after.data();
+      if (after) after.id = event.params.issueId;
       if (!after) return; // deleted
 
       // Dispara cuando el issue *se vuelve* despachable: está en `todo` con un
@@ -539,6 +530,10 @@ export const agentDispatchTrigger = onDocumentWritten(
         return;
       }
       const agent = agentSnap.data()!;
+      if (agent.archivedAt) {
+        console.log(`[AgentDispatch] agent '${agentId}' is archived, skipping dispatch.`);
+        return;
+      }
       if (!agent.enabled || !agent.autonomousMode) {
         console.log(
           `[AgentDispatch] agent '${agentId}' is not enabled/autonomous (enabled=${!!agent.enabled}, autonomousMode=${!!agent.autonomousMode}), skipping dispatch.`
@@ -626,9 +621,14 @@ export const agentDispatchTrigger = onDocumentWritten(
       if (agent.runnerId) {
         const runnerSnap = await db.collection('runners').doc(agent.runnerId).get();
         const runner = runnerSnap.exists ? runnerSnap.data()! : null;
-        const projectAccess = await runnerProjectAccess(db, { ...after, workspaceId }, preflightAuthorized, preflightRepo.repoFullName);
+        const projectAccess = await runnerProjectAccessForDispatch(db, { ...after, workspaceId }, preflightAuthorized, preflightRepo.repoFullName);
         if (!runner || runner.workspaceId !== workspaceId || !isRunnerAvailable(runner) || !projectAccess) {
           console.log(`[AgentDispatch] runner '${agent.runnerId}' is missing/offline or '${preflightRepo.repoFullName}' is not authorized by its project, skipping dispatch.`);
+          return;
+        }
+        const readiness = runnerPreflight({ ...agent, id: agentId }, { ...runner, id: agent.runnerId }, workspaceId, projectAccess.repos, 'task', Date.now(), true);
+        if (!readiness.ready) {
+          await db.collection('issues').doc(event.params.issueId).update({ 'agent.state': 'blocked', 'agent.blockedReason': readiness.problems.map((p) => `${p.message} ${p.action}`).join(' '), updatedAt: new Date().toISOString() });
           return;
         }
       }
@@ -729,7 +729,7 @@ export const agentDispatchTrigger = onDocumentWritten(
           console.log(`[AgentDispatch] runner '${agent.runnerId}' is offline, revoked, or has an expired heartbeat, skipping dispatch.`);
           return;
         }
-        const projectAccess = await runnerProjectAccess(db, { ...after, workspaceId }, authorized, repoFullName);
+        const projectAccess = await runnerProjectAccessForDispatch(db, { ...after, workspaceId }, authorized, repoFullName);
         if (!projectAccess) {
           console.log(`[AgentDispatch] '${repoFullName}' is not authorized by the issue project, skipping Runner dispatch.`);
           return;

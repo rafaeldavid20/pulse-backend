@@ -7,7 +7,7 @@ import { nextIssueNumber } from '../../common/utils/counters';
 import { normalizeAcceptanceCriteria } from '../../common/utils/acceptance-criteria';
 import { ISSUE_WRITABLE_FIELDS, pickWritableFields } from '../../common/utils/issue-fields';
 import { validateRepoForWorkspace } from '../../common/utils/repo-field';
-import { getWorkspaceMember, isWorkspaceAdmin } from '../../common/utils/agent-authorization';
+import { agentVisibility, getWorkspaceMember, isWorkspaceAdmin } from '../../common/utils/agent-authorization';
 import {
   adjustParentCounters,
   doneWeight,
@@ -52,6 +52,30 @@ export class CreateIssueAction extends PlatformActionHandler {
       type: normalizeIssueType(data.type),
       parentId: data.parentId,
     });
+
+    // The epic default is an automatic process assignment: only public agents
+    // are eligible. Private agents stay out of every automatic assignment path.
+    let execution: Record<string, any> | undefined;
+    if (placement.epicId) {
+      const epicSnap = await db.collection('issues').doc(placement.epicId).get();
+      const defaultAgentId = epicSnap.exists ? epicSnap.data()!.defaultAssigneeId : undefined;
+      if (defaultAgentId) {
+        const defaultAgentSnap = await db.collection('agents').doc(defaultAgentId).get();
+        if (
+          defaultAgentSnap.exists &&
+          defaultAgentSnap.data()!.workspaceId === data.workspaceId &&
+          !defaultAgentSnap.data()!.archivedAt &&
+          agentVisibility(defaultAgentSnap.data()!) === 'public'
+        ) {
+          execution = {
+            agentId: defaultAgentId,
+            assignedBy: this.caller.uid || 'system',
+            assignedAt: new Date().toISOString(),
+            mode: 'public',
+          };
+        }
+      }
+    }
 
     if (data.assigneeId) {
       const responsible = await getWorkspaceMember(db, data.workspaceId, data.assigneeId);
@@ -111,6 +135,7 @@ export class CreateIssueAction extends PlatformActionHandler {
       projectId: data.projectId || null,
       assigneeId: data.assigneeId || null,
       responsibleMemberId: data.assigneeId || null,
+      ...(execution ? { execution } : {}),
       creatorId: this.caller.uid || data.creatorId || 'system',
       labelIds: data.labelIds || ['feature'],
       // Igual que `type`/`parentId`: `pickWritableFields` ya copió el valor

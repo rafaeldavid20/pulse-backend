@@ -1,7 +1,7 @@
 import { getFirestore } from 'firebase-admin/firestore';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
-import { agentVisibility, canAssignExecutionAgent, getWorkspaceMember, isWorkspaceAdmin } from '../../common/utils/agent-authorization';
+import { agentVisibility, canAssignExecutionAgent } from '../../common/utils/agent-authorization';
 
 /** Assigns an executor without replacing the human accountable for the issue. */
 export class AssignExecutionAgentAction extends PlatformActionHandler {
@@ -29,7 +29,6 @@ export class AssignExecutionAgentAction extends PlatformActionHandler {
     const issueSnap = await issueRef.get();
     if (!issueSnap.exists) throw new Error(`El issue '${issueId}' no existe.`);
     const issue = issueSnap.data()!;
-    const caller = await getWorkspaceMember(db, issue.workspaceId, callerUid);
     const responsibleMemberId = issue.responsibleMemberId || issue.assigneeId;
 
     if (!agentId) {
@@ -45,13 +44,12 @@ export class AssignExecutionAgentAction extends PlatformActionHandler {
       throw new Error(`El agente '${agentId}' no existe en este workspace.`);
     }
     const agent = agentSnap.data()!;
+    if (agent.archivedAt) throw new Error('No se puede asignar un agente archivado. Restauralo primero.');
     const visibility = agentVisibility(agent);
-    const callerIsAdmin = isWorkspaceAdmin(caller);
-
-    if (!canAssignExecutionAgent(agent, callerUid, responsibleMemberId, callerIsAdmin)) {
+    if (!canAssignExecutionAgent(agent, callerUid, responsibleMemberId)) {
       throw new Error(
         visibility === 'public'
-          ? 'Solo un admin puede asignar agentes públicos.'
+          ? 'Los agentes públicos se asignan mediante procesos del workspace, no desde la asignación manual.'
           : 'Solo podés asignar tus agentes personales a issues de los que sos responsable.'
       );
     }

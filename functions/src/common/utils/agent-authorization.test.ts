@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canAssignExecutionAgent, canManageAgent } from './agent-authorization';
+import { canAssignExecutionAgent, canDeleteAgent, canManageAgent } from './agent-authorization';
 
 test('un miembro no puede administrar el agente personal de otro miembro', () => {
   const agent = { ownerMemberId: 'owner-a', visibility: 'personal' };
@@ -9,17 +9,24 @@ test('un miembro no puede administrar el agente personal de otro miembro', () =>
   assert.equal(canManageAgent(agent, 'admin-c', true), true);
 });
 
-test('un agente personal solo se asigna por su dueño a su propio issue', () => {
-  const agent = { ownerMemberId: 'owner-a', visibility: 'personal' };
-  assert.equal(canAssignExecutionAgent(agent, 'owner-a', 'owner-a', false), true);
-  assert.equal(canAssignExecutionAgent(agent, 'owner-a', 'member-b', true), false);
-  assert.equal(canAssignExecutionAgent(agent, 'member-b', 'member-b', true), false);
+test('cada miembro solo puede eliminar sus agentes y los admins solo los legacy sin dueño', () => {
+  assert.equal(canDeleteAgent({ ownerMemberId: 'owner-a', visibility: 'personal' }, 'owner-a', false), true);
+  assert.equal(canDeleteAgent({ ownerMemberId: 'owner-a', visibility: 'personal' }, 'admin-c', true), false);
+  assert.equal(canDeleteAgent({ ownerMemberId: 'admin-c', visibility: 'public' }, 'admin-c', true), true);
+  assert.equal(canDeleteAgent({ visibility: 'public' }, 'admin-c', true), true);
 });
 
-test('los agentes públicos requieren admin para asignación y administración', () => {
+test('un agente personal solo se asigna por su dueño a su propio issue', () => {
+  const agent = { ownerMemberId: 'owner-a', visibility: 'personal' };
+  assert.equal(canAssignExecutionAgent(agent, 'owner-a', 'owner-a'), true);
+  assert.equal(canAssignExecutionAgent(agent, 'owner-a', 'member-b'), false);
+  assert.equal(canAssignExecutionAgent(agent, 'member-b', 'member-b'), false);
+});
+
+test('los agentes públicos se reservan a procesos y no se asignan manualmente', () => {
   const agent = { ownerMemberId: 'owner-a', visibility: 'public' };
   assert.equal(canManageAgent(agent, 'member-b', false), false);
-  assert.equal(canAssignExecutionAgent(agent, 'member-b', 'member-b', false), false);
+  assert.equal(canAssignExecutionAgent(agent, 'member-b', 'member-b'), false);
   assert.equal(canManageAgent(agent, 'admin-c', true), true);
-  assert.equal(canAssignExecutionAgent(agent, 'admin-c', 'member-b', true), true);
+  assert.equal(canAssignExecutionAgent(agent, 'admin-c', 'member-b'), false);
 });

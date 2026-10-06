@@ -69,6 +69,7 @@ export class UpdateAgentAction extends PlatformActionHandler {
       throw new Error(`El agente '${data.agentId}' no existe.`);
     }
     const agent = snap.data()!;
+    if (agent.archivedAt) throw new Error('No se puede editar un agente archivado. Restauralo primero.');
     const callerMember = await getWorkspaceMember(db, agent.workspaceId, this.caller.uid!);
     const callerIsAdmin = isWorkspaceAdmin(callerMember);
     const changingSettings = AGENT_WRITABLE_FIELDS.some((field) => data[field] !== undefined);

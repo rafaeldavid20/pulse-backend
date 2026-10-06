@@ -39,6 +39,14 @@ export class CreateApiKeyAction extends PlatformActionHandler {
     const db = getFirestore();
     const data = this.action.data;
 
+    if (data.agentId) {
+      const agentSnap = await db.collection('agents').doc(data.agentId).get();
+      if (!agentSnap.exists || agentSnap.data()!.workspaceId !== data.workspaceId) {
+        throw new Error('El agente no existe en este workspace.');
+      }
+      if (agentSnap.data()!.archivedAt) throw new Error('No se pueden crear claves para un agente archivado. Restauralo primero.');
+    }
+
     if (!data.workspaceId || !data.name) {
       throw new Error('Parámetros requeridos faltantes: workspaceId, name.');
     }

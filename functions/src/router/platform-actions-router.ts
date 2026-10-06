@@ -1,3 +1,4 @@
+import { PreflightAgentAction } from '../actions/runners/preflight-agent';
 import { PlatformActionRequest, PlatformActionResponse } from '../common/platform-actions/interfaces';
 import { CreateIssueAction } from '../actions/issues/create-issue';
 import { UpdateIssueAction } from '../actions/issues/update-issue';
@@ -17,6 +18,7 @@ import { ListApiKeysAction } from '../actions/apikeys/list-api-keys';
 import { CreateAgentAction } from '../actions/agents/create-agent';
 import { UpdateAgentAction } from '../actions/agents/update-agent';
 import { DeleteAgentAction } from '../actions/agents/delete-agent';
+import { ArchiveAgentAction, RestoreAgentAction } from '../actions/agents/archive-agent';
 import { ListAgentsAction } from '../actions/agents/list-agents';
 import { GetAgentUsageAction } from '../actions/agents/get-usage';
 import { ConnectRepoAction } from '../actions/agents/connect-repo';
@@ -64,6 +66,7 @@ import { DismissFindingAction } from '../actions/reviews/dismiss-finding';
 import { ReviewsRerunAction } from '../actions/reviews/rerun-review';
 import { ReturnToAgentAction } from '../actions/reviews/return-to-agent';
 import { RegisterRunnerAction } from '../actions/runners/register-runner';
+import { CancelRunnerJobAction } from '../actions/runners/cancel-runner-job';
 import { IssueRunnerJobAction, RetryRunnerJobAction } from '../actions/runners/issue-runner-job';
 import { ListRunnerJobsAction, ListRunnersAction, RevokeRunnerAction, RotateRunnerCredentialAction } from '../actions/runners/manage-runners';
 
@@ -118,6 +121,10 @@ export async function dispatchPlatformAction(
       return new CreateAgentAction(request, callerUid, callerEmail).run();
     case 'agents.update':
       return new UpdateAgentAction(request, callerUid, callerEmail).run();
+    case 'agents.archive':
+      return new ArchiveAgentAction(request, callerUid, callerEmail).run();
+    case 'agents.restore':
+      return new RestoreAgentAction(request, callerUid, callerEmail).run();
     case 'agents.delete':
       return new DeleteAgentAction(request, callerUid, callerEmail).run();
     case 'agents.list':
@@ -130,10 +137,14 @@ export async function dispatchPlatformAction(
       return new DisconnectRepoAction(request, callerUid, callerEmail).run();
     case 'agents.getQaCalibration':
       return new GetQaCalibrationAction(request, callerUid, callerEmail).run();
+    case 'runners.preflight':
+      return new PreflightAgentAction(request, callerUid, callerEmail).run();
     case 'runners.register':
       return new RegisterRunnerAction(request, callerUid, callerEmail).run();
     case 'runners.issueJob':
       return new IssueRunnerJobAction(request, callerUid, callerEmail).run();
+    case 'runners.cancelJob':
+      return new CancelRunnerJobAction(request, callerUid, callerEmail).run();
     case 'runners.retryJob':
       return new RetryRunnerJobAction(request, callerUid, callerEmail).run();
     case 'runners.list':

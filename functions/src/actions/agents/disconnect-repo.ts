@@ -54,6 +54,7 @@ export class DisconnectRepoAction extends PlatformActionHandler {
       throw new Error(`El agente '${data.agentId}' no existe en este workspace.`);
     }
     const agent = agentSnap.data()!;
+    if (agent.archivedAt) throw new Error('No se puede modificar un agente archivado. Restauralo primero.');
     const caller = await getWorkspaceMember(db, data.workspaceId, this.caller.uid!);
     if (agentVisibility(agent) === 'public' && !isWorkspaceAdmin(caller)) {
       throw new Error('Solo un admin puede desconectar un agente público.');
