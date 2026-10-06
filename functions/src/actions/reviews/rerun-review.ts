@@ -10,6 +10,7 @@ import { dispatchRepositoryEvent } from '../../github/client';
 import { enqueueRunnerJob } from '../../common/utils/runner-jobs';
 import { isRunnerAvailable } from '../../common/utils/runner-availability';
 import { runnerJobSigningPrivateKey } from '../../common/secrets';
+import { qaAssignmentError } from '../../common/utils/qa-assignment';
 
 const DEFAULT_MAX_REVIEW_ATTEMPTS = 2;
 
@@ -115,19 +116,21 @@ export class ReviewsRerunAction extends PlatformActionHandler {
       throw new Error('El agente QA asignado ya no está habilitado o no pertenece a este workspace.');
     }
     const executionAgentId = issue.execution?.agentId || issue.assigneeId;
-    if (assignedQa && (assignedQa.id === executionAgentId || assignedQa.data().reviewRepo !== repoFullName || assignedQa.data().archivedAt)) {
-      throw new Error(`El agente QA asignado no está configurado para revisar '${repoFullName}'.`);
+    if (assignedQa) {
+      const assignmentError = qaAssignmentError(assignedQa.id, assignedQa.data(), issue.workspaceId, executionAgentId, repoFullName);
+      if (assignmentError) throw new Error(assignmentError);
     }
     const qaCandidates = assignedQa
       ? [assignedQa]
-      : qaSnap.docs.filter((d) => d.data().autonomousMode === true && d.id !== executionAgentId && !d.data().archivedAt && d.data().reviewRepo === repoFullName);
+      : qaSnap.docs.filter((d) => d.data().autonomousMode === true && d.id !== executionAgentId && !d.data().archivedAt && (d.data().runnerId || d.data().reviewRepo === repoFullName));
     if (qaCandidates.length === 0) {
       throw new Error(`No hay un agente QA habilitado con reviewRepo '${repoFullName}' para re-ejecutar la revisión.`);
     }
     const reviewRepos = [...new Set(prs.map((pr) => pr.repoFullName))];
     let qaDoc: (typeof qaSnap.docs)[number] | undefined;
     let runner: FirebaseFirestore.DocumentData | undefined;
-    for (const candidate of qaCandidates.filter((item) => !!item.data().runnerId)) {
+    const runnerCandidates = qaCandidates.filter((item) => !!item.data().runnerId);
+    for (const candidate of runnerCandidates) {
       const candidateRunnerSnap = await db.collection('runners').doc(candidate.data().runnerId).get();
       if (!candidateRunnerSnap.exists || candidateRunnerSnap.data()!.workspaceId !== issue.workspaceId || !isRunnerAvailable(candidateRunnerSnap.data()!)) continue;
       const candidateRunner = candidateRunnerSnap.data()!;
@@ -144,9 +147,11 @@ export class ReviewsRerunAction extends PlatformActionHandler {
       runner = candidateRunner;
       break;
     }
-    // QA sin Runner sigue disponible vía GitHub Actions cuando ningún Runner
-    // asociado puede aceptar esta revisión ahora.
-    qaDoc ||= qaCandidates.find((candidate) => !candidate.data().runnerId);
+    // Mantener Actions solo como compatibilidad si no hay QA Runner configurado.
+    // Con un QA Runner, mostrar su problema de disponibilidad en vez de cambiar
+    // de proveedor silenciosamente.
+    if (!qaDoc && runnerCandidates.length === 0) qaDoc = qaCandidates.find((candidate) => !candidate.data().runnerId);
+    if (!qaDoc && runnerCandidates.length > 0) throw new Error(`El QA Runner del proyecto no está disponible para revisar '${repoFullName}'. Revisá su identidad, sesión y conexión; no se enviará el issue a GitHub Actions.`);
     if (!qaDoc) throw new Error(`No hay un agente QA con Runner disponible para re-ejecutar la revisión de '${repoFullName}'.`);
     const qaAgent = qaDoc.data();
     const qaAgentId = qaDoc.id;

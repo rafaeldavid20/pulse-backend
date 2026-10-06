@@ -42,6 +42,21 @@ Git/gh global para obtener snapshots. Ambos arrancan fuera de los repos, en un
 directorio temporal confiable, para evitar cargar hooks/configuración del PR.
 No se ejecutan builds/tests locales de QA con sesiones del proveedor presentes.
 
+## Selección de QA
+
+Un agente QA vinculado a Runner es de alcance proyecto: no necesita `reviewRepo`
+ni conexiones GitHub Actions por repositorio. El dispatch prioriza QA Runner
+autónomo y le firma en el job todos los repos habilitados del proyecto; el
+preflight descarga los SHAs exactos de los PRs y los heads de contexto. Si hay
+un QA Runner configurado pero no disponible, Pulse muestra el error y no cambia
+silenciosamente a otro proveedor. Los agentes sin Runner mantienen el flujo
+legacy de GitHub Actions limitado al `reviewRepo` configurado.
+
+El modo `shadow` registra el veredicto, findings y comentarios, pero no cambia
+el estado/asignación del issue ni dispara retrabajo. Puede usarse para observar
+QA Codex durante el rollout sin convertir sus resultados en una barrera de
+merge.
+
 ## Activación
 
 Desplegar `pulseQaSource` y las funciones de revisión junto con esta versión del
