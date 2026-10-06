@@ -1,3 +1,4 @@
+import { findPendingRunnerJob } from '../common/utils/pending-runner-job';
 import { configureRunnerRepos } from './configure-repos';
 import { currentRunnerProjectAccess } from '../common/utils/project-repos';
 import { parseRunnerReadiness, runnerPreflight } from '../common/utils/runner-preflight';
@@ -118,17 +119,11 @@ export const pulseRunnerPoll = onRequest(
       res.status(409).json({ error: 'Runner is not available; send a fresh online heartbeat before polling.' });
       return;
     }
-    const jobs = await getFirestore().collection('runner_jobs').where('runnerId', '==', runner.id).limit(20).get();
-    const now = Date.now();
-    const pending = jobs.docs
-      .map((doc) => doc.data())
-      .filter((job) => job.status === 'pending' && new Date(job.expiresAt).getTime() > now)
-      .sort((a, b) => a.issuedAt.localeCompare(b.issuedAt));
-    if (pending.length === 0) {
+    const job = await findPendingRunnerJob(getFirestore(), runner.id);
+    if (!job) {
       res.json({ job: null });
       return;
     }
-    const job = pending[0];
     const db = getFirestore();
     const deliveredAt = new Date().toISOString();
     const agent = await db.collection('agents').doc(job.agentId).get();
