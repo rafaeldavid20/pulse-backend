@@ -22,7 +22,7 @@
  */
 
 /** Sube cuando cambia la forma de la configuración, no su contenido. */
-export const RUN_CONFIG_VERSION = 1;
+export const RUN_CONFIG_VERSION = 2;
 
 /** Un run nuevo sobre un issue en `todo` asignado al agente. */
 export const TASK_PROMPT = `Usá el MCP de Pulse para trabajar el issue con id
@@ -193,14 +193,13 @@ El job \`verify\` (sin secrets, en un runner separado) ya corrió
 su resultado está en \`verify-output.txt\` si el artefacto se pudo
 descargar. Una falla de build ahí es un finding "blocker"
 automático. Para mirar más detalle podés leer archivos del
-checkout (ya tenés el head del PR) y correr \`git diff\`, \`git
-show\`, \`git log\`, \`cat\`, \`grep\`, \`ls\` — pero NO instales
-dependencias ni corras el build/tests/scripts del propio PR en
-este paso: ese código no es confiable y acá sí hay secrets
-cargados (a diferencia de \`verify\`). Si el issue toca tipos
-compartidos entre repos, podés clonar el otro repo (público, sin
-credenciales) de solo lectura para comparar, pero tampoco
-ejecutes nada de ahí.
+snapshots completos preparados por el preflight, cuyo manifiesto
+\`qa-sources.json\` registra el SHA exacto por repositorio. Si el diff
+supera el contexto, leé sus archivos. No clones repos con credenciales
+ni instales dependencias ni corras build/tests/scripts del PR en este
+paso: el código no es confiable y la sesión del proveedor está presente.
+Una falla de acceso es infraestructura, no un criterio funcional
+incumplido: detené la revisión y reportá el diagnóstico por repo.
 
 Verificá cada criterio de aceptación contra el diff real —el
 self-check del dev es una afirmación a contrastar, no algo dado

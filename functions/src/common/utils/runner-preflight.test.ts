@@ -43,3 +43,11 @@ test('project-scoped preflight gates old Runners and does not require duplicate 
   assert.equal(parseRunnerReadiness(upgraded.readiness).jobProtocolVersion, 2);
   assert.throws(() => parseRunnerReadiness({ ...readiness, jobProtocolVersion: 99 }));
 });
+
+test('QA requires snapshot support while project authorization remains independent of global Git access', () => {
+  const qa = { ...agent, role: 'qa' };
+  const prepared = { ...runner, readiness: { ...readiness, jobProtocolVersion: 2, repositories: [], identities: [{ agentId: qa.id, kind: qa.kind, role: 'qa' }] } };
+  assert(runnerPreflight(qa, prepared, 'ws-1', ['owner/private-runner'], 'review', now, true).problems.some((problem) => problem.code === 'qa_source_upgrade'));
+  assert(runnerPreflight(qa, { ...prepared, readiness: { ...prepared.readiness, qaSourceProtocolVersion: 1 } }, 'ws-1', ['owner/private-runner'], 'review', now, true).ready);
+  assert.equal(parseRunnerReadiness({ ...readiness, qaSourceProtocolVersion: 1 }).qaSourceProtocolVersion, 1);
+});
