@@ -265,7 +265,9 @@ export const pulseRunnerComplete = onRequest(
     await getFirestore().collection('api_keys').where('jobId', '==', jobId).get().then((keys) => Promise.all(keys.docs.map((key) => key.ref.update({ revokedAt: now }))));
     if (job.mode === 'review') {
       const issue = await db.collection('issues').doc(job.issueId).get();
-      if (issue.exists && issue.data()?.review?.state === 'running') {
+      // Codex can exit successfully before claiming the QA attempt. Report any
+      // still-open dispatch, not only attempts that already reached `running`.
+      if (issue.exists && issue.data()?.review?.dispatchedTo === job.agentId) {
         try {
           await new ReportReviewIncompleteAction({
             actionCode: 'reviews.reportIncomplete',

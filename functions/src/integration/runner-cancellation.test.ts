@@ -136,3 +136,46 @@ test('cancel: a queued QA job reports its review incomplete instead of leaving i
   assert.equal(result.success,true);
   assert.equal((await db.collection('issues').doc(f.job.issueId).get()).data()!.review.state,'needs_human');
 });
+
+test('runner QA completion closes an unclaimed attempt without blocking shadow development',async()=>{
+  for (const review of [
+    {dispatchedTo:'agent',attempt:1},
+    {state:'running',dispatchedTo:'agent',claimedBy:'agent',attempt:1},
+  ]) {
+    const f=await seed();
+    await db.collection('runner_jobs').doc(f.jobId).update({mode:'review'});
+    await db.collection('agents').doc(f.job.agentId).update({role:'qa',qaMode:'shadow'});
+    await db.collection('members').doc(`${f.workspaceId}_${f.job.agentId}`).set({workspaceId:f.workspaceId,userId:f.job.agentId,role:'member',isAgent:true});
+    const assignedReview={...review,dispatchedTo:f.job.agentId,...(review.state==='running'?{claimedBy:f.job.agentId}:{})};
+    await db.collection('issues').doc(f.job.issueId).set({
+      id:f.job.issueId,workspaceId:f.workspaceId,teamId:'team-test',identifier:'INT-QA-SHADOW',creatorId:f.owner,
+      status:'in_review',assigneeId:f.owner,labelIds:['feature'],review:assignedReview,
+    });
+
+    const result=await endpoint(pulseRunnerComplete,f.credential,{jobId:f.jobId,outcome:'completed'});
+    assert.equal(result.body.status,'completed');
+    const issue=(await db.collection('issues').doc(f.job.issueId).get()).data()!;
+    assert.equal(issue.review.state,'needs_human');
+    assert.equal(issue.status,'in_review');
+    assert.equal(issue.assigneeId,f.owner);
+    assert.deepEqual(issue.labelIds,['feature']);
+    const comments=await db.collection('comments').where('issueId','==',f.job.issueId).get();
+    assert.equal(comments.size,1);
+    assert.match(comments.docs[0].data().body,/modo shadow mantiene intactos/);
+  }
+});
+
+test('runner QA completion leaves an already-submitted verdict unchanged',async()=>{
+  const f=await seed();
+  await db.collection('runner_jobs').doc(f.jobId).update({mode:'review'});
+  await db.collection('agents').doc(f.job.agentId).update({role:'qa',qaMode:'shadow'});
+  await db.collection('issues').doc(f.job.issueId).set({
+    id:f.job.issueId,workspaceId:f.workspaceId,teamId:'team-test',identifier:'INT-QA-VERDICT',creatorId:f.owner,
+    status:'in_review',review:{state:'approved',dispatchedTo:f.job.agentId,attempt:1},
+  });
+
+  const result=await endpoint(pulseRunnerComplete,f.credential,{jobId:f.jobId,outcome:'completed'});
+  assert.equal(result.body.status,'completed');
+  assert.equal((await db.collection('issues').doc(f.job.issueId).get()).data()!.review.state,'approved');
+  assert.equal((await db.collection('comments').where('issueId','==',f.job.issueId).get()).size,0);
+});
