@@ -88,4 +88,7 @@ test('legacy project dispatch leaves an actionable visible issue diagnostic', as
   const issue = (await db.collection('issues').doc(f.issueId).get()).data()!;
   assert.equal(issue.agent.state, 'blocked');
   assert.match(issue.agent.blockedReason, /Configurá repositorios en el proyecto/);
+  await db.collection('projects').doc(f.projectId).update({ repoFullNames: ['owner/repo'] });
+  assert.ok(await runnerProjectAccessForDispatch(db, { ...issue, id: f.issueId }, ['owner/repo'], 'owner/repo'));
+  assert.equal((await db.collection('issues').doc(f.issueId).get()).data()!.agent.blockedReason, null);
 });

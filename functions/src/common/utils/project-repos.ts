@@ -166,5 +166,6 @@ export async function runnerProjectAccessForDispatch(
     if (issue.id) await db.collection('issues').doc(issue.id).update({ 'agent.state': 'blocked', 'agent.blockedReason': 'Configurá repositorios en el proyecto y habilitalos en la instalación GitHub; el repositorio destino debe pertenecer a ambos.', updatedAt: new Date().toISOString() });
     return null;
   }
+  if (issue.id && issue.agent?.blockedReason) await db.collection('issues').doc(issue.id).update({ 'agent.blockedReason': null, updatedAt: new Date().toISOString() });
   return access;
 }
