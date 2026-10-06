@@ -5,6 +5,7 @@ import { generateKeyPairSync, randomBytes } from 'crypto';
 import { initializeApp, getApps } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { runnerProjectRepoAccess, runnerProjectAccessForDispatch } from '../common/utils/project-repos';
+import { runnerPreflightForDispatch } from '../common/utils/runner-preflight';
 import { enqueueRunnerJob } from '../common/utils/runner-jobs';
 import { hashApiKeySecret } from '../common/utils/api-key';
 import { pulseRunnerPoll } from '../runners/endpoint';
@@ -92,3 +93,17 @@ test('legacy project dispatch leaves an actionable visible issue diagnostic', as
   assert.ok(await runnerProjectAccessForDispatch(db, { ...issue, id: f.issueId }, ['owner/repo'], 'owner/repo'));
   assert.equal((await db.collection('issues').doc(f.issueId).get()).data()!.agent.blockedReason, null);
 });
+
+for (const mode of ['task', 'rework', 'handoff']) {
+  test(`${mode} leaves an upgrade diagnostic before reserving dispatch on an old Runner`, async () => {
+    const f = await fixture();
+    const agent = (await db.collection('agents').doc(f.agentId).get()).data();
+    const runner = (await db.collection('runners').doc(f.runnerId).get()).data();
+    assert.equal(await runnerPreflightForDispatch(db, f.issueId, agent, runner, f.workspaceId, [], mode), false);
+    const issue = (await db.collection('issues').doc(f.issueId).get()).data()!;
+    assert.equal(issue.agent.state, 'blocked');
+    assert.match(issue.agent.blockedReason, /npm install -g @pulsehub\/runner@latest/);
+    assert.equal(issue.agent.dispatchedAt, undefined);
+    assert.equal(issue.review?.reworkDispatchedAt, undefined);
+  });
+}

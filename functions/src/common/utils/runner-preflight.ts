@@ -54,3 +54,14 @@ export function runnerPreflight(agent: any, runner: any, workspaceId: string, re
   }
   return { ready: problems.length === 0, problems, identity: identity || null, checkedAt: runner?.readinessCheckedAt || null };
 }
+
+/** Persist preparation failures before reserving a task, rework or handoff. */
+export async function runnerPreflightForDispatch(db: FirebaseFirestore.Firestore, issueId: string, agent: any, runner: any, workspaceId: string, repos: string[], mode: string) {
+  const check = runnerPreflight(agent, runner, workspaceId, repos, mode, Date.now(), true);
+  if (!check.ready) await db.collection('issues').doc(issueId).update({
+    'agent.state': 'blocked',
+    'agent.blockedReason': check.problems.map((problem) => `${problem.message} ${problem.action}`).join(' '),
+    updatedAt: new Date().toISOString(),
+  });
+  return check.ready;
+}
