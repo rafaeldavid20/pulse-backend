@@ -64,6 +64,7 @@ async function dispatchRework(
 
   const review = after.review as Record<string, any> | undefined;
   const attempt = review?.attempt ?? 0;
+  if (review?.reworkDispatchedForAttempt === attempt || after.agent?.state === 'claimed' || ['done', 'canceled'].includes(after.status)) return;
   const startedAt = new Date().toISOString();
   const failPreflight = async (reason: string) => {
     if (agent.runnerId) await reportDispatchFailure(db, issueId, agentId, startedAt, new RunnerDispatchError('preflight', [reason]), { mode: 'rework', attempt });
@@ -461,16 +462,17 @@ export const agentDispatchTrigger = onDocumentWritten(
         return;
       }
 
-      // Re-trabajo tras un rechazo de QA (D9/TES-205): dispara al *entrar* a
-      // `changes_requested`, gemelo del `enteredTodo` de más abajo pero para
-      // este otro camino de dispatch — sin esto, el issue queda en
-      // `in_progress` para siempre después del primer rechazo, porque el
-      // dispatch de `todo` de acá abajo nunca se activa (el status ya no es
-      // `todo`).
+      // Reintentar desde Por hacer conserva la continuación vigente: el
+      // rechazo sigue en changes_requested aunque el primer enqueue falle.
+      // Nunca convertir ese reintento en task ni aplicar su cooldown anterior.
       const enteredChangesRequested =
         after.review?.state === 'changes_requested' && before?.review?.state !== 'changes_requested';
-      if (enteredChangesRequested && agentId) {
-        await dispatchRework(event.params.issueId, after, agentId);
+      const enteredTodo = after.status === 'todo' && before?.status !== 'todo';
+      const assigneeChanged = (before?.execution?.agentId || before?.assigneeId) !== agentId;
+      if (after.review?.state === 'changes_requested' && agentId) {
+        if (enteredChangesRequested || enteredTodo || (after.status === 'todo' && assigneeChanged)) {
+          await dispatchRework(event.params.issueId, after, agentId);
+        }
         return;
       }
 
@@ -481,8 +483,6 @@ export const agentDispatchTrigger = onDocumentWritten(
         return;
       }
 
-      const enteredTodo = before?.status !== 'todo';
-      const assigneeChanged = (before?.execution?.agentId || before?.assigneeId) !== agentId;
       if (!enteredTodo && !assigneeChanged) {
         console.log(
           `[AgentDispatch] issue '${event.params.issueId}' already in 'todo' for the same assignee, not a new dispatchable transition, skipping dispatch.`

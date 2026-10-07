@@ -73,6 +73,18 @@ async function counts(f: Awaited<ReturnType<typeof taskFixture>>) {
   };
 }
 
+// Trigger snapshots come from actual persisted transitions, including retries
+// where review.state remains changes_requested throughout.
+async function transition(issueId: string, update: FirebaseFirestore.UpdateData<FirebaseFirestore.DocumentData>) {
+  const ref = db.collection('issues').doc(issueId);
+  const before = await ref.get();
+  await ref.update(update);
+  const after = await ref.get();
+  const event = { params: { issueId }, data: { before, after } };
+  await agentDispatchTrigger.run(event as any);
+  return event;
+}
+
 test('failed task preflight records safe reasons, spends nothing, and correction retries immediately', async () => {
   const f = await taskFixture();
   await db.collection('runners').doc(f.runnerId).update({ readinessCheckedAt: '2000-01-01T00:00:00.000Z', 'readiness.providers.codex.session': false });
@@ -184,6 +196,69 @@ test('real task trigger reports preflight failure and a new todo transition retr
 });
 
 
+test('rework recovery keeps the QA attempt and finding repo across real status transitions', async () => {
+  const f = await taskFixture();
+  const ref = db.collection('issues').doc(f.issueId);
+  await db.collection('agents').doc(f.agentId).update({ autonomousMode: true });
+  // An actual task was emitted recently, so a task retry would hit cooldown.
+  const task = await f.emit();
+  await db.collection('runner_jobs').doc(task.id).update({ status: 'completed' });
+  await ref.update({ status: 'in_progress', responsibleMemberId: f.owner,
+    git: { repoFullName: 'owner/repo' }, review: { state: 'pending', attempt: 1 } });
+  await db.collection('projects').doc(f.workspaceId).update({ repoFullNames: ['owner/repo', 'owner/finding'] });
+  await db.collection('github_installations').doc(f.workspaceId).update({ repositoryFullNames: ['owner/repo', 'owner/finding'] });
+  await db.collection('agents').doc(f.agentId).update({ allowedRepos: ['owner/repo', 'owner/finding'] });
+  await db.collection('runners').doc(f.runnerId).update({ connectedRepos: ['owner/repo', 'owner/finding'],
+    'readiness.repositories': [{ repo: 'owner/repo', accessible: true }, { repo: 'owner/finding', accessible: true }],
+    'readiness.providers.codex.session': false });
+  const original = runnerJobSigningPrivateKey.value;
+  runnerJobSigningPrivateKey.value = () => privateKey;
+  try {
+    await transition(f.issueId, { 'review.state': 'changes_requested',
+      'review.findings': [{ status: 'open', severity: 'major', repoFullName: 'owner/finding' }] });
+    let issue = (await ref.get()).data()!;
+    assert.equal(issue.agent.dispatchFailure.stage, 'preflight');
+    assert.equal(issue.review.reworkDispatchedForAttempt, undefined);
+    assert.deepEqual(await counts(f), { jobs: 1, runs: 1, budget: 1 });
+    await db.collection('runners').doc(f.runnerId).update({ 'readiness.providers.codex.session': true });
+    await transition(f.issueId, { status: 'backlog' });
+    const retryEvent = await transition(f.issueId, { status: 'todo' });
+    assert.equal(retryEvent.data.before.data()!.review.state, 'changes_requested');
+    assert.equal(retryEvent.data.after.data()!.review.state, 'changes_requested');
+    await Promise.all([agentDispatchTrigger.run(retryEvent as any), agentDispatchTrigger.run(retryEvent as any)]);
+    assert.deepEqual(await counts(f), { jobs: 2, runs: 2, budget: 2 });
+    const jobs = (await db.collection('runner_jobs').where('issueId', '==', f.issueId).get()).docs;
+    const rework = jobs.find((job) => job.id !== task.id)!;
+    assert.equal(rework.data().mode, 'rework');
+    assert.equal(rework.data().repoFullName, 'owner/finding');
+    const run = (await db.collection('agent_runs').doc(rework.id).get()).data()!;
+    assert.equal(run.mode, 'rework');
+    assert.equal(run.reviewAttempt, 1);
+    issue = (await ref.get()).data()!;
+    assert.equal(issue.agent.dispatchFailure, undefined);
+    assert.equal(issue.review.attempt, 1);
+    assert.equal(issue.review.reworkDispatchedForAttempt, 1);
+    // After completion AND cooldown expiry, status toggles still cannot emit
+    // either another rework or a task for an already reserved QA attempt.
+    await db.collection('runner_jobs').doc(rework.id).update({ status: 'completed' });
+    await ref.update({ 'agent.dispatchedAt': '2000-01-01T00:00:00.000Z' });
+    await transition(f.issueId, { status: 'backlog' });
+    await transition(f.issueId, { status: 'todo' });
+    assert.deepEqual(await counts(f), { jobs: 2, runs: 2, budget: 2 });
+  } finally { runnerJobSigningPrivateKey.value = original; }
+});
+
+test('retrying a shadow QA rejection cannot fall through to task dispatch', async () => {
+  const f = await taskFixture();
+  const reviewerId = `qa-${f.agentId}`;
+  await db.collection('agents').doc(f.agentId).update({ autonomousMode: true });
+  await db.collection('agents').doc(reviewerId).set({ qaMode: 'shadow' });
+  await db.collection('issues').doc(f.issueId).update({ status: 'in_progress', review: { state: 'changes_requested', attempt: 1, reviewerId } });
+  await transition(f.issueId, { status: 'backlog' });
+  await transition(f.issueId, { status: 'todo' });
+  assert.deepEqual(await counts(f), { jobs: 0, runs: 0, budget: 0 });
+});
+
 for (const mode of ['handoff', 'rework'] as const) {
   async function continuationFixture() {
     const f = await taskFixture();
@@ -198,10 +273,8 @@ for (const mode of ['handoff', 'rework'] as const) {
         : { review: { state: 'changes_requested', attempt: 1 } }),
     });
     const dispatch = async () => {
-      const after = (await db.collection('issues').doc(f.issueId).get()).data()!;
-      await agentDispatchTrigger.run({ params: { issueId: f.issueId }, data: {
-        before: { data: () => ({ ...after, review: { state: 'pending' } }) }, after: { data: () => after },
-      } } as any);
+      await transition(f.issueId, { status: 'backlog' });
+      await transition(f.issueId, { status: 'todo' });
     };
     const emit = (key = privateKey, database = db) => enqueueRunnerJob(database, { ...f.input, mode }, key, 'runner-job-v1', reservation);
     return { ...f, reservation, dispatch, emit };
