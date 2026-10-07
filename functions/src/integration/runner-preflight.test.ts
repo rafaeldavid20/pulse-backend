@@ -182,3 +182,105 @@ test('real task trigger reports preflight failure and a new todo transition retr
     runnerJobSigningPrivateKey.value = original;
   }
 });
+
+
+for (const mode of ['handoff', 'rework'] as const) {
+  async function continuationFixture() {
+    const f = await taskFixture();
+    const requestedAt = new Date().toISOString();
+    const reservation = mode === 'handoff' ? { mode, requestedAt } : { mode, attempt: 1 };
+    await db.collection('agents').doc(f.agentId).update({ autonomousMode: true });
+    await db.collection('issues').doc(f.issueId).update({
+      status: 'in_progress', responsibleMemberId: f.owner, git: { repoFullName: 'owner/repo' },
+      // A previous successful task cooldown must not hide continuation errors.
+      agent: { state: 'idle', dispatchedAt: new Date(Date.now() - 1000).toISOString(), dispatchedTo: f.agentId },
+      ...(mode === 'handoff' ? { pendingRepoWork: [{ repoFullName: 'owner/repo', requestedAt }] }
+        : { review: { state: 'changes_requested', attempt: 1 } }),
+    });
+    const dispatch = async () => {
+      const after = (await db.collection('issues').doc(f.issueId).get()).data()!;
+      await agentDispatchTrigger.run({ params: { issueId: f.issueId }, data: {
+        before: { data: () => ({ ...after, review: { state: 'pending' } }) }, after: { data: () => after },
+      } } as any);
+    };
+    const emit = (key = privateKey, database = db) => enqueueRunnerJob(database, { ...f.input, mode }, key, 'runner-job-v1', reservation);
+    return { ...f, reservation, dispatch, emit };
+  }
+
+  test(`${mode} trigger reports preflight/signing failures and retries without reservation or spend`, async () => {
+    const f = await continuationFixture();
+    const original = runnerJobSigningPrivateKey.value;
+    runnerJobSigningPrivateKey.value = () => privateKey;
+    try {
+      await db.collection('runners').doc(f.runnerId).update({ 'readiness.providers.codex.session': false });
+      await f.dispatch();
+      let issue = (await db.collection('issues').doc(f.issueId).get()).data()!;
+      assert.equal(issue.agent.dispatchFailure.stage, 'preflight');
+      assert.deepEqual(await counts(f), { jobs: 0, runs: 0, budget: 0 });
+      const diagnosticTime = issue.agent.dispatchFailure.at;
+      await f.dispatch();
+      assert.equal((await db.collection('issues').doc(f.issueId).get()).data()!.agent.dispatchFailure.at, diagnosticTime);
+      await db.collection('runners').doc(f.runnerId).update({ 'readiness.providers.codex.session': true });
+      runnerJobSigningPrivateKey.value = () => 'invalid signing material';
+      await f.dispatch();
+      issue = (await db.collection('issues').doc(f.issueId).get()).data()!;
+      assert.equal(issue.agent.dispatchFailure.stage, 'enqueue');
+      assert.doesNotMatch(JSON.stringify(issue.agent.dispatchFailure), /invalid signing material/);
+      assert.equal(mode === 'handoff' ? issue.pendingRepoWork[0].dispatchedAt : issue.review.reworkDispatchedForAttempt, undefined);
+      assert.deepEqual(await counts(f), { jobs: 0, runs: 0, budget: 0 });
+      runnerJobSigningPrivateKey.value = () => privateKey;
+      await db.collection('runners').doc(f.runnerId).update({ maxConcurrentJobs: 10 });
+      await Promise.all([f.dispatch(), f.dispatch(), f.dispatch()]);
+      assert.deepEqual(await counts(f), { jobs: 1, runs: 1, budget: 1 });
+      issue = (await db.collection('issues').doc(f.issueId).get()).data()!;
+      assert.equal(issue.agent.dispatchFailure, undefined);
+      assert.ok(mode === 'handoff' ? issue.pendingRepoWork[0].dispatchedAt : issue.review.reworkDispatchedForAttempt === 1);
+      // A delayed failure cannot replace a successfully issued continuation.
+      await reportDispatchFailure(db, f.issueId, f.agentId, new Date().toISOString(), new Error('unsafe transport'),
+        f.reservation.mode === 'handoff' ? { ...f.reservation, repoFullName: 'owner/repo' } : f.reservation);
+      assert.equal((await db.collection('issues').doc(f.issueId).get()).data()!.agent.dispatchFailure, undefined);
+    } finally { runnerJobSigningPrivateKey.value = original; }
+  });
+
+  test(`${mode} capacity failure and stale continuation do not reserve or spend`, async () => {
+    const f = await continuationFixture();
+    const busy = db.collection('runner_jobs').doc(`busy-${f.agentId}`);
+    await busy.set({ runnerId: f.runnerId, issueId: 'another-issue', status: 'delivered', expiresAt: new Date(Date.now() + 60000).toISOString() });
+    await assert.rejects(f.emit(), (error: any) => error.stage === 'enqueue' && /capacidad/.test(error.message));
+    assert.deepEqual(await counts(f), { jobs: 0, runs: 0, budget: 0 });
+    await busy.update({ status: 'completed' });
+    const ref = db.collection('issues').doc(f.issueId);
+    await ref.update(mode === 'handoff'
+      ? { pendingRepoWork: [{ repoFullName: 'owner/repo', requestedAt: 'replacement-request' }] }
+      : { 'review.attempt': 2 });
+    await assert.rejects(f.emit(), (error: any) => error.silent === true);
+    assert.deepEqual(await counts(f), { jobs: 0, runs: 0, budget: 0 });
+  });
+
+  test(`${mode} enqueue commit failure rolls back budget, marker and run`, async () => {
+    const f = await continuationFixture();
+    const failingDb = {
+      collection: db.collection.bind(db),
+      runTransaction: (work: any) => db.runTransaction((tx) => work(new Proxy(tx, {
+        get(target, key) {
+          if (key === 'create') return (ref: any, value: any) => {
+            if (ref.parent.id === 'runner_jobs') throw new Error('Injected enqueue failure');
+            return target.create(ref, value);
+          };
+          const value = Reflect.get(target, key);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      }))),
+    } as any;
+    await assert.rejects(f.emit(privateKey, failingDb), /Injected enqueue failure/);
+    let issue = (await db.collection('issues').doc(f.issueId).get()).data()!;
+    assert.equal(mode === 'handoff' ? issue.pendingRepoWork[0].dispatchedAt : issue.review.reworkDispatchedForAttempt, undefined);
+    assert.deepEqual(await counts(f), { jobs: 0, runs: 0, budget: 0 });
+    await db.collection('workspaces').doc(f.workspaceId).set({ agentsPaused: true });
+    await assert.rejects(f.emit(), (error: any) => error.stage === 'budget');
+    assert.deepEqual(await counts(f), { jobs: 0, runs: 0, budget: 0 });
+    await db.collection('workspaces').doc(f.workspaceId).update({ agentsPaused: false });
+    await f.emit();
+    assert.deepEqual(await counts(f), { jobs: 1, runs: 1, budget: 1 });
+  });
+}

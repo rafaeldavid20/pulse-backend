@@ -16,7 +16,7 @@ export class RunnerDispatchError extends Error {
   }
 }
 
-export async function reportDispatchFailure(db: Firestore, issueId: string, agentId: string, startedAt: string, error: unknown) {
+export async function reportDispatchFailure(db: Firestore, issueId: string, agentId: string, startedAt: string, error: unknown, continuation?: { mode: 'handoff'; requestedAt: string; repoFullName: string } | { mode: 'rework'; attempt: number }) {
   if (error instanceof RunnerDispatchError && error.silent) return;
   const failure: Failure = {
     stage: error instanceof RunnerDispatchError ? error.stage : 'enqueue',
@@ -30,7 +30,17 @@ export async function reportDispatchFailure(db: Firestore, issueId: string, agen
     // by a concurrent attempt, or report against a different executor.
     if (!issue || (issue.execution?.agentId || issue.assigneeId) !== agentId ||
       (issue.agent?.dispatchedAt && (issue.agent.dispatchedAt >= startedAt ||
-        (issue.agent.dispatchedTo === agentId && Date.now() - Date.parse(issue.agent.dispatchedAt) < DISPATCH_COOLDOWN_MS)))) return;
+        (!continuation && issue.agent.dispatchedTo === agentId && Date.now() - Date.parse(issue.agent.dispatchedAt) < DISPATCH_COOLDOWN_MS)))) return;
+    if (continuation) {
+      if (continuation.mode === 'rework' && (issue.review?.state !== 'changes_requested' || issue.review.attempt !== continuation.attempt || issue.review.reworkDispatchedForAttempt === continuation.attempt)) return;
+      if (continuation.mode === 'handoff' && !(issue.pendingRepoWork || []).some((e: any) => e.repoFullName === continuation.repoFullName && e.requestedAt === continuation.requestedAt && !e.dispatchedAt)) return;
+      const jobs = await tx.get(db.collection('runner_jobs').where('issueId', '==', issueId));
+      if (jobs.docs.some((doc) => doc.data().agentId === agentId && ['pending', 'delivered'].includes(doc.data().status) && Date.parse(doc.data().expiresAt) > Date.now())) return;
+    }
+    // The diagnostic write triggers this same handoff path. Keep an identical
+    // failure idempotent so an unavailable Runner cannot create a write loop.
+    if (issue.agent?.state === 'blocked' && issue.agent.dispatchFailure?.stage === failure.stage &&
+      JSON.stringify(issue.agent.dispatchFailure.reasons) === JSON.stringify(failure.reasons)) return;
     tx.update(ref, { 'agent.dispatchFailure': failure, 'agent.state': 'blocked', 'agent.blockedReason': failure.reasons.join(' ') });
   });
 }

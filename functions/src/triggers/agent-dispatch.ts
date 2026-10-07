@@ -8,11 +8,27 @@ import { checkWorkspaceDispatchBudget, todayKey } from '../common/utils/dispatch
 import { checkIssueRunBudget } from '../common/utils/issue-run-budget';
 import { buildNeedsHumanEscalation } from '../common/utils/review-escalation';
 import { agentAllowedRepos, agentVisibility } from '../common/utils/agent-authorization';
-import { enqueueRunnerJob } from '../common/utils/runner-jobs';
+import { enqueueRunnerJob, DispatchReservation } from '../common/utils/runner-jobs';
 import { DISPATCH_COOLDOWN_MS, reportDispatchFailure, RunnerDispatchError } from '../common/utils/dispatch-failure';
-import { isRunnerAvailable } from '../common/utils/runner-availability';
-import { runnerPreflightForDispatch } from '../common/utils/runner-preflight';
-import { runnerProjectAccessForDispatch, runnerProjectRepoAccess } from '../common/utils/project-repos';
+import { runnerProjectRepoAccess } from '../common/utils/project-repos';
+
+async function dispatchRunnerContinuation(
+  db: FirebaseFirestore.Firestore, issueId: string, issue: FirebaseFirestore.DocumentData,
+  agentId: string, agent: FirebaseFirestore.DocumentData, authorized: string[], repo: string,
+  reservation: Exclude<DispatchReservation, boolean>,
+) {
+  const startedAt = new Date().toISOString();
+  try {
+    const access = await runnerProjectRepoAccess(db, { ...issue, workspaceId: issue.workspaceId }, authorized);
+    if (!access || !access.repos.includes(repo)) throw new RunnerDispatchError('preflight', ['Configurá repositorios en el proyecto y habilitalos en la instalación GitHub; el repositorio destino debe pertenecer a ambos.']);
+    await enqueueRunnerJob(db, {
+      workspaceId: issue.workspaceId, projectId: access.projectId, issueId, agentId,
+      runnerId: agent.runnerId, repoFullName: repo, contextRepos: access.repos, mode: reservation.mode,
+    }, runnerJobSigningPrivateKey.value(), 'runner-job-v1', reservation);
+  } catch (error) {
+    await reportDispatchFailure(db, issueId, agentId, startedAt, error, reservation.mode === 'handoff' ? { ...reservation, repoFullName: repo } : reservation);
+  }
+}
 
 const DEFAULT_MAX_REVIEW_ATTEMPTS = 2;
 
@@ -48,6 +64,10 @@ async function dispatchRework(
 
   const review = after.review as Record<string, any> | undefined;
   const attempt = review?.attempt ?? 0;
+  const startedAt = new Date().toISOString();
+  const failPreflight = async (reason: string) => {
+    if (agent.runnerId) await reportDispatchFailure(db, issueId, agentId, startedAt, new RunnerDispatchError('preflight', [reason]), { mode: 'rework', attempt });
+  };
 
   // Defensa en profundidad: `reviews.submit` (D5) ya no deja pasar a
   // `changes_requested` con los intentos agotados (ahí el outcome es
@@ -103,14 +123,47 @@ async function dispatchRework(
 
   const installSnap = await db.collection('github_installations').where('workspaceId', '==', workspaceId).limit(1).get();
   if (installSnap.empty) {
-    console.log(`[AgentDispatch] rework for '${issueId}': workspace '${workspaceId}' has no GitHub installation, skipping.`);
+    await failPreflight('Conectá una instalación GitHub al workspace antes de reintentar.');
     return;
   }
   const installation = installSnap.docs[0].data();
+
+  // Multi-repo (K9/TES-202): si un finding abierto bloqueante señala un repo
+  // puntual distinto del que resolvería la cascada normal, el re-trabajo tiene
+  // que ir a ESE repo — ahí está la rama y el PR con el finding, no en el
+  // repo por default. "Exactamente un run" (criterio de aceptación): se
+  // despacha a un solo repo; si además hace falta tocar otro, el propio
+  // prompt le pide al dev usar `pulse_request_repo_work`, igual que en
+  // cualquier otro run multi-repo.
+  const findings: Array<{ repoFullName?: string; status?: string; severity?: string }> = review?.findings || [];
+  const flaggedRepos = Array.from(
+    new Set(
+      findings
+        .filter((f) => f.status === 'open' && (f.severity === 'blocker' || f.severity === 'major') && f.repoFullName)
+        .map((f) => f.repoFullName as string)
+    )
+  );
+  const { repoFullName: cascadeRepo } = await resolveIssueRepo(db, { ...after, id: issueId }, { agentId });
+  const repoFullName = flaggedRepos.length > 0 && !flaggedRepos.includes(cascadeRepo || '') ? flaggedRepos[0] : cascadeRepo;
+
+  if (!repoFullName) {
+    await failPreflight('Configurá el repositorio de la issue, del agente o de su proyecto antes de reintentar.');
+    return;
+  }
+
+  const authorized: string[] = installation.repositoryFullNames || [];
+  if (authorized.length > 0 && !authorized.includes(repoFullName)) {
+    await failPreflight('Habilitá el repositorio destino en la instalación GitHub del workspace antes de reintentar.');
+    return;
+  }
+
+  // Un agente vinculado a un Runner debe conservar el mismo transporte en
+  // rework: nunca caer a GitHub Actions después de haber ejecutado el primer
+  // intento local. Revalidamos Runner y repo antes de emitir el envelope,
+  // igual que en el dispatch inicial.
   if (agent.runnerId) {
-    const snap = await db.collection('runners').doc(agent.runnerId).get();
-    const runner = snap.exists ? { ...snap.data(), id: agent.runnerId } : null;
-    if (!await runnerPreflightForDispatch(db, issueId, { ...agent, id: agentId }, runner, workspaceId, [], 'rework')) return;
+    await dispatchRunnerContinuation(db, issueId, after, agentId, agent, authorized, repoFullName, { mode: 'rework', attempt });
+    return;
   }
 
   const issueRef = db.collection('issues').doc(issueId);
@@ -138,67 +191,6 @@ async function dispatchRework(
   });
   if (!decision.allowed) {
     console.log(`[AgentDispatch] rework for '${issueId}' not dispatched (${decision.reason}).`);
-    return;
-  }
-
-  // Multi-repo (K9/TES-202): si un finding abierto bloqueante señala un repo
-  // puntual distinto del que resolvería la cascada normal, el re-trabajo tiene
-  // que ir a ESE repo — ahí está la rama y el PR con el finding, no en el
-  // repo por default. "Exactamente un run" (criterio de aceptación): se
-  // despacha a un solo repo; si además hace falta tocar otro, el propio
-  // prompt le pide al dev usar `pulse_request_repo_work`, igual que en
-  // cualquier otro run multi-repo.
-  const findings: Array<{ repoFullName?: string; status?: string; severity?: string }> = review?.findings || [];
-  const flaggedRepos = Array.from(
-    new Set(
-      findings
-        .filter((f) => f.status === 'open' && (f.severity === 'blocker' || f.severity === 'major') && f.repoFullName)
-        .map((f) => f.repoFullName as string)
-    )
-  );
-  const { repoFullName: cascadeRepo } = await resolveIssueRepo(db, { ...after, id: issueId }, { agentId });
-  const repoFullName = flaggedRepos.length > 0 && !flaggedRepos.includes(cascadeRepo || '') ? flaggedRepos[0] : cascadeRepo;
-
-  if (!repoFullName) {
-    console.log(`[AgentDispatch] rework for '${issueId}': no resolvable repo, skipping.`);
-    return;
-  }
-
-  const authorized: string[] = installation.repositoryFullNames || [];
-  if (authorized.length > 0 && !authorized.includes(repoFullName)) {
-    console.log(`[AgentDispatch] rework for '${issueId}': '${repoFullName}' is not in this workspace's GitHub installation, skipping.`);
-    return;
-  }
-
-  // Un agente vinculado a un Runner debe conservar el mismo transporte en
-  // rework: nunca caer a GitHub Actions después de haber ejecutado el primer
-  // intento local. Revalidamos Runner y repo antes de emitir el envelope,
-  // igual que en el dispatch inicial.
-  if (agent.runnerId) {
-    const runnerSnap = await db.collection('runners').doc(agent.runnerId).get();
-    if (!runnerSnap.exists || runnerSnap.data()!.workspaceId !== workspaceId) {
-      console.log(`[AgentDispatch] rework for '${issueId}': runner '${agent.runnerId}' does not exist in this workspace, skipping.`);
-      return;
-    }
-    const runner = runnerSnap.data()!;
-    if (!isRunnerAvailable(runner)) {
-      console.log(`[AgentDispatch] rework for '${issueId}': runner '${agent.runnerId}' is offline, revoked, or has an expired heartbeat, skipping.`);
-      return;
-    }
-    const projectAccess = await runnerProjectAccessForDispatch(db, { ...after, id: issueId, workspaceId }, authorized, repoFullName);
-    if (!projectAccess) {
-      console.log(`[AgentDispatch] rework for '${issueId}': '${repoFullName}' is not authorized by its project, skipping.`);
-      return;
-    }
-    const contextRepos = projectAccess.repos;
-    const job = await enqueueRunnerJob(db, {
-      workspaceId, projectId: projectAccess.projectId, issueId, agentId, runnerId: agent.runnerId, repoFullName, contextRepos, mode: 'rework',
-    }, runnerJobSigningPrivateKey.value());
-    await db.collection('agent_runs').doc(job.id).set({
-      id: job.id, issueId, workspaceId, agentId, role: 'dev', mode: 'rework', repo: repoFullName,
-      runnerId: agent.runnerId, reviewAttempt: attempt, startedAt: new Date().toISOString(), date: todayKey(),
-    });
-    console.log(`[AgentDispatch] enqueued Runner rework job '${job.id}' for issue '${after.identifier}' to '${agent.runnerId}'.`);
     return;
   }
 
@@ -279,6 +271,13 @@ async function dispatchHandoff(
   }
 
   const workspaceId = after.workspaceId;
+  const entry = (after.pendingRepoWork || []).find((e: any) => e.repoFullName === targetRepo);
+  const reservation = { mode: 'handoff' as const, requestedAt: entry?.requestedAt };
+  const startedAt = new Date().toISOString();
+  const failPreflight = async (reason: string) => {
+    if (agent.runnerId) await reportDispatchFailure(db, issueId, agentId, startedAt, new RunnerDispatchError('preflight', [reason]), { ...reservation, repoFullName: targetRepo });
+  };
+
 
   // Tope de runs por issue (D8/TES-153), chequeado ANTES de tocar GitHub: un
   // traspaso que se re-pide una y otra vez es justo el bucle que este tope
@@ -314,35 +313,19 @@ async function dispatchHandoff(
 
   const installSnap = await db.collection('github_installations').where('workspaceId', '==', workspaceId).limit(1).get();
   if (installSnap.empty) {
-    console.log(`[AgentDispatch] handoff for '${issueId}': workspace '${workspaceId}' has no GitHub installation, skipping.`);
+    await failPreflight('Conectá una instalación GitHub al workspace antes de reintentar.');
     return;
   }
   const installation = installSnap.docs[0].data();
   const authorized: string[] = installation.repositoryFullNames || [];
   if (authorized.length > 0 && !authorized.includes(targetRepo)) {
-    console.log(`[AgentDispatch] handoff for '${issueId}': '${targetRepo}' is not in this workspace's GitHub installation, skipping.`);
+    await failPreflight('Habilitá el repositorio destino en la instalación GitHub del workspace antes de reintentar.');
     return;
   }
 
-  // Validar el Runner antes de reservar el traspaso. Si se escribiera
-  // `pendingRepoWork.dispatchedAt` primero y el Runner estuviera offline o
-  // sin el repo, el entry quedaría marcado como enviado sin ningún job que lo
-  // pueda completar (exactamente el estado que después no se puede reintentar).
-  let runner: FirebaseFirestore.DocumentData | undefined;
-  let projectAccess: Awaited<ReturnType<typeof runnerProjectAccessForDispatch>> = null;
   if (agent.runnerId) {
-    const runnerSnap = await db.collection('runners').doc(agent.runnerId).get();
-    if (!runnerSnap.exists || runnerSnap.data()!.workspaceId !== workspaceId) {
-      console.log(`[AgentDispatch] handoff for '${issueId}': runner '${agent.runnerId}' does not exist in this workspace, skipping.`);
-      return;
-    }
-    runner = runnerSnap.data()!;
-    projectAccess = await runnerProjectAccessForDispatch(db, { ...after, id: issueId, workspaceId }, authorized, targetRepo);
-    if (!projectAccess) {
-      console.log(`[AgentDispatch] handoff for '${issueId}': Runner unavailable or '${targetRepo}' is not authorized by its project, skipping.`);
-      return;
-    }
-    if (!await runnerPreflightForDispatch(db, issueId, { ...agent, id: agentId }, { ...runner, id: agent.runnerId }, workspaceId, projectAccess.repos, 'handoff')) return;
+    await dispatchRunnerContinuation(db, issueId, after, agentId, agent, authorized, targetRepo, reservation);
+    return;
   }
 
   const issueRef = db.collection('issues').doc(issueId);
@@ -366,22 +349,6 @@ async function dispatchHandoff(
   });
   if (!decision.allowed) {
     console.log(`[AgentDispatch] handoff for '${issueId}' to '${targetRepo}' not dispatched (${decision.reason}).`);
-    return;
-  }
-
-  // Un handoff conserva el transporte local del agente. Enviar este camino a
-  // GitHub Actions dejaba el Runner sin el repo destino y el workflow podía
-  // quedar skipped para adaptadores locales.
-  if (agent.runnerId) {
-    const contextRepos = projectAccess!.repos;
-    const job = await enqueueRunnerJob(db, {
-      workspaceId, projectId: projectAccess!.projectId, issueId, agentId, runnerId: agent.runnerId, repoFullName: targetRepo, contextRepos, mode: 'handoff',
-    }, runnerJobSigningPrivateKey.value());
-    await db.collection('agent_runs').doc(job.id).set({
-      id: job.id, issueId, workspaceId, agentId, role: 'dev', mode: 'handoff', repo: targetRepo,
-      runnerId: agent.runnerId, startedAt: new Date().toISOString(), date: todayKey(),
-    });
-    console.log(`[AgentDispatch] enqueued Runner handoff job '${job.id}' for issue '${after.identifier}' to '${agent.runnerId}'.`);
     return;
   }
 
