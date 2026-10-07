@@ -5,7 +5,7 @@
 // dominio de Pulse. Para cambiar algo de acá, editá ese archivo y corré
 // `npm run sync:types` desde `pulse-app`.
 //
-// SOURCE_HASH: 503f144b390cfb98
+// SOURCE_HASH: 3eb1f350c63a1e99
 // ============================================================
 
 /**
@@ -373,7 +373,7 @@ export interface Agent {
   displayName: string;
   defaultRepo?: string;
   defaultTeamId?: string;
-  /** Repo donde un agente `role: 'qa'` corre el workflow de revisión. */
+  /** Repo para QA por GitHub Actions. QA con Runner usa los repos del proyecto completo. */
   reviewRepo?: string;
   maxConcurrentIssues?: number;
   /** Default `2`. Intentos de revisión antes de pasar el issue a `needs_human`. */
@@ -605,6 +605,12 @@ export interface IssueAgentState {
   claimedAt?: string;
   state?: AgentIssueState;
   blockedReason?: string;
+  /** A job was not emitted; contains only diagnostics selected by the backend. */
+  dispatchFailure?: {
+    stage: 'preflight' | 'enqueue' | 'budget';
+    reasons: string[];
+    at: string;
+  };
 }
 
 /**

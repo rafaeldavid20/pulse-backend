@@ -9,16 +9,10 @@ import { checkIssueRunBudget } from '../common/utils/issue-run-budget';
 import { buildNeedsHumanEscalation } from '../common/utils/review-escalation';
 import { agentAllowedRepos, agentVisibility } from '../common/utils/agent-authorization';
 import { enqueueRunnerJob } from '../common/utils/runner-jobs';
+import { DISPATCH_COOLDOWN_MS, reportDispatchFailure, RunnerDispatchError } from '../common/utils/dispatch-failure';
 import { isRunnerAvailable } from '../common/utils/runner-availability';
 import { runnerPreflightForDispatch } from '../common/utils/runner-preflight';
-import { runnerProjectAccessForDispatch } from '../common/utils/project-repos';
-
-// Un run tarda ~30s en arrancar y reclamar el issue (ver `agent.state ===
-// 'claimed'` en claim-issue.ts), así que ese guard solo no alcanza para
-// separar dos dispatches que ocurren antes de que cualquiera llegue a
-// reclamar (TES-130: dos dispatches en 4s, mismo issue, mismo agente, dos
-// runs en paralelo). Esta ventana cubre ese hueco.
-const DISPATCH_COOLDOWN_MS = 10 * 60 * 1000;
+import { runnerProjectAccessForDispatch, runnerProjectRepoAccess } from '../common/utils/project-repos';
 
 const DEFAULT_MAX_REVIEW_ATTEMPTS = 2;
 
@@ -597,13 +591,15 @@ export const agentDispatchTrigger = onDocumentWritten(
       // Preflight antes de reservar el presupuesto/cooldown: un Runner
       // offline o un repo no autorizado no debe consumir un dispatch que no
       // llegó a ejecutarse.
+      const dispatchStartedAt = new Date().toISOString();
+      const failPreflight = async (reason: string) => reportDispatchFailure(db, event.params.issueId, agentId, dispatchStartedAt, new RunnerDispatchError('preflight', [reason]));
       const preflightInstallSnap = await db
         .collection('github_installations')
         .where('workspaceId', '==', workspaceId)
         .limit(1)
         .get();
       if (preflightInstallSnap.empty) {
-        console.log(`[AgentDispatch] workspace '${workspaceId}' has no GitHub installation, skipping dispatch.`);
+        await failPreflight('Conectá una instalación GitHub al workspace antes de reintentar.');
         return;
       }
       const preflightInstallation = preflightInstallSnap.docs[0].data();
@@ -612,24 +608,33 @@ export const agentDispatchTrigger = onDocumentWritten(
         installationRepos: preflightInstallation.repositoryFullNames || [],
       });
       if (!preflightRepo.repoFullName) {
-        console.log(`[AgentDispatch] no resolvable repo for agent '${agentId}' / issue '${event.params.issueId}', skipping dispatch.`);
+        await failPreflight('Configurá el repositorio de la issue, del agente o de su proyecto antes de reintentar.');
         return;
       }
       const preflightAuthorized: string[] = preflightInstallation.repositoryFullNames || [];
       if (preflightAuthorized.length > 0 && !preflightAuthorized.includes(preflightRepo.repoFullName)) {
-        console.log(`[AgentDispatch] '${preflightRepo.repoFullName}' is not in this workspace's GitHub installation, skipping dispatch.`);
+        await failPreflight('Habilitá el repositorio destino en la instalación GitHub del workspace antes de reintentar.');
         return;
       }
       if (!agent.runnerId && allowedRepos.length > 0 && !allowedRepos.includes(preflightRepo.repoFullName)) {
-        console.log(`[AgentDispatch] agent '${agentId}' is not connected to '${preflightRepo.repoFullName}', skipping dispatch.`);
+        await failPreflight('Conectá el repositorio destino al agente antes de reintentar.');
         return;
       }
       if (agent.runnerId) {
-        const runnerSnap = await db.collection('runners').doc(agent.runnerId).get();
-        const runner = runnerSnap.exists ? runnerSnap.data()! : null;
-        const projectAccess = await runnerProjectAccessForDispatch(db, { ...after, workspaceId }, preflightAuthorized, preflightRepo.repoFullName);
-        if (!projectAccess) return;
-        if (!await runnerPreflightForDispatch(db, event.params.issueId, { ...agent, id: agentId }, runner ? { ...runner, id: agent.runnerId } : null, workspaceId, projectAccess.repos, 'task')) return;
+        const startedAt = new Date().toISOString();
+        try {
+          const access = await runnerProjectRepoAccess(db, { ...after, workspaceId }, preflightAuthorized);
+          if (!access || !access.repos.includes(preflightRepo.repoFullName)) throw new RunnerDispatchError('preflight', ['Configurá repositorios en el proyecto y habilitalos en la instalación GitHub; el repositorio destino debe pertenecer a ambos.']);
+          const job = await enqueueRunnerJob(db, {
+            workspaceId, projectId: access.projectId, issueId: event.params.issueId,
+            agentId, runnerId: agent.runnerId, repoFullName: preflightRepo.repoFullName,
+            contextRepos: access.repos, mode: 'task',
+          }, runnerJobSigningPrivateKey.value(), 'runner-job-v1', true);
+          console.log(`[AgentDispatch] enqueued Runner job '${job.id}' for issue '${after.identifier}'.`);
+        } catch (error) {
+          await reportDispatchFailure(db, event.params.issueId, agentId, startedAt, error);
+        }
+        return;
       }
 
       const issueRef = db.collection('issues').doc(event.params.issueId);
@@ -709,54 +714,6 @@ export const agentDispatchTrigger = onDocumentWritten(
         console.log(
           `[AgentDispatch] agent '${agentId}' is not connected to '${repoFullName}', skipping dispatch.`
         );
-        return;
-      }
-
-      // Un agente con Runner no cae al workflow de GitHub Actions: el trabajo
-      // se entrega como envelope firmado al proceso local que el usuario
-      // vinculó. La verificación de estado/repo ocurre acá, antes de crear el
-      // run, y el Runner vuelve a validar la firma/vencimiento antes de tocar
-      // el worktree.
-      if (agent.runnerId) {
-        const runnerSnap = await db.collection('runners').doc(agent.runnerId).get();
-        if (!runnerSnap.exists || runnerSnap.data()!.workspaceId !== workspaceId) {
-          console.log(`[AgentDispatch] runner '${agent.runnerId}' for agent '${agentId}' does not exist in this workspace, skipping dispatch.`);
-          return;
-        }
-        const runner = runnerSnap.data()!;
-        if (!isRunnerAvailable(runner)) {
-          console.log(`[AgentDispatch] runner '${agent.runnerId}' is offline, revoked, or has an expired heartbeat, skipping dispatch.`);
-          return;
-        }
-        const projectAccess = await runnerProjectAccessForDispatch(db, { ...after, id: event.params.issueId, workspaceId }, authorized, repoFullName);
-        if (!projectAccess) {
-          console.log(`[AgentDispatch] '${repoFullName}' is not authorized by the issue project, skipping Runner dispatch.`);
-          return;
-        }
-        const contextRepos = projectAccess.repos;
-        const job = await enqueueRunnerJob(db, {
-          workspaceId,
-          projectId: projectAccess.projectId,
-          issueId: event.params.issueId,
-          agentId,
-          runnerId: agent.runnerId,
-          repoFullName,
-          contextRepos,
-          mode: 'task',
-        }, runnerJobSigningPrivateKey.value());
-        await db.collection('agent_runs').doc(job.id).set({
-          id: job.id,
-          issueId: event.params.issueId,
-          workspaceId,
-          agentId,
-          role: 'dev',
-          mode: 'task',
-          repo: repoFullName,
-          runnerId: agent.runnerId,
-          startedAt: new Date().toISOString(),
-          date: todayKey(),
-        });
-        console.log(`[AgentDispatch] enqueued Runner job '${job.id}' for issue '${after.identifier}' to '${agent.runnerId}'.`);
         return;
       }
 
