@@ -186,7 +186,7 @@ export class ReviewsRerunAction extends PlatformActionHandler {
     }
     const installation = installSnap.docs[0].data();
     const authorized: string[] = installation.repositoryFullNames || [];
-    if (authorized.length > 0 && !authorized.includes(repoFullName)) {
+    if (!authorized.includes(repoFullName)) {
       throw new Error(`'${repoFullName}' no está autorizado en la instalación de GitHub de este workspace.`);
     }
 

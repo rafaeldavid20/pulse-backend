@@ -1,58 +1,55 @@
-import { getFirestore } from 'firebase-admin/firestore';
+import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { listInstallationRepos } from './client';
 
-/**
- * Mantiene al día la lista de repos de `github_installations/{installationId}`
- * (TES-278). Antes se escribía una sola vez, en `githubSetup`, y nada la
- * actualizaba: darle acceso a la App a un repo nuevo desde GitHub no llegaba a
- * Pulse, y el repo no aparecía para elegir ni se podía atar.
- *
- * Sólo actualiza un doc que ya existe: qué workspace es dueño de una
- * instalación lo decide `githubSetup` (con el `state` firmado), nunca un
- * webhook.
- */
+/** Sync physical installation metadata and intersect each workspace's selection.
+ * The transaction rereads bindings to serialize against selection changes. */
 export async function refreshInstallationRepos(installationId: string): Promise<string[] | null> {
-  const ref = getFirestore().collection('github_installations').doc(String(installationId));
-  const snap = await ref.get();
-  if (!snap.exists) return null;
-
+  const db = getFirestore();
+  const ref = db.collection('github_installations').doc(String(installationId));
+  const root = await ref.get();
+  if (!root.exists || root.data()!.uninstalledAt || root.data()!.suspendedAt) return null;
   const repos = await listInstallationRepos(String(installationId));
-  const repositoryFullNames = repos.map((r) => r.full_name);
-  // `github.status` llama esto en cada apertura de Settings: sin cambios, no se escribe.
-  const current: string[] = snap.data()!.repositoryFullNames || [];
-  if (current.length === repositoryFullNames.length && current.every((r) => repositoryFullNames.includes(r))) {
-    return repositoryFullNames;
-  }
-  await ref.update({
-    repositories: repos.map((r) => ({ id: r.id, fullName: r.full_name, defaultBranch: r.default_branch })),
-    repositoryFullNames,
-    reposSyncedAt: new Date().toISOString(),
+  const available = repos.map(r => ({ id: r.id, fullName: r.full_name, defaultBranch: r.default_branch }));
+  const names = available.map(r => r.fullName);
+  await db.runTransaction(async tx => {
+    const current = await tx.get(ref);
+    const bindings = await tx.get(db.collection('github_installations').where('installationId', '==', String(installationId)));
+    if (!current.exists || current.data()!.uninstalledAt || current.data()!.suspendedAt) return;
+    tx.update(ref, { availableRepositories: available, reposSyncedAt: new Date().toISOString() });
+    for (const binding of bindings.docs.filter(d => d.data().workspaceId)) {
+      const selected: string[] = binding.data().selectedRepositoryFullNames || binding.data().repositoryFullNames || [];
+      const effective = selected.filter(r => names.includes(r));
+      tx.update(binding.ref, {
+        selectedRepositoryFullNames: selected, repositoryFullNames: effective,
+        repositories: available.filter(r => effective.includes(r.fullName)), reposSyncedAt: new Date().toISOString(),
+      });
+    }
   });
-  return repositoryFullNames;
+  return names;
 }
 
-/**
- * Eventos de la instalación que llegan al webhook. `installation_repositories`
- * (repos agregados o quitados) y `installation` con `created`,
- * `new_permissions_accepted` o `unsuspend` refrescan los repos. `deleted` y
- * `suspend` dejan la instalación sin repos: la App ya no puede tocar ninguno,
- * y mostrarlos como disponibles sería mentir.
- */
+/** Revocation affects every binding; a webhook never grants a workspace access. */
 export async function handleInstallationEvent(eventType: string, payload: any): Promise<void> {
-  const installationId = payload?.installation?.id;
-  if (!installationId) return;
-
-  if (eventType === 'installation' && (payload.action === 'deleted' || payload.action === 'suspend')) {
-    const ref = getFirestore().collection('github_installations').doc(String(installationId));
-    if (!(await ref.get()).exists) return;
-    await ref.update({
-      repositories: [],
-      repositoryFullNames: [],
-      [payload.action === 'deleted' ? 'uninstalledAt' : 'suspendedAt']: new Date().toISOString(),
-      reposSyncedAt: new Date().toISOString(),
+  const id = payload?.installation?.id;
+  if (!id) return;
+  const db = getFirestore();
+  const ref = db.collection('github_installations').doc(String(id));
+  if (eventType === 'installation' && ['deleted', 'suspend', 'unsuspend', 'created'].includes(payload.action)) {
+    await db.runTransaction(async tx => {
+      const root = await tx.get(ref);
+      const bindings = await tx.get(db.collection('github_installations').where('installationId', '==', String(id)));
+      if (!root.exists) return;
+      const revoked = payload.action === 'deleted' || payload.action === 'suspend';
+      for (const doc of bindings.docs) {
+        tx.update(doc.ref, revoked ? {
+          ...(doc.data().workspaceId ? { selectedRepositoryFullNames: doc.data().selectedRepositoryFullNames || doc.data().repositoryFullNames || [] } : {}),
+          repositories: [], repositoryFullNames: [], availableRepositories: [],
+          [payload.action === 'deleted' ? 'uninstalledAt' : 'suspendedAt']: new Date().toISOString(),
+          tokenCache: FieldValue.delete(),
+        } : { suspendedAt: FieldValue.delete(), uninstalledAt: FieldValue.delete() });
+      }
     });
-    return;
+    if (payload.action === 'deleted' || payload.action === 'suspend') return;
   }
-
-  await refreshInstallationRepos(String(installationId));
+  await refreshInstallationRepos(String(id));
 }

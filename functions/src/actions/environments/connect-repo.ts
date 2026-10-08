@@ -66,7 +66,7 @@ export class ConnectEnvironmentRepoAction extends PlatformActionHandler {
     if (installSnap.empty) throw new Error('Este workspace no tiene GitHub conectado todavía (Configuración → Integraciones).');
     const installation = installSnap.docs[0].data();
     const authorized: string[] = installation.repositoryFullNames || [];
-    if (authorized.length > 0 && !authorized.includes(repoFullName)) {
+    if (!authorized.includes(repoFullName)) {
       throw new Error(`'${repoFullName}' no está entre los repos de esta instalación (${authorized.join(', ')}).`);
     }
 

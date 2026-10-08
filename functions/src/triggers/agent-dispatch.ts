@@ -153,7 +153,7 @@ async function dispatchRework(
   }
 
   const authorized: string[] = installation.repositoryFullNames || [];
-  if (authorized.length > 0 && !authorized.includes(repoFullName)) {
+  if (!authorized.includes(repoFullName)) {
     await failPreflight('Habilitá el repositorio destino en la instalación GitHub del workspace antes de reintentar.');
     return;
   }
@@ -319,7 +319,7 @@ async function dispatchHandoff(
   }
   const installation = installSnap.docs[0].data();
   const authorized: string[] = installation.repositoryFullNames || [];
-  if (authorized.length > 0 && !authorized.includes(targetRepo)) {
+  if (!authorized.includes(targetRepo)) {
     await failPreflight('Habilitá el repositorio destino en la instalación GitHub del workspace antes de reintentar.');
     return;
   }
@@ -579,7 +579,7 @@ export const agentDispatchTrigger = onDocumentWritten(
         return;
       }
       const preflightAuthorized: string[] = preflightInstallation.repositoryFullNames || [];
-      if (preflightAuthorized.length > 0 && !preflightAuthorized.includes(preflightRepo.repoFullName)) {
+      if (!preflightAuthorized.includes(preflightRepo.repoFullName)) {
         await failPreflight('Habilitá el repositorio destino en la instalación GitHub del workspace antes de reintentar.');
         return;
       }
@@ -671,7 +671,7 @@ export const agentDispatchTrigger = onDocumentWritten(
       // Un repo fuera de la instalación no puede recibir el dispatch, y
       // fallar acá con un mensaje claro es mejor que un 404 de GitHub.
       const authorized: string[] = installation.repositoryFullNames || [];
-      if (authorized.length > 0 && !authorized.includes(repoFullName)) {
+      if (!authorized.includes(repoFullName)) {
         console.log(
           `[AgentDispatch] '${repoFullName}' (via ${source}) is not in this workspace's GitHub installation, skipping dispatch.`
         );

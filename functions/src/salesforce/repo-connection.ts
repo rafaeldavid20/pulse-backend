@@ -26,19 +26,20 @@ export function buildSfdxAuthUrl(env: FirebaseFirestore.DocumentData): string {
   return `force://${auth.clientId}:${decryptToken(auth.clientSecretEnc)}:${decryptToken(auth.refreshTokenEnc)}@${host}`;
 }
 
-async function installationIdFor(workspaceId: string): Promise<string> {
+async function installationIdFor(workspaceId: string, repoFullName: string): Promise<string> {
   const snap = await getFirestore()
     .collection('github_installations')
     .where('workspaceId', '==', workspaceId)
     .limit(1)
     .get();
   if (snap.empty) throw new Error('Este workspace no tiene GitHub conectado todavía (Configuración → Integraciones).');
+  if (!(snap.docs[0].data().repositoryFullNames || []).includes(repoFullName)) throw new Error('El repositorio no está autorizado para este workspace.');
   return snap.docs[0].data().installationId;
 }
 
 /** Escribe la credencial del entorno en un repo. */
 export async function writeEnvSecret(env: FirebaseFirestore.DocumentData, repoFullName: string): Promise<string> {
-  const installationId = await installationIdFor(env.workspaceId);
+  const installationId = await installationIdFor(env.workspaceId, repoFullName);
   const name = envSecretName(env.key);
   await setRepoSecret(installationId, repoFullName, name, buildSfdxAuthUrl(env));
   return name;
@@ -98,6 +99,7 @@ export async function detachEnvFromRepo(params: {
       warnings.push(`${what} en ${repoFullName}: ${(error as Error).message}`);
     }
   };
+  await installationIdFor(workspaceId, repoFullName);
   const { deleteRepoSecret, deleteRepoFile, putRepoFile } = await import('../github/client');
   const { renderDeployWorkflow, DEPLOY_WORKFLOW_PATH, DEPLOY_MCP_SECRET_NAME } = await import('./templates/pulse-deploy-workflow');
 

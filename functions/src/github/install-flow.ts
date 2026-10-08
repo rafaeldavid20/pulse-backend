@@ -1,8 +1,9 @@
 import { onRequest } from 'firebase-functions/v2/https';
-import { getFirestore } from 'firebase-admin/firestore';
+import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { mcpKeyPepper, githubAppId, githubAppPrivateKeyB64 } from '../common/secrets';
 import { signShortJwt, verifyShortJwt } from '../common/utils/short-jwt';
 import { getInstallation, listInstallationRepos } from './client';
+import { saveWorkspaceConnection } from './workspace-connections';
 import { PULSE_APP_URL } from '../common/app-url';
 
 interface InstallState {
@@ -64,25 +65,35 @@ export const githubSetup = onRequest(
         listInstallationRepos(installationId),
       ]);
 
-      await getFirestore()
-        .collection('github_installations')
-        .doc(installationId)
-        .set(
-          {
-            installationId,
-            workspaceId: claims.workspaceId,
-            accountLogin: installation.account.login,
-            repositories: repos.map((r) => ({ id: r.id, fullName: r.full_name, defaultBranch: r.default_branch })),
-            // Flat, alongside the detailed `repositories` above — Firestore
-            // can't query equality on a field *inside* an array of objects,
-            // only `array-contains` on a plain array. The webhook handler
-            // needs "which workspace owns repo X" as a query, not a scan.
-            repositoryFullNames: repos.map((r) => r.full_name),
-            connectedBy: claims.uid,
-            connectedAt: new Date().toISOString(),
-          },
-          { merge: true }
-        );
+      const db = getFirestore();
+      const rootRef = db.collection('github_installations').doc(installationId);
+      // Never transfer an existing installation to the workspace in state.
+      const created = await db.runTransaction(async tx => {
+        const root = await tx.get(rootRef);
+        const existing = await tx.get(db.collection('github_installations').where('workspaceId', '==', claims.workspaceId));
+        const member = await tx.get(db.collection('members').doc(`${claims.workspaceId}_${claims.uid}`));
+        if (!['owner', 'admin'].includes(member.data()?.role)) throw new Error('Permiso de administrador revocado.');
+        if (existing.docs.some(d => String(d.data().installationId) !== installationId && !d.data().uninstalledAt)) {
+          throw new Error('Este workspace ya tiene otra cuenta conectada.');
+        }
+        if (root.exists) return false;
+        const selected: string[] = existing.docs.flatMap(d => d.data().selectedRepositoryFullNames || []);
+        for (const old of existing.docs) tx.update(old.ref, { workspaceId: FieldValue.delete() });
+        tx.create(rootRef, {
+          installationId, workspaceId: claims.workspaceId, accountLogin: installation.account.login,
+          availableRepositories: repos.map(r => ({ id: r.id, fullName: r.full_name, defaultBranch: r.default_branch })),
+          selectedRepositoryFullNames: selected,
+          repositories: repos.filter(r => selected.includes(r.full_name)).map(r => ({ id: r.id, fullName: r.full_name, defaultBranch: r.default_branch })),
+          repositoryFullNames: repos.map(r => r.full_name).filter(r => selected.includes(r)),
+          connectedBy: claims.uid, connectedAt: new Date().toISOString(),
+        });
+        return true;
+      });
+      if (!created) {
+        const existing = await db.collection('github_installations').where('workspaceId', '==', claims.workspaceId).limit(1).get();
+        const selected = existing.docs[0]?.data().selectedRepositoryFullNames || existing.docs[0]?.data().repositoryFullNames || [];
+        await saveWorkspaceConnection(claims.workspaceId, claims.uid, installationId, selected);
+      }
 
       res.redirect(302, `${PULSE_APP_URL}/settings?github=connected`);
     } catch (err: any) {

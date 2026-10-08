@@ -33,7 +33,7 @@ const db = {
         const rows = name === 'agents'
           ? agents.filter((agent) => filters.every(([field, value]) => agent[field] === value))
           : name === 'runners' ? Object.values(runners).filter((runner: any) => filters.every(([field, value]) => runner[field] === value))
-          : name === 'github_installations' ? [{ installationId: 1 }] : [];
+          : name === 'github_installations' ? [{ installationId: 1, repositoryFullNames: ['owner/repo', 'owner/backend', 'owner/runner'] }] : [];
         return { empty: rows.length === 0, docs: rows.map((row) => snapshot(row, row.id)) };
       },
       doc: (id: string) => name === 'issues' ? issueRef : name === 'agents'

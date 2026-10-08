@@ -27,7 +27,7 @@ export async function validateRepoForWorkspace(
   }
 
   const authorized: string[] = snap.docs[0].data().repositoryFullNames || [];
-  if (authorized.length > 0 && !authorized.includes(repoFullName)) {
+  if (!authorized.includes(repoFullName)) {
     throw new Error(
       `'${repoFullName}' no está entre los repos autorizados para esta instalación ` +
         `(${authorized.join(', ')}).`
