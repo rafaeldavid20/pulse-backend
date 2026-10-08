@@ -314,7 +314,7 @@ export const pulseRunnerLinkPr = onRequest(
         const ref = db.collection('issues').doc(job.issueId);
         const issue = (await t.get(ref)).data()!;
         const now = new Date().toISOString();
-        const entry = {repoFullName: repo, branch, prNumber, prUrl, prState: prState === 'open' ? 'open' : 'draft', lastSyncedAt: now};
+        const entry = {repoFullName: repo, branch, headSha: sha, prNumber, prUrl, prState: prState === 'open' ? 'open' : 'draft', lastSyncedAt: now};
         t.update(ref, {gitRefs: upsertGitRef(issue.gitRefs || (issue.git?.repoFullName ? [issue.git] : []), entry), ...(repo === job.repoFullName ? {git: entry} : {}), updatedAt: now});
         t.update(snap.ref, {linkedPublications: upsertGitRef(job.linkedPublications, {...entry, sha})});
       });

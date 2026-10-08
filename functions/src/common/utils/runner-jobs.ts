@@ -97,7 +97,8 @@ export async function enqueueRunnerJob(
         if (!binding) throw new RunnerDispatchError('preflight', [`Configurá y verificá una GitHub App local para ${repo} en el proyecto ${access.projectId}.`]);
         const original = input.publicationTargets?.find(t => t.repo === repo);
         const ref = (issueData.gitRefs || []).find((r: any) => r.repoFullName === repo) || (issueData.git?.repoFullName === repo ? issueData.git : null);
-        const branch = input.recoveryOf ? original?.branch : job.mode === 'rework' ? ref?.branch : `pul/${job.id}`;
+        const issuePrefix = /^[A-Za-z]{2,10}-\d+$/.test(issueData.identifier || '') ? `${issueData.identifier.toLowerCase()}-` : '';
+        const branch = input.recoveryOf ? original?.branch : job.mode === 'rework' ? ref?.branch : `pul/${issuePrefix}${job.id}`;
         if (!validBranch(branch) || !branch.startsWith('pul/') || !validBranch(original?.base || binding.base)) throw new Error('Falta la rama autorizada para retrabajo/publicación.');
         return { repo, branch, base: original?.base || binding.base, appId: binding.appId, installationId: binding.installationId, slug: binding.slug, ...(original?.sha ? { sha: original.sha } : {}) };
       });

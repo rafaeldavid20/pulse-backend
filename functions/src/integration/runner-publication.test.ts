@@ -19,7 +19,7 @@ async function fixture() {
   const secret='synthetic-device-secret-12345678901234567890';
   const readiness={workspaceId,identities:[{agentId,kind:'codex',role:'dev'}],providers:{codex:{cli:true,session:true},claude:{cli:false,session:false}},repositories:[],jobProtocolVersion:3,githubApps};
   await Promise.all([
-    db.collection('issues').doc(issueId).set({workspaceId,projectId}),
+    db.collection('issues').doc(issueId).set({workspaceId,projectId,identifier:'TES-991'}),
     db.collection('projects').doc(projectId).set({workspaceId,repoFullNames:repos}),
     db.collection('github_installations').doc(workspaceId).set({workspaceId,repositoryFullNames:repos}),
     db.collection('agents').doc(agentId).set({id:agentId,workspaceId,runnerId,enabled:true,kind:'codex',role:'dev',ownerMemberId:'owner',visibility:'personal'}),
@@ -37,7 +37,7 @@ async function call(endpoint:any, credential:string, data:any) {
   await endpoint(req,res);return {code,body};
 }
 test('checkpoint stores only public metadata and links every PR idempotently',async()=>{
-  const f=await fixture();assert.equal(f.job.protocolVersion,3);
+  const f=await fixture();assert.equal(f.job.protocolVersion,3);assert(f.job.publicationTargets!.every(t=>t.branch.startsWith('pul/tes-991-')));
   const body={jobId:f.job.id,publication:{...f.report,token:'sentinel-secret',repositories:f.report.repositories.map(e=>({...e,privateKey:'sentinel-secret'}))}};
   assert.equal((await call(pulseRunnerPublication,f.credential,body)).code,200);
   assert.equal((await call(pulseRunnerPublication,f.credential,body)).code,200);
