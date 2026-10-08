@@ -57,7 +57,7 @@ export class DisconnectEnvironmentAction extends PlatformActionHandler {
     const installationId = installSnap.empty ? null : installSnap.docs[0].data().installationId;
 
     for (const conn of env.connectedRepos || []) {
-      if (!installationId) {
+      if (!installationId || !(installSnap.docs[0].data().repositoryFullNames || []).includes(conn.repoFullName)) {
         warnings.push(`Quedó el secret '${conn.secretName}' en ${conn.repoFullName}: el workspace ya no tiene GitHub conectado.`);
         continue;
       }

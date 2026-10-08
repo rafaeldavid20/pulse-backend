@@ -46,6 +46,7 @@ export type PlatformActionCode =
   | 'issues.assignExecutionAgent'
   | 'github.createInstallUrl'
   | 'github.status'
+  | 'github.saveConnection'
   | 'github.createBranch'
   | 'github.linkPr'
   | 'github.syncFromWebhook'

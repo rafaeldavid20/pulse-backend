@@ -18,7 +18,7 @@ export class CreateInstallUrlAction extends PlatformActionHandler {
 
   protected async authorize(): Promise<boolean> {
     if (!this.workspaceId) return false;
-    return this.isWorkspaceMember(this.workspaceId);
+    return this.assertWorkspaceMember(this.workspaceId, 'admin');
   }
 
   protected async handleAction(): Promise<Record<string, any>> {

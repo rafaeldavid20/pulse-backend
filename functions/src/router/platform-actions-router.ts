@@ -32,6 +32,7 @@ import { RequestRepoWorkAction } from '../actions/issues/request-repo-work';
 import { ReportPendingWorkAction } from '../actions/issues/report-pending-work';
 import { AssignExecutionAgentAction } from '../actions/issues/assign-execution-agent';
 import { CreateInstallUrlAction } from '../actions/github/create-install-url';
+import { SaveGithubConnectionAction } from '../actions/github/save-connection';
 import { GithubStatusAction } from '../actions/github/github-status';
 import { CreateBranchAction } from '../actions/github/create-branch';
 import { LinkPrAction } from '../actions/github/link-pr';
@@ -172,6 +173,8 @@ export async function dispatchPlatformAction(
 
     case 'github.createInstallUrl':
       return new CreateInstallUrlAction(request, callerUid, callerEmail).run();
+    case 'github.saveConnection':
+      return new SaveGithubConnectionAction(request, callerUid, callerEmail).run();
     case 'github.status':
       return new GithubStatusAction(request, callerUid, callerEmail).run();
     case 'github.createBranch':

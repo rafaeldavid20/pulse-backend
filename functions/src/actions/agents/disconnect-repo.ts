@@ -88,7 +88,7 @@ export class DisconnectRepoAction extends PlatformActionHandler {
       .limit(1)
       .get();
 
-    if (!installSnap.empty) {
+    if (!installSnap.empty && (installSnap.docs[0].data().repositoryFullNames || []).includes(data.repoFullName)) {
       const installationId = installSnap.docs[0].data().installationId;
 
       try {

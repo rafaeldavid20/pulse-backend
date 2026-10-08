@@ -92,7 +92,7 @@ export class ConnectRepoAction extends PlatformActionHandler {
     }
     const installation = installSnap.docs[0].data();
     const authorized: string[] = installation.repositoryFullNames || [];
-    if (authorized.length > 0 && !authorized.includes(data.repoFullName)) {
+    if (!authorized.includes(data.repoFullName)) {
       throw new Error(
         `'${data.repoFullName}' no está entre los repos de esta instalación (${authorized.join(', ')}).`
       );

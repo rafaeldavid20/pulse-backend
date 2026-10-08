@@ -2,6 +2,7 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { missingConnectPermissions } from '../../github/client';
+import { reusableConnections } from '../../github/workspace-connections';
 import { refreshInstallationRepos } from '../../github/installation-sync';
 
 /**
@@ -34,7 +35,15 @@ export class GithubStatusAction extends PlatformActionHandler {
       .limit(1)
       .get();
 
-    if (snap.empty) return { connected: false };
+    const canManage = await this.assertWorkspaceMember(data.workspaceId, 'admin');
+    if (canManage) {
+      const choices = await reusableConnections(data.workspaceId, this.caller.uid!);
+      for (const choice of choices) {
+        try { await refreshInstallationRepos(choice.installationId); } catch { /* keep last known list */ }
+      }
+    }
+    const availableConnections = canManage ? await reusableConnections(data.workspaceId, this.caller.uid!) : [];
+    if (snap.empty) return { connected: false, canManage, availableConnections };
 
     const doc = snap.docs[0].data();
 
@@ -43,7 +52,8 @@ export class GithubStatusAction extends PlatformActionHandler {
     // vale la lista guardada.
     let repositories: string[] = (doc.repositories || []).map((r: any) => r.fullName);
     try {
-      repositories = (await refreshInstallationRepos(doc.installationId)) ?? repositories;
+      if (!canManage) await refreshInstallationRepos(doc.installationId);
+      repositories = ((await snap.docs[0].ref.get()).data()?.repositories || []).map((r: any) => r.fullName);
     } catch (error) {
       console.warn('[GithubStatus] no se pudieron releer los repos de la instalación:', error);
     }
@@ -60,6 +70,9 @@ export class GithubStatusAction extends PlatformActionHandler {
 
     return {
       connected: true,
+      uninstalled: !!doc.uninstalledAt, suspended: !!doc.suspendedAt,
+      canManage, availableConnections, installationId: String(doc.installationId),
+      selectedRepositories: doc.selectedRepositoryFullNames || doc.repositoryFullNames || [],
       accountLogin: doc.accountLogin,
       repositories,
       connectedAt: doc.connectedAt,

@@ -256,6 +256,12 @@ export const qaDispatchTrigger = onDocumentWritten(
         return;
       }
       const installation = installSnap.docs[0].data();
+      const authorized: string[] = installation.repositoryFullNames || [];
+      if (!authorized.includes(repoFullName) || prs.some(pr => !authorized.includes(pr.repoFullName))) {
+        await issueRef.update({ 'review.dispatchError': 'Asigná todos los repositorios de los PR a este workspace antes de solicitar QA.' });
+        return;
+      }
+
 
       // D18/TES-214: el repo es público, así que cualquiera puede abrir un PR
       // contra una rama con el nombre "correcto" en su propio fork, o el
@@ -330,11 +336,6 @@ export const qaDispatchTrigger = onDocumentWritten(
         return;
       }
 
-      const authorized: string[] = installation.repositoryFullNames || [];
-      if (authorized.length > 0 && !authorized.includes(repoFullName)) {
-        console.log(`[QaDispatch] '${repoFullName}' is not in this workspace's GitHub installation, skipping dispatch.`);
-        return;
-      }
 
       const nextAttempt = attempt + 1;
       const prNumber = prs.find((pr) => pr.repoFullName === repoFullName)?.prNumber;
