@@ -5,7 +5,7 @@
 // dominio de Pulse. Para cambiar algo de acá, editá ese archivo y corré
 // `npm run sync:types` desde `pulse-app`.
 //
-// SOURCE_HASH: 3eb1f350c63a1e99
+// SOURCE_HASH: a9d966cd731894c7
 // ============================================================
 
 /**
@@ -91,7 +91,9 @@ export interface Runner {
 /** Payload mínimo, firmado y de vida corta que un runner acepta ejecutar. */
 export interface RunnerJob {
   /** Absent for queued v1 jobs. V2 signs projectId with the existing Ed25519 key. */
-  protocolVersion?: 2;
+  protocolVersion?: 2 | 3;
+  publicationTargets?: Array<{repo: string; branch: string; base: string; appId: string; installationId: string; slug: string; sha?: string}>;
+  recoveryOf?: string;
   id: string;
   workspaceId: string;
   /** Signed in protocol v2; absent only on queued legacy jobs. */

@@ -138,12 +138,15 @@ export class RetryRunnerJobAction extends PlatformActionHandler {
     const projectAccess = await projectAccessForRunnerJob(db, issue);
     if (!projectAccess || !projectAccess.repos.includes(original.repoFullName)) throw new Error('El repo ya no está autorizado por el proyecto del issue.');
     await assertRunnerCapacity(db, original.runnerId, runner.maxConcurrentJobs || 1);
+    const recovery = original.protocolVersion === 3 && original.publication?.execution === 'completed' && original.publication.repositories?.length;
+    const publicationTargets = recovery ? original.publication.repositories.map((entry: any) => ({ ...original.publicationTargets.find((t: any) => t.repo === entry.repo), sha: entry.sha })) : undefined;
     const job = await enqueueRunnerJob(db, {
+      ...(recovery ? { recoveryOf: original.id, publicationTargets } : {}),
       workspaceId: original.workspaceId, projectId: projectAccess.projectId, issueId: original.issueId, agentId: original.agentId,
-      runnerId: original.runnerId, repoFullName: original.repoFullName, contextRepos: original.mode === 'review' ? (original.contextRepos || [original.repoFullName]) : projectAccess.repos, mode: original.mode,
+      runnerId: original.runnerId, repoFullName: original.repoFullName, contextRepos: recovery ? original.contextRepos : original.mode === 'review' ? (original.contextRepos || [original.repoFullName]) : projectAccess.repos, mode: original.mode,
     }, runnerJobSigningPrivateKey.value());
     await Promise.all([
-      createAgentRun(db, job, agent.role || 'dev'),
+      ...(recovery ? [] : [createAgentRun(db, job, agent.role || 'dev')]),
       db.collection('runner_jobs').doc(job.id).update({ retryOf: original.id }),
       originalSnap.ref.update({ retriedByJobId: job.id, retryRequestedAt: new Date().toISOString() }),
     ]);

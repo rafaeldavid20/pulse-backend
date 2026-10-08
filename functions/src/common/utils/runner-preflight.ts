@@ -6,7 +6,8 @@ export interface RunnerReadiness {
   identities: Array<{ agentId: string; kind: 'codex' | 'claude'; role: 'dev' | 'qa' }>;
   providers: { codex: { cli: boolean; session: boolean }; claude: { cli: boolean; session: boolean } };
   repositories: Array<{ repo: string; accessible: boolean }>;
-  jobProtocolVersion?: 2;
+  jobProtocolVersion?: 2 | 3;
+  githubApps?: Array<{projectId: string; repo: string; appId: string; installationId: string; slug: string; base?: string; ready: boolean}>;
   qaSourceProtocolVersion?: 1;
 }
 
@@ -26,12 +27,22 @@ export function parseRunnerReadiness(value: any): RunnerReadiness {
     if (!entry || typeof entry.repo !== 'string' || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(entry.repo) || typeof entry.accessible !== 'boolean') throw new Error('Invalid repository readiness.');
     return { repo: entry.repo, accessible: entry.accessible };
   });
-  if (value.jobProtocolVersion !== undefined && value.jobProtocolVersion !== 2) throw new Error('Invalid Runner job protocol.');
+  if (value.jobProtocolVersion !== undefined && !([2, 3].includes(value.jobProtocolVersion))) throw new Error('Invalid Runner job protocol.');
   if (value.qaSourceProtocolVersion !== undefined && value.qaSourceProtocolVersion !== 1) throw new Error('Invalid QA source protocol.');
-  return { workspaceId: value.workspaceId, identities, providers, repositories, ...(value.qaSourceProtocolVersion === 1 ? { qaSourceProtocolVersion: 1 as const } : {}), ...(value.jobProtocolVersion === 2 ? { jobProtocolVersion: 2 as const } : {}) };
+  const githubApps = value.githubApps === undefined ? [] : value.githubApps;
+  if (!Array.isArray(githubApps) || githubApps.length > 100) throw new Error('Invalid GitHub App readiness.');
+  const seen = new Set<string>();
+  const safeApps = githubApps.map((e: any) => {
+    if (!e || !/^[-A-Za-z0-9_]{1,100}$/.test(e.projectId) || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(e.repo) || !/^\d+$/.test(e.appId) || !/^\d+$/.test(e.installationId) || !/^[-A-Za-z0-9_]{1,100}$/.test(e.slug) || typeof e.ready !== 'boolean' || (e.ready && (typeof e.base !== 'string' || e.base.length > 200))) throw new Error('Invalid GitHub App readiness.');
+    const key = `${e.projectId}:${e.repo}`;
+    if (seen.has(key)) throw new Error('Duplicate GitHub App binding.');
+    seen.add(key);
+    return { projectId: e.projectId, repo: e.repo, appId: e.appId, installationId: e.installationId, slug: e.slug, ready: e.ready, ...(e.ready ? {base: e.base} : {}) };
+  });
+  return { githubApps: safeApps, workspaceId: value.workspaceId, identities, providers, repositories, ...(value.qaSourceProtocolVersion === 1 ? { qaSourceProtocolVersion: 1 as const } : {}), ...([2, 3].includes(value.jobProtocolVersion) ? { jobProtocolVersion: value.jobProtocolVersion as 2 | 3 } : {}) };
 }
 
-export function runnerPreflight(agent: any, runner: any, workspaceId: string, repos: string[], mode: string, now = Date.now(), projectScoped = false) {
+export function runnerPreflight(agent: any, runner: any, workspaceId: string, repos: string[], mode: string, now = Date.now(), projectScoped = false, publicationOnly = false) {
   const problems: Array<{ code: string; message: string; action: string }> = [];
   const fail = (code: string, message: string, action: string) => problems.push({ code, message, action });
   if (!agent || agent.workspaceId !== workspaceId || agent.archivedAt || !agent.enabled) fail('agent', 'El agente no está habilitado en este workspace.', 'Habilitá o restaurá el agente en Ajustes.');
@@ -41,21 +52,22 @@ export function runnerPreflight(agent: any, runner: any, workspaceId: string, re
   const role = mode === 'review' ? 'qa' : 'dev';
   if (agent?.role !== role) fail('role', 'El rol del agente es incompatible con el job.', 'Usá un agente QA para revisiones y Dev para tareas.');
   const readiness = runner?.readiness as RunnerReadiness | undefined;
-  if (projectScoped && readiness?.jobProtocolVersion !== 2) fail('runner_upgrade', 'El Runner instalado no admite jobs autorizados por proyecto.', 'En la máquina del Runner ejecutá npm install -g @pulsehub/runner@latest, reinstalá/reiniciá el servicio y ejecutá pulse-runner diagnose. Se conserva el pairing y la clave existentes.');
+  if (projectScoped && ![2, 3].includes(readiness?.jobProtocolVersion || 0)) fail('runner_upgrade', 'El Runner instalado no admite jobs autorizados por proyecto.', 'En la máquina del Runner ejecutá npm install -g @pulsehub/runner@latest, reinstalá/reiniciá el servicio y ejecutá pulse-runner diagnose. Se conserva el pairing y la clave existentes.');
   if (projectScoped && role === 'qa' && readiness?.qaSourceProtocolVersion !== 1) fail('qa_source_upgrade', 'El Runner instalado no admite snapshots QA sin credenciales Git globales.', 'Actualizá @pulsehub/runner a 0.1.8 o superior y reiniciá el servicio.');
+  if (role === 'dev' && readiness?.jobProtocolVersion === 3 && (!readiness.githubApps?.some(e => e.ready))) fail('github_app', 'La GitHub App local requiere configuración o permisos de publicación.', 'Configurá github-app por proyecto y repo en la máquina del Runner; luego ejecutá pulse-runner diagnose.');
   const checked = Date.parse(runner?.readinessCheckedAt || '');
   if (!readiness || !Number.isFinite(checked) || checked > now || now - checked > RUNNER_HEARTBEAT_TTL_MS) fail('readiness', 'La preparación local no tiene una verificación reciente.', 'Actualizá el Runner y ejecutá pulse-runner diagnose; luego reintentá la verificación.');
   const identity = readiness?.identities?.find((entry) => entry.agentId === agent?.id);
   if (readiness?.workspaceId !== workspaceId || !identity || identity.kind !== agent?.kind || identity.role !== role) fail('identity', 'La identidad local no coincide con agente, proveedor y rol de Pulse.', 'En la máquina del Runner ejecutá pulse-runner identity add --agent ID --agent-kind codex|claude --agent-role dev|qa con los valores de este agente.');
   const provider = readiness?.providers?.[agent?.kind as 'codex' | 'claude'];
-  if (!provider?.cli) fail('cli', 'El CLI del proveedor no está disponible.', 'Instalá el CLI de Codex o Claude en la máquina del Runner y reiniciá el servicio.');
-  if (!provider?.session) fail('session', 'No hay una sesión local utilizable del proveedor.', agent?.kind === 'claude' ? 'Ejecutá claude auth login en la máquina y usuario del Runner; luego pulse-runner diagnose.' : 'Ejecutá codex login en la máquina y usuario del Runner; luego pulse-runner diagnose.');
+  if (!publicationOnly && !provider?.cli) fail('cli', 'El CLI del proveedor no está disponible.', 'Instalá el CLI de Codex o Claude en la máquina del Runner y reiniciá el servicio.');
+  if (!publicationOnly && !provider?.session) fail('session', 'No hay una sesión local utilizable del proveedor.', agent?.kind === 'claude' ? 'Ejecutá claude auth login en la máquina y usuario del Runner; luego pulse-runner diagnose.' : 'Ejecutá codex login en la máquina y usuario del Runner; luego pulse-runner diagnose.');
   if (!projectScoped && !repos.length) fail('repository', 'No hay repositorio para verificar.', 'Configurá un repo permitido para el agente.');
   for (const repo of projectScoped ? [] : repos) {
     if (!runner?.connectedRepos?.includes(repo) || (role !== 'qa' && !agentAllowedRepos(agent || {}).includes(repo))) fail('repository', `El repo ${repo} no está autorizado.`, 'Conectá el repo al agente y agregalo con pulse-runner repo add owner/repo.');
     if (!readiness?.repositories?.some((entry) => entry.repo === repo && entry.accessible)) fail('repository_access', `El Runner no tiene acceso local a ${repo}.`, 'Revisá las credenciales Git locales y ejecutá pulse-runner diagnose.');
   }
-  return { ready: problems.length === 0, problems, identity: identity || null, checkedAt: runner?.readinessCheckedAt || null };
+  return { ready: problems.length === 0, problems, githubApps: readiness?.githubApps || [], identity: identity || null, checkedAt: runner?.readinessCheckedAt || null };
 }
 
 /** Persist preparation failures before reserving a task, rework or handoff. */
