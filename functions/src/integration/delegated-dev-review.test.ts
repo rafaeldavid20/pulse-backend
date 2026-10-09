@@ -12,7 +12,7 @@ if (!getApps().length) initializeApp({ projectId: 'pulse-integration' });
 const db = getFirestore();
 let sequence = 0;
 
-async function fixture(legacy = false) {
+async function fixture(legacy = false, mode = 'rework') {
   const suffix = `dev-review-${process.pid}-${++sequence}`;
   const workspaceId = `ws-${suffix}`, issueId = `issue-${suffix}`, agentId = `agent-${suffix}`;
   const human = `human-${suffix}`, jobId = `job-${suffix}`, runnerId = `runner-${suffix}`, apiKeyId = `key-${suffix}`;
@@ -29,7 +29,7 @@ async function fixture(legacy = false) {
     db.collection('members').doc(`${workspaceId}_${agentId}`).set({ workspaceId, userId: agentId, isAgent: true }),
     agentRef.set({ workspaceId, role: 'dev' }),
     keyRef.set({ workspaceId, issueId, agentId, runnerId, jobId, expiresAt }),
-    jobRef.set({ workspaceId, issueId, agentId, runnerId, expiresAt, mode: 'rework', status: 'delivered' }),
+    jobRef.set({ workspaceId, issueId, agentId, runnerId, expiresAt, mode, status: 'delivered' }),
     runnerRef.set({ workspaceId }),
   ]);
   const principal: McpPrincipal = { workspaceId, issueId, agentId, runnerId, jobId, apiKeyId,
@@ -53,23 +53,26 @@ async function both(principal: McpPrincipal) {
 }
 
 for (const legacy of [false, true]) {
-  test(`emulator: MCP dev ${legacy ? 'legacy' : 'delegado'} registra autoverificación y resuelve findings`, async () => {
-    const f = await fixture(legacy);
-    for (const result of await both(f.principal)) assert.equal(result.error, undefined);
-    const issue = (await f.issueRef.get()).data()!;
-    assert.deepEqual(issue.devSelfCheck, checks);
-    assert.equal(issue.review.findings[0].status, 'fixed');
-    assert.equal(issue.review.attempt, 2);
-    assert.equal(issue.assigneeId, legacy ? f.principal.agentId : f.human);
-    assert.equal(issue.responsibleMemberId, f.human);
-    assert.equal(issue.updatedBy, f.principal.agentId);
-  });
+  for (const mode of ['task', 'rework', 'handoff']) {
+    test(`emulator: MCP dev ${legacy ? 'legacy' : 'delegado'} en ${mode} registra autoverificación y resuelve findings`, async () => {
+      const f = await fixture(legacy, mode);
+      for (const result of await both(f.principal)) assert.equal(result.error, undefined);
+      const issue = (await f.issueRef.get()).data()!;
+      assert.deepEqual(issue.devSelfCheck, checks);
+      assert.equal(issue.review.findings[0].status, 'fixed');
+      assert.equal(issue.review.attempt, 2);
+      assert.equal(issue.assigneeId, legacy ? f.principal.agentId : f.human);
+      assert.equal(issue.responsibleMemberId, f.human);
+      assert.equal(issue.updatedBy, f.principal.agentId);
+    });
+  }
 }
 
 const cases: Record<string, (f: Awaited<ReturnType<typeof fixture>>) => Promise<unknown> | void> = {
   'otro agente ejecutor': f => f.issueRef.update({ execution: { agentId: 'other' } }),
   'QA': f => f.agentRef.update({ role: 'qa' }),
   'job de revisión': f => f.jobRef.update({ mode: 'review' }),
+  'job de recuperación': f => f.jobRef.update({ recoveryOf: 'old-job' }),
   'job de otro issue': f => f.jobRef.update({ issueId: 'other' }),
   'job de otro workspace': f => f.jobRef.update({ workspaceId: 'other' }),
   'job de otro Runner': f => f.jobRef.update({ runnerId: 'other' }),
@@ -88,13 +91,15 @@ const cases: Record<string, (f: Awaited<ReturnType<typeof fixture>>) => Promise<
   'job inexistente': f => f.jobRef.delete(),
 };
 for (const [name, mutate] of Object.entries(cases)) {
-  test(`emulator: rechaza ${name} sin modificar el issue`, async () => {
-    const f = await fixture();
-    await mutate(f);
-    const before = (await f.issueRef.get()).data();
-    for (const result of await both(f.principal)) assert.ok(result.error);
-    assert.deepEqual((await f.issueRef.get()).data(), before);
-  });
+  for (const mode of ['rework', 'handoff']) {
+    test(`emulator: rechaza ${name} en ${mode} sin modificar el issue`, async () => {
+      const f = await fixture(false, mode);
+      await mutate(f);
+      const before = (await f.issueRef.get()).data();
+      for (const result of await both(f.principal)) assert.ok(result.error);
+      assert.deepEqual((await f.issueRef.get()).data(), before);
+    });
+  }
 }
 
 test('emulator: job stale no usa fallback legacy y QA legacy queda denegado', async () => {

@@ -26,7 +26,7 @@ export async function assertIssueDev(
     const fresh = (expiresAt: unknown) => typeof expiresAt === 'string' && Date.parse(expiresAt) > Date.now();
     if (!key || key.revokedAt || !fresh(key.expiresAt) ||
         !job || job.status !== 'delivered' || job.cancelRequestedAt || !fresh(job.expiresAt) ||
-        !['task', 'rework'].includes(job.mode) || job.recoveryOf ||
+        !['task', 'rework', 'handoff'].includes(job.mode) || job.recoveryOf ||
         !runner || runner.revokedAt || runner.workspaceId !== issue.workspaceId) deny();
     for (const record of [key!, job!]) {
       if (record.workspaceId !== issue.workspaceId || record.issueId !== issueId ||
