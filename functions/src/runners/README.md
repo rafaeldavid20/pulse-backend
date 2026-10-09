@@ -34,3 +34,24 @@ Jobs for legacy agent kinds (such as `chatgpt`) still complete; the server
 discards any unsupported usage report and stores `usage: null`.
 Do not send the provider's full result object, logs, sessions, prompts, or
 responses.
+
+### Agent activity (TES-311)
+
+`Issue.agentActivity` is a server-owned map keyed by run ID, with `{ role?, expiresAt }`.
+Only a fresh host lease represents active execution. Dispatch, assignment, claim,
+and workflow status do not create a lease. The frontend observes this map through
+its existing issue subscription and expires it locally even when the host disappears.
+Multiple simultaneous dev/QA runs remain independent.
+
+The local Runner heartbeat sends `agentActive: true` only while the provider CLI
+is executing; preparation, publication and recovery send `false`. The backend
+checks the delivered job, cancellation and expiry, and renews a two-minute lease
+at most every 30 seconds. Terminal jobs and explicit cancellation remove the badge.
+Older Runners without this field safely show no active badge; upgrade the Runner
+along with this backend change.
+
+An explicit host stop is final for that run: delayed active heartbeats cannot
+restart the lease. Hosts that disappear expire within two minutes. Recovery-only
+publication jobs never start a model or show an activity badge. GitHub Actions
+agent workflows were retired in TES-337; there is no MCP heartbeat tool or
+workflow migration in this change. Absence of the map means inactive.

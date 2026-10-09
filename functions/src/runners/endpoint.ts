@@ -1,3 +1,4 @@
+import { RUN_ACTIVITY_TTL_MS } from '../common/utils/run-activity';
 import { findPendingRunnerJob } from '../common/utils/pending-runner-job';
 import { configureRunnerRepos } from './configure-repos';
 import { currentRunnerProjectAccess } from '../common/utils/project-repos';
@@ -97,6 +98,24 @@ export const pulseRunnerHeartbeat = onRequest(
         cancelRequested = !access || !agent?.enabled || !!agent?.archivedAt || agent.runnerId !== runner.id || agent.workspaceId !== job.workspaceId;
       }
       cancelRequested = cancelRequested || !!job.cancelRequestedAt || job.status !== 'delivered' || Date.parse(job.expiresAt) <= Date.now();
+    }
+    if (jobId) {
+      const db = getFirestore();
+      await db.runTransaction(async tx => {
+        const job = (await tx.get(db.collection('runner_jobs').doc(jobId))).data();
+        const runRef = db.collection('agent_runs').doc(jobId);
+        const run = (await tx.get(runRef)).data();
+        if (!run || !job || job.runnerId !== runner.id || run.runnerId !== runner.id || run.workspaceId !== runner.data.workspaceId || run.issueId !== job.issueId || run.agentId !== job.agentId) return;
+        const active = req.body?.agentActive === true && status === 'busy' && !cancelRequested && job.status === 'delivered' && !job.cancelRequestedAt
+          && !job.publication && !job.recoveryOf && Date.parse(job.expiresAt) > Date.now() && !run.endedAt && !run.runnerOutcome && !run.outcome && !run.activityStoppedAt;
+        // The Runner polls at 2s; renew the UI lease at most every 30s.
+        if (active && Date.parse(run.activityExpiresAt || '') > Date.now() + RUN_ACTIVITY_TTL_MS - 30_000) return;
+        if (!active && !run.activityExpiresAt) return;
+        tx.update(runRef, { activityExpiresAt: active
+          ? new Date(Math.min(Date.now() + RUN_ACTIVITY_TTL_MS, Date.parse(job.expiresAt))).toISOString()
+          : FieldValue.delete(),
+          ...(!active ? { activityStoppedAt: now } : {}) });
+      });
     }
     await getFirestore().collection('runners').doc(runner.id).update({ status, lastHeartbeatAt: now, updatedAt: now,
       ...(readiness ? { readiness, readinessCheckedAt: now } : {}),
