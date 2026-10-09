@@ -140,3 +140,5 @@ export const pulsePlatformAction = onCall(
 );
 
 export { pulseQaSource } from './qa/endpoint';
+
+export { runActivityTrigger, runnerJobActivityTrigger } from './triggers/run-activity';

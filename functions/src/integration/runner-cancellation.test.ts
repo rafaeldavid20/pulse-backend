@@ -8,6 +8,7 @@ import { CancelRunnerJobAction } from '../actions/runners/cancel-runner-job';
 import { configureRunnerRepos } from '../runners/configure-repos';
 import { pulseRunnerHeartbeat, pulseRunnerConfigure, pulseRunnerComplete } from '../runners/endpoint';
 import { hashApiKeySecret } from '../common/utils/api-key';
+import { projectRunActivity } from '../triggers/run-activity';
 import { recordRunnerCompletion } from '../runners/record-completion';
 
 if (!process.env.FIRESTORE_EMULATOR_HOST) throw new Error('Firestore emulator is required.');
@@ -178,4 +179,63 @@ test('runner QA completion leaves an already-submitted verdict unchanged',async(
   assert.equal(result.body.status,'completed');
   assert.equal((await db.collection('issues').doc(f.job.issueId).get()).data()!.review.state,'approved');
   assert.equal((await db.collection('comments').where('issueId','==',f.job.issueId).get()).size,0);
+});
+
+test('activity: busy/preparation is not execution; explicit host phase starts and stops the lease', async () => {
+  const f = await seed();
+  const ref = db.collection('agent_runs').doc(f.jobId);
+  await endpoint(pulseRunnerHeartbeat, f.credential, { status: 'busy', jobId: f.jobId });
+  assert.equal((await ref.get()).data()!.activityExpiresAt, undefined);
+  await endpoint(pulseRunnerHeartbeat, f.credential, { status: 'busy', jobId: f.jobId, agentActive: true });
+  const expiry = Date.parse((await ref.get()).data()!.activityExpiresAt);
+  assert(expiry > Date.now() && expiry <= Date.now() + 120_000);
+  await endpoint(pulseRunnerHeartbeat, f.credential, { status: 'busy', jobId: f.jobId, agentActive: false });
+  assert.equal((await ref.get()).data()!.activityExpiresAt, undefined);
+  assert.ok((await ref.get()).data()!.activityStoppedAt);
+  await endpoint(pulseRunnerHeartbeat, f.credential, { status: 'busy', jobId: f.jobId, agentActive: true });
+  assert.equal((await ref.get()).data()!.activityExpiresAt, undefined);
+  await db.collection('runner_jobs').doc(f.jobId).update({ cancelRequestedAt: new Date().toISOString() });
+  await endpoint(pulseRunnerHeartbeat, f.credential, { status: 'busy', jobId: f.jobId, agentActive: true });
+  assert.equal((await ref.get()).data()!.activityExpiresAt, undefined);
+});
+
+for (const role of ['dev', 'qa']) {
+  test(`activity: ${role} projects from authenticated host and clears on terminal/publication events`, async () => {
+    const f = await seed();
+    const issueRef = db.collection('issues').doc(f.job.issueId);
+    const runRef = db.collection('agent_runs').doc(f.jobId);
+    await issueRef.set({ workspaceId: f.workspaceId, status: role === 'qa' ? 'in_review' : 'in_progress' });
+    await runRef.update({ role });
+    await projectRunActivity(f.jobId);
+    assert.equal((await issueRef.get()).data()!.agentActivity, undefined);
+    await endpoint(pulseRunnerHeartbeat, f.credential, { status: 'busy', jobId: f.jobId, agentActive: true });
+    await projectRunActivity(f.jobId);
+    assert.equal((await issueRef.get()).data()!.agentActivity[f.jobId].role, role);
+    // Publication can finish later than execution; it must not keep the indicator active.
+    await db.collection('runner_jobs').doc(f.jobId).update({ publication: { execution: 'completed' } });
+    await projectRunActivity(f.jobId);
+    assert.deepEqual((await issueRef.get()).data()!.agentActivity, {});
+    await endpoint(pulseRunnerHeartbeat, f.credential, { status: 'busy', jobId: f.jobId, agentActive: true });
+    assert.equal((await runRef.get()).data()!.activityExpiresAt, undefined);
+  });
+}
+test('activity: independent concurrent runs, expiration, unknown role and cancellation', async () => {
+  const dev = await seed(), qa = await seed();
+  const issueRef = db.collection('issues').doc(dev.job.issueId);
+  await issueRef.set({ workspaceId: dev.workspaceId });
+  await db.collection('agent_runs').doc(dev.jobId).update({ role: 'dev' });
+  await db.collection('agent_runs').doc(qa.jobId).update({ issueId: dev.job.issueId, workspaceId: dev.workspaceId, role: 'qa', activityExpiresAt: new Date(Date.now() + 120_000).toISOString() });
+  await db.collection('runner_jobs').doc(qa.jobId).update({ issueId: dev.job.issueId, workspaceId: dev.workspaceId });
+  await endpoint(pulseRunnerHeartbeat, dev.credential, { status: 'busy', jobId: dev.jobId, agentActive: true });
+  await projectRunActivity(dev.jobId); await projectRunActivity(qa.jobId);
+  assert.equal(Object.keys((await issueRef.get()).data()!.agentActivity).length, 2);
+  await db.collection('runner_jobs').doc(dev.jobId).update({ cancelRequestedAt: new Date().toISOString() });
+  await projectRunActivity(dev.jobId);
+  assert.equal((await issueRef.get()).data()!.agentActivity[dev.jobId], undefined);
+  await db.collection('agent_runs').doc(qa.jobId).update({ role: 'unknown' });
+  await projectRunActivity(qa.jobId);
+  assert.equal((await issueRef.get()).data()!.agentActivity[qa.jobId].role, undefined);
+  await db.collection('agent_runs').doc(qa.jobId).update({ activityExpiresAt: '2000-01-01T00:00:00Z' });
+  await projectRunActivity(qa.jobId); await projectRunActivity(qa.jobId);
+  assert.deepEqual((await issueRef.get()).data()!.agentActivity, {});
 });

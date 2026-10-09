@@ -5,7 +5,7 @@
 // dominio de Pulse. Para cambiar algo de acá, editá ese archivo y corré
 // `npm run sync:types` desde `pulse-app`.
 //
-// SOURCE_HASH: a9d966cd731894c7
+// SOURCE_HASH: 841be20d5b23c776
 // ============================================================
 
 /**
@@ -647,6 +647,10 @@ export interface AgentRun {
   runUrl?: string;
   startedAt: string;
   endedAt?: string;
+  /** Renewed by the execution host; dispatch alone never implies activity. */
+  activityExpiresAt?: string;
+  /** An explicit host stop is final; delayed heartbeats cannot restart it. */
+  activityStoppedAt?: string;
   turns?: number;
   costUsd?: number;
   outcome?: AgentRunOutcome;
@@ -893,6 +897,8 @@ export interface Issue {
   devSelfCheck?: DevCriterionCheck[];
   /** Runs y costo acumulados del issue (D15), denormalizado desde `agent_runs`. Ausente: todavía no corrió ningún agente. */
   agentStats?: IssueAgentStats;
+  /** Server-owned, per-run liveness leases. Expired entries must never animate. */
+  agentActivity?: Record<string, { role?: AgentRole; expiresAt: string }>;
   createdAt: string;
   updatedAt: string;
 }
