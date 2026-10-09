@@ -5,7 +5,7 @@
 // dominio de Pulse. Para cambiar algo de acá, editá ese archivo y corré
 // `npm run sync:types` desde `pulse-app`.
 //
-// SOURCE_HASH: 841be20d5b23c776
+// SOURCE_HASH: 04bcd02667ab322b
 // ============================================================
 
 /**
@@ -68,6 +68,9 @@ export type AgentKind = 'claude' | 'codex' | 'chatgpt';
 /** Un agente personal ejecuta trabajo de su dueño; uno público es compartido por admins. */
 export type AgentVisibility = 'personal' | 'public';
 
+/** Estado de publicación de nuevos PRs Dev. Ausente conserva borradores. */
+export type AgentPrPublicationMode = 'draft' | 'ready';
+
 /** Contrato del Pulse Runner; la credencial del proveedor nunca forma parte de este documento. */
 export type RunnerStatus = 'online' | 'offline' | 'busy' | 'paused';
 
@@ -94,6 +97,8 @@ export interface RunnerJob {
   protocolVersion?: 2 | 3;
   publicationTargets?: Array<{repo: string; branch: string; base: string; appId: string; installationId: string; slug: string; sha?: string}>;
   recoveryOf?: string;
+  /** Snapshot firmado del ajuste del agente; ausente equivale a draft. */
+  prPublicationMode?: AgentPrPublicationMode;
   id: string;
   workspaceId: string;
   /** Signed in protocol v2; absent only on queued legacy jobs. */
@@ -387,6 +392,7 @@ export interface Agent {
   connectedRepos?: AgentRepoConnection[];
   /** Solo relevante para `role: 'qa'` (D17). Ausente se trata como `'shadow'`. */
   qaMode?: AgentQaMode;
+  prPublicationMode?: AgentPrPublicationMode;
 }
 
 /**

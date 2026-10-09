@@ -52,6 +52,9 @@ export class CreateAgentAction extends PlatformActionHandler {
     if (visibility === 'public' && !isWorkspaceAdmin(callerMember)) {
       throw new Error('Solo un admin puede crear un agente público.');
     }
+    if (data.prPublicationMode !== undefined && !['draft', 'ready'].includes(data.prPublicationMode)) {
+      throw new Error("prPublicationMode inválido. Debe ser 'draft' o 'ready'.");
+    }
     if (data.qaMode !== undefined && !AGENT_QA_MODES.includes(data.qaMode)) {
       throw new Error(`qaMode inválido: '${data.qaMode}'. Debe ser 'shadow' o 'enforce'.`);
     }
@@ -66,6 +69,7 @@ export class CreateAgentAction extends PlatformActionHandler {
       runnerId: data.runnerId,
       allowedRepos: data.allowedRepos,
       role,
+      prPublicationMode: data.prPublicationMode ?? 'draft',
       displayName: data.displayName,
       defaultRepo: data.defaultRepo,
       defaultTeamId: data.defaultTeamId,

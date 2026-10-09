@@ -24,6 +24,7 @@ const AGENT_WRITABLE_FIELDS = [
   'reviewRepo',
   'maxReviewAttempts',
   'qaMode',
+  'prPublicationMode',
   'runnerId',
   'allowedRepos',
   'visibility',
@@ -55,6 +56,9 @@ export class UpdateAgentAction extends PlatformActionHandler {
     }
     if (data.role !== undefined && !AGENT_ROLES.includes(data.role)) {
       throw new Error(`role inválido: '${data.role}'. Debe ser 'dev' o 'qa'.`);
+    }
+    if (data.prPublicationMode !== undefined && !['draft', 'ready'].includes(data.prPublicationMode)) {
+      throw new Error("prPublicationMode inválido. Debe ser 'draft' o 'ready'.");
     }
     if (data.qaMode !== undefined && !AGENT_QA_MODES.includes(data.qaMode)) {
       throw new Error(`qaMode inválido: '${data.qaMode}'. Debe ser 'shadow' o 'enforce'.`);

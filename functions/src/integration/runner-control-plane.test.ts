@@ -220,3 +220,15 @@ test('emulator: un agente chatgpt legado completa el job sin métricas disponibl
   assert.equal(run.provider, 'chatgpt');
   assert.equal(run.usage, null);
 });
+
+
+test('emulator: PR publication mode validates values and respects agent management permissions',async()=>{
+  await seed();
+  const setMode=(uid:string,prPublicationMode:any)=>new UpdateAgentAction({actionCode:'agents.update',data:{agentId,prPublicationMode}},uid).run();
+  assert.equal((await setMode(otherId,'ready')).success,false);
+  assert.equal((await setMode(ownerId,'invalid')).success,false);
+  assert.equal((await setMode(ownerId,'ready')).success,true);
+  assert.equal((await db.collection('agents').doc(agentId).get()).data()?.prPublicationMode,'ready');
+  assert.equal((await setMode(adminId,'draft')).success,true);
+  assert.equal((await db.collection('agents').doc(agentId).get()).data()?.prPublicationMode,'draft');
+});

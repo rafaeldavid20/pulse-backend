@@ -7,6 +7,7 @@ export interface RunnerReadiness {
   providers: { codex: { cli: boolean; session: boolean }; claude: { cli: boolean; session: boolean } };
   repositories: Array<{ repo: string; accessible: boolean }>;
   jobProtocolVersion?: 2 | 3;
+  prPublicationModeVersion?: 1;
   githubApps?: Array<{projectId: string; repo: string; appId: string; installationId: string; slug: string; base?: string; ready: boolean}>;
   qaSourceProtocolVersion?: 1;
 }
@@ -28,6 +29,7 @@ export function parseRunnerReadiness(value: any): RunnerReadiness {
     return { repo: entry.repo, accessible: entry.accessible };
   });
   if (value.jobProtocolVersion !== undefined && !([2, 3].includes(value.jobProtocolVersion))) throw new Error('Invalid Runner job protocol.');
+  if (value.prPublicationModeVersion !== undefined && value.prPublicationModeVersion !== 1) throw new Error('Invalid PR publication mode version.');
   if (value.qaSourceProtocolVersion !== undefined && value.qaSourceProtocolVersion !== 1) throw new Error('Invalid QA source protocol.');
   const githubApps = value.githubApps === undefined ? [] : value.githubApps;
   if (!Array.isArray(githubApps) || githubApps.length > 100) throw new Error('Invalid GitHub App readiness.');
@@ -39,7 +41,7 @@ export function parseRunnerReadiness(value: any): RunnerReadiness {
     seen.add(key);
     return { projectId: e.projectId, repo: e.repo, appId: e.appId, installationId: e.installationId, slug: e.slug, ready: e.ready, ...(e.ready ? {base: e.base} : {}) };
   });
-  return { githubApps: safeApps, workspaceId: value.workspaceId, identities, providers, repositories, ...(value.qaSourceProtocolVersion === 1 ? { qaSourceProtocolVersion: 1 as const } : {}), ...([2, 3].includes(value.jobProtocolVersion) ? { jobProtocolVersion: value.jobProtocolVersion as 2 | 3 } : {}) };
+  return { ...(value.prPublicationModeVersion === 1 ? { prPublicationModeVersion: 1 as const } : {}), githubApps: safeApps, workspaceId: value.workspaceId, identities, providers, repositories, ...(value.qaSourceProtocolVersion === 1 ? { qaSourceProtocolVersion: 1 as const } : {}), ...([2, 3].includes(value.jobProtocolVersion) ? { jobProtocolVersion: value.jobProtocolVersion as 2 | 3 } : {}) };
 }
 
 export function runnerPreflight(agent: any, runner: any, workspaceId: string, repos: string[], mode: string, now = Date.now(), projectScoped = false, publicationOnly = false) {
@@ -53,6 +55,7 @@ export function runnerPreflight(agent: any, runner: any, workspaceId: string, re
   if (agent?.role !== role) fail('role', 'El rol del agente es incompatible con el job.', 'Usá un agente QA para revisiones y Dev para tareas.');
   const readiness = runner?.readiness as RunnerReadiness | undefined;
   if (projectScoped && ![2, 3].includes(readiness?.jobProtocolVersion || 0)) fail('runner_upgrade', 'El Runner instalado no admite jobs autorizados por proyecto.', 'En la máquina del Runner ejecutá npm install -g @pulsehub/runner@latest, reinstalá/reiniciá el servicio y ejecutá pulse-runner diagnose. Se conserva el pairing y la clave existentes.');
+  if (!publicationOnly && role === 'dev' && agent?.prPublicationMode === 'ready' && (readiness?.jobProtocolVersion !== 3 || readiness?.prPublicationModeVersion !== 1)) fail('pr_publication_upgrade', 'El Runner instalado no admite publicar PR listos para revisión.', 'Actualizá @pulsehub/runner a la última versión y reiniciá el servicio.');
   if (projectScoped && role === 'qa' && readiness?.qaSourceProtocolVersion !== 1) fail('qa_source_upgrade', 'El Runner instalado no admite snapshots QA sin credenciales Git globales.', 'Actualizá @pulsehub/runner a 0.1.8 o superior y reiniciá el servicio.');
   if (role === 'dev' && readiness?.jobProtocolVersion === 3 && (!readiness.githubApps?.some(e => e.ready))) fail('github_app', 'La GitHub App local requiere configuración o permisos de publicación.', 'Configurá github-app por proyecto y repo en la máquina del Runner; luego ejecutá pulse-runner diagnose.');
   const checked = Date.parse(runner?.readinessCheckedAt || '');

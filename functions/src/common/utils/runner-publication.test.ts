@@ -25,3 +25,18 @@ test('local App readiness persists only public identity/capabilities',()=>{
   assert.equal(report.jobProtocolVersion,3);assert(!JSON.stringify(report).includes('secret'));
   assert.throws(()=>parseRunnerReadiness({...report,githubApps:[...report.githubApps!,...report.githubApps!]}));
 });
+
+
+test('v3 publication mode is signed without changing legacy payloads',()=>{
+  const {privateKey,publicKey}=generateKeyPairSync('ed25519');
+  const ready={...job,prPublicationMode:'ready'};
+  assert.equal(runnerJobPayload(ready),`${runnerJobPayload(job)}.ready`);
+  const signature=signRunnerJob(ready,privateKey.export({type:'pkcs8',format:'pem'}).toString());
+  assert(verify(null,Buffer.from(runnerJobPayload(ready)),publicKey,Buffer.from(signature,'base64url')));
+  for(const mode of [undefined,'draft']) assert(!verify(null,Buffer.from(runnerJobPayload({...ready,prPublicationMode:mode})),publicKey,Buffer.from(signature,'base64url')));
+});
+test('readiness preserves the publication capability and rejects unsupported versions',()=>{
+  const value={workspaceId:'ws',identities:[],providers:{codex:{cli:true,session:true},claude:{cli:false,session:false}},repositories:[],jobProtocolVersion:3,prPublicationModeVersion:1};
+  assert.equal(parseRunnerReadiness(value).prPublicationModeVersion,1);
+  assert.throws(()=>parseRunnerReadiness({...value,prPublicationModeVersion:2}));
+});
