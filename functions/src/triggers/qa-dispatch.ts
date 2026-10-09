@@ -1,9 +1,8 @@
 import { runnerPreflight } from '../common/utils/runner-preflight';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { getFirestore, Transaction, FieldValue } from 'firebase-admin/firestore';
-import { nanoid } from 'nanoid';
 import { githubAppId, githubAppPrivateKeyB64, runnerJobSigningPrivateKey } from '../common/secrets';
-import { dispatchRepositoryEvent, getPullRequestOrigin } from '../github/client';
+import { getPullRequestOrigin } from '../github/client';
 import { resolveIssueRepo } from '../common/utils/repo-resolution';
 import { checkWorkspaceDispatchBudget, todayKey } from '../common/utils/dispatch-counter';
 import { checkIssueRunBudget } from '../common/utils/issue-run-budget';
@@ -148,12 +147,11 @@ export const qaDispatchTrigger = onDocumentWritten(
         }
         qaDoc = selected;
       }
-      // Actions revisa un repo configurado. Runner QA trabaja con snapshots
-      // de todo el proyecto y por eso no necesita un reviewRepo por agente.
+      // Runner QA trabaja con snapshots de todo el proyecto.
       // La elegibilidad Runner se termina de validar con runnerPreflight.
-      const qaCandidates = qaSnap.docs.filter((d) => d.id !== executionAgentId && !d.data().archivedAt && (d.data().runnerId || d.data().reviewRepo === repoFullName));
+      const qaCandidates = qaSnap.docs.filter((d) => d.id !== executionAgentId && !d.data().archivedAt && !!d.data().runnerId);
       if (!qaDoc && qaCandidates.length === 0) {
-        await recordDispatchError(`No hay QA autónomo habilitado para '${repoFullName}'. Asigná un agente QA manualmente y volvé a despachar.`);
+        await recordDispatchError(`No hay QA autónomo habilitado para '${repoFullName}'. Vinculá un Pulse Runner local a un agente QA y volvé a despachar.`);
         return;
       }
       const reviewRepos = [...new Set(prs.map((pr) => pr.repoFullName))];
@@ -177,9 +175,7 @@ export const qaDispatchTrigger = onDocumentWritten(
           runner = result.runner;
           break;
         }
-        // No degradar silenciosamente a otro proveedor cuando hay QA Runner
-        // configurado; Actions queda como compatibilidad sin QA Runner.
-        if (!qaDoc && runnerCandidates.length === 0) qaDoc = qaCandidates.find((candidate) => !candidate.data().runnerId);
+        // Ningún candidato puede ejecutar QA sin un Runner disponible.
         if (!qaDoc && runnerCandidates.length > 0) {
           await recordDispatchError(`El QA Runner del proyecto no está disponible para '${repoFullName}'. ${runnerProblems.join(' ') || 'Revisá su identidad, sesión y conexión.'} No se enviará el issue a GitHub Actions.`);
           return;
@@ -193,6 +189,7 @@ export const qaDispatchTrigger = onDocumentWritten(
       if (!qaAgent) return;
       const qaAgentId = qaDoc.id;
       const runnerId = runner?.id || (qaAgent.runnerId as string | undefined);
+      if (!runnerId || !runner) { await recordDispatchError('Vinculá un Pulse Runner local al agente QA. Los agentes de GitHub Actions fueron retirados.'); return; }
       if (runnerId) {
         // `runner` se preparó al elegir el candidato y se revalida justo antes
         // de encolar para evitar enviar un job a un Runner que cambió de estado.
@@ -338,7 +335,6 @@ export const qaDispatchTrigger = onDocumentWritten(
 
 
       const nextAttempt = attempt + 1;
-      const prNumber = prs.find((pr) => pr.repoFullName === repoFullName)?.prNumber;
       if (runnerId && runner) {
         const job = await enqueueRunnerJob(db, {
           workspaceId,
@@ -363,33 +359,7 @@ export const qaDispatchTrigger = onDocumentWritten(
           date: todayKey(),
         });
         console.log(`[QaDispatch] queued signed Runner review job '${job.id}' for issue '${after.identifier}' to QA '${qaAgentId}'.`);
-      } else {
-        // D15/TES-211: el runId se manda en el evento de GitHub para que el
-        // workflow pulse-qa.yml complete el mismo registro vía runs.complete.
-        const runId = `run-${nanoid(8)}`;
-        await dispatchRepositoryEvent(installation.installationId, repoFullName, 'pulse_review', {
-          issueId,
-          issueIdentifier: after.identifier,
-          workspaceId,
-          agentId: qaAgentId,
-          agentKind: qaAgent.kind || 'claude',
-          reviewAttempt: nextAttempt,
-          prNumber,
-          runId,
-        });
-        await db.collection('agent_runs').doc(runId).set({
-          id: runId,
-          issueId,
-          workspaceId,
-          agentId: qaAgentId,
-          role: 'qa',
-          mode: 'review',
-          repo: repoFullName,
-          reviewAttempt: nextAttempt,
-          startedAt: new Date().toISOString(),
-          date: todayKey(),
-        });
-        console.log(`[QaDispatch] dispatched 'pulse_review' (attempt ${nextAttempt}) for issue '${after.identifier}' to QA '${qaAgentId}' via GitHub Actions.`);
+
       }
     } catch (error) {
       console.error('[QaDispatch] error handling issue write, will not retry:', error);

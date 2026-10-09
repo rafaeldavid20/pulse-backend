@@ -7,16 +7,15 @@ import { allowedReposForIssue, assertRepoAllowed } from '../../common/utils/proj
 /**
  * Registra en el issue trabajo pendiente en OTRO repo (TES-202).
  *
- * Un run solo tiene credenciales sobre el repo que lo recibió, así que cuando
- * descubre que hace falta un cambio en otro no lo empuja: lo deja anotado acá y
+ * Si hace falta una continuación fuera del trabajo actual, la deja anotada y
  * `agentDispatchTrigger` despacha un run nuevo al repo destino cuando este
  * termina. La entrada vive en `issue.pendingRepoWork` (estructurada, para que el
  * run siguiente no dependa de interpretar texto libre) y además se publica como
  * comentario, que es lo que ven las personas en la Activity.
  *
  * Falla —con un mensaje que el agente ve— si el destino no se puede trabajar:
- * fuera de la instalación, fuera de los repos del proyecto, o sin el workflow
- * del agente conectado. Es mejor rechazar acá que dejar un traspaso que nadie
+ * fuera de la instalación, fuera de los repos del proyecto, o sin Runner
+ * local vinculado. Es mejor rechazar acá que dejar un traspaso que nadie
  * va a tomar.
  */
 export class RequestRepoWorkAction extends PlatformActionHandler {
@@ -61,19 +60,14 @@ export class RequestRepoWorkAction extends PlatformActionHandler {
     const allowed = await allowedReposForIssue(db, issue, installed);
     assertRepoAllowed(repoFullName, allowed, `el proyecto de ${issue.identifier}`);
 
-    // Sin workflow en el destino el dispatch no arranca nada: el traspaso
-    // quedaría pendiente para siempre sin que nadie se entere.
-    const agentId = issue.assigneeId || this.caller.uid;
+    // El trabajo continúa exclusivamente mediante Runner local.
+    const agentId = issue.execution?.agentId || issue.assigneeId || this.caller.uid;
     const agentSnap = agentId ? await db.collection('agents').doc(agentId).get() : null;
     if (agentSnap?.exists && agentSnap.data()?.archivedAt) {
       throw new Error('No se puede solicitar trabajo con un agente archivado. Restauralo primero.');
     }
-    const connected: Array<{ repoFullName: string }> = agentSnap?.exists ? agentSnap.data()!.connectedRepos || [] : [];
-    if (!connected.some((r) => r.repoFullName === repoFullName)) {
-      throw new Error(
-        `'${repoFullName}' no tiene el workflow del agente conectado (agents.connectRepo), así que ningún run podría retomar el trabajo ahí. ` +
-          `Repos conectados: ${connected.map((r) => r.repoFullName).join(', ') || 'ninguno'}.`
-      );
+    if (!agentSnap?.exists || !agentSnap.data()!.runnerId) {
+      throw new Error('Vinculá un Pulse Runner local al agente para continuar el trabajo en otro repositorio.');
     }
 
     const now = new Date().toISOString();

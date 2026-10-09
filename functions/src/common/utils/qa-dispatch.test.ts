@@ -68,7 +68,11 @@ const { qaDispatchTrigger } = require('../../triggers/qa-dispatch');
 const { ReviewsRerunAction } = require('../../actions/reviews/rerun-review');
 Module._load = originalLoad;
 
-const qa = (id: string, extra = {}) => ({ id, workspaceId: 'ws', role: 'qa', enabled: true, autonomousMode: true, reviewRepo: 'owner/repo', ...extra });
+const qa = (id: string, extra: Record<string, any> = {}) => {
+  const runnerId = `runner-${id}`;
+  runners[runnerId] = { id: runnerId, workspaceId: 'ws', status: 'online', lastHeartbeatAt: new Date().toISOString(), readinessCheckedAt: new Date().toISOString(), connectedRepos: [], readiness: { jobProtocolVersion: 2, qaSourceProtocolVersion: 1, workspaceId: 'ws', identities: [{ agentId: id, kind: 'codex', role: 'qa' }], providers: { codex: { cli: true, session: true } }, repositories: [] } };
+  return { id, workspaceId: 'ws', role: 'qa', kind: 'codex', runnerId, enabled: true, autonomousMode: true, reviewRepo: 'owner/repo', ...extra };
+};
 function reset() {
   issue = { workspaceId: 'ws', identifier: 'TES-303', status: 'in_review', assigneeId: 'human', execution: { agentId: 'dev' },
     git: { repoFullName: 'owner/repo', prNumber: 1, prState: 'open', branch: 'pul/test' } };
@@ -127,7 +131,7 @@ test('explicit rerun also keeps automatic QA separate from manual selection', as
   assert.equal(issue.assigneeId, 'human');
 });
 test('automatic QA does not silently fall back to Actions when a project QA Runner is unavailable', async () => {
-  reset(); agents = [qa('offline', { runnerId: 'offline-runner' }), qa('fallback')];
+  reset(); agents = [qa('offline', { runnerId: 'offline-runner' }), qa('fallback', { runnerId: undefined })];
   await run();
   assert.deepEqual(dispatches, []);
   assert.equal(issue.qaAssigneeId, undefined);
@@ -196,3 +200,16 @@ test('manual QA rerun resolves and repairs a stale Runner binding from a same-ow
   assert.equal(runnerJobs[0].runnerId, 'runner-dev');
   assert.equal(agents[0].runnerId, 'runner-dev');
 });
+
+for (const manual of [false, true]) {
+  test(`retired ${manual ? 'manual' : 'automatic'} QA stays blocked with no jobs, runs or attempt reservation`, async () => {
+    reset(); agents = [qa('legacy', { runnerId: undefined })];
+    if (manual) issue.qaAssigneeId = 'legacy';
+    await run();
+    assert.deepEqual(dispatches, []); assert.deepEqual(runnerJobs, []);
+    assert.ok(issue.review.dispatchError); assert.equal(issue.review.dispatchedAt, undefined);
+    assert.equal(issue.review.attempt, undefined);
+    await assert.rejects(new ReviewsRerunAction({ data: { issueId: 'issue' } }).handleAction());
+    assert.deepEqual(dispatches, []); assert.equal(issue.review.dispatchedAt, undefined);
+  });
+}

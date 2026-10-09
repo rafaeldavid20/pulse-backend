@@ -19,32 +19,23 @@ firebase functions:secrets:set PULSE_ARGUS_DSN --project pulse-app-93
 3. Desplegar Functions. Un fallo de una acción o del transporte MCP aparecerá
    como issue en ese proyecto de Argus.
 
-## Disparo autónomo de agentes (Fase 6)
+## Ejecución autónoma de agentes
 
-Cuando un issue asignado a un agente con `autonomousMode` pasa a `todo`,
-`agentDispatchTrigger` (`functions/src/triggers/agent-dispatch.ts`, un
-`onDocumentWritten` sobre `issues/{issueId}`) dispara un evento
-`repository_dispatch` (`event_type: pulse_task`) contra el repo destino, que
-`.github/workflows/pulse-agent.yml` recoge para correr `claude-code-action`
-con el MCP de Pulse configurado por header — sin que un humano tenga que
-reclamar el issue manualmente.
+Desarrollo, rework, traspasos y QA se ejecutan exclusivamente mediante Pulse
+Runner local. Un agente sin `runnerId` queda pendiente de configuración: no se
+emiten eventos de GitHub Actions, ni se reservan intentos o presupuesto.
+`agents.connectRepo` responde con una indicación para vincular Runner; ya no
+crea workflows, secrets ni credenciales.
 
-### Secrets requeridos en el repo destino
+Las claves dedicadas de agentes Actions (`agentId` + `connectedRepo`, sin
+`jobId`) quedan rechazadas por MCP. Se conservan las claves manuales, OAuth,
+credenciales de Salesforce y claves temporales de Runner. El historial de
+agentes, runs, revisiones y conexiones se mantiene.
 
-- `CLAUDE_CODE_OAUTH_TOKEN` (o `ANTHROPIC_API_KEY`, alternativa soportada por
-  `claude-code-action`) — credencial para correr Claude Code.
-- `PULSE_AGENT_MCP_KEY` — API key con la que el workflow autentica contra el
-  MCP de Pulse (`Authorization: Bearer ...`).
-
-### Permisos de la GitHub App
-
-La GitHub App usada para la instalación (`github_installations` en
-Firestore) necesita, como mínimo:
-
-- **Contents**: read & write (crear ramas, `checkout`, push).
-- **Pull requests**: read & write (abrir el PR).
-- **Actions**: read & write (`POST /repos/{owner}/{repo}/dispatches`
-  requiere este permiso).
+La GitHub App de Pulse sigue proporcionando integración, webhooks y fuentes
+QA. La App local de Runner es independiente y publica los cambios. CI,
+releases y despliegues, incluidos los de Salesforce, siguen usando Actions.
+El procedimiento de retiro está en [docs/actions-retirement.md](docs/actions-retirement.md).
 
 ### Kill switches (obligatorios, no opcionales)
 
@@ -200,33 +191,11 @@ Dos reglas lo acotan:
 
 ## Configuración del run en runtime (TES-228 / M1)
 
-Los workflows que `agents.connectRepo` escribe en el repo del cliente **ya no
-llevan el prompt ni las listas de tools**. Cada run los pide al arrancar, con la
-key del agente:
-
-```
-pulse_get_run_config({ identifier, mode: 'task' | 'rework' | 'review', handoffRepo?, reviewAttempt? })
-  -> { version, mode, prompt, allowedTools, disallowedTools, maxTurns?, skills[] }
-```
-
-El paso `Resolver la configuración del run en Pulse` (compartido por los tres
-modos, `templates/run-config-step.ts`) la resuelve, materializa los skills en
-`.claude/skills/<name>/SKILL.md` y expone prompt y tools como outputs que
-consume `claude-code-action`.
-
-**Por qué.** Antes, cambiar una línea de prompt exigía reescribir el `.yml` en
-cada repo de cada cliente y reconectarlos. Los dos repos de Pulse corrieron
-`pulse-agent-workflow-version: 5` mientras el template iba por 9 — semanas en
-las que el agente nunca recibió la instrucción de llamar a
-`pulse_report_criteria`, que es por qué TES-218 se cerró sin `devSelfCheck`. Con
-un cliente es una molestia; con cien, la mitad corre instrucciones viejas sin
-que nadie lo note.
-
-Los prompts viven ahora en `functions/src/run-config/prompts.ts`, con
-`{{variable}}` como sintaxis de interpolación — distinta de la de JS y la de
-GitHub Actions a propósito, porque este texto pasa por las dos. Se movieron
-**idénticos**: hay un chequeo de que el prompt renderizado coincide carácter por
-carácter con el que llevaba el `.yml`.
+Pulse Runner pide `pulse_get_run_config` al arrancar cada job, con la
+credencial temporal limitada al issue y a los repositorios autorizados.
+La configuración contiene el prompt, permisos de tools y skills del run.
+Los prompts viven en `functions/src/run-config/prompts.ts`; ya no existen
+plantillas de workflows de agentes para distribuir esas instrucciones.
 
 `Skill` quedó habilitada en las tools de los tres modos: sin eso, un skill
 disponible en el checkout no se puede invocar igual (TES-230). `Agent`/`Task`
