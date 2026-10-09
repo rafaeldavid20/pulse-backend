@@ -1,8 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { assertQaReviewedHeads, assertQaPrepared, qaArchive, qaProjectRepos, qaSourceAuthorization, resolveQaRepo, withQaRepo } from '../../qa/source';
-import { QA_SOURCE_SCRIPT } from '../../github/templates/qa-source-step';
-import { renderQaWorkflow } from '../../github/templates/pulse-qa-workflow';
 const sha = 'a'.repeat(40);
 const repos = ['o/app', 'o/backend', 'o/private-runner'];
 const project = { workspaceId: 'ws', repoFullNames: repos };
@@ -24,7 +22,6 @@ test('QA source uses a separate application credential header and preserves lega
   assert.equal(qaSourceAuthorization('  pulse-fixture-key  '), 'Bearer pulse-fixture-key');
   assert.equal(qaSourceAuthorization('', 'Bearer legacy-fixture-key'), 'Bearer legacy-fixture-key');
   assert.equal(qaSourceAuthorization(undefined), undefined);
-  assert(QA_SOURCE_SCRIPT.includes("'X-Pulse-QA-Credential': os.environ['PULSE_QA_CREDENTIAL']"));
 });
 
 test('preflight resolves exact PR heads, context default heads, metadata and content', async () => {
@@ -58,19 +55,6 @@ test('fresh per-repo read-only identity, archive access and immediate revocation
   await assert.rejects(withQaRepo('1', repos[2], async () => { throw new Error('revoked'); }, fetcher, () => 'fixture-jwt'));
   assert.equal(calls.at(-1)!.init!.method, 'DELETE');
   await assert.rejects(withQaRepo('1', repos[2], async () => {}, (async () => new Response('private body', { status: 403 })) as typeof fetch, () => 'fixture-jwt'), /private-runner.*HTTP 403/);
-});
-
-test('workflow prepares before isolated verification and review, never checks out with persisted git auth', () => {
-  const workflow = renderQaWorkflow();
-  assert(workflow.includes('needs: prepare'));
-  assert(workflow.includes("needs.prepare.result == 'success'"));
-  assert(workflow.includes('persist-credentials: false'));
-  assert(!workflow.includes('name: qa-sources'));
-  assert(workflow.includes('ref: ${{ needs.prepare.outputs.head_sha }}'));
-  const verify = workflow.split('  verify:')[1].split('  review:')[0];
-  assert(!verify.includes('secrets.'));
-  assert(!verify.includes('GH_TOKEN'));
-  assert(QA_SOURCE_SCRIPT.includes("stat.S_ISLNK(mode)"));
 });
 
 test('verdict cannot record a moved head or a revoked/unreadable PR as reviewed', () => {

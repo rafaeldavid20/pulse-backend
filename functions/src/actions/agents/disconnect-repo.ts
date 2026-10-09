@@ -2,10 +2,10 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { deleteRepoSecret, deleteRepoFile } from '../../github/client';
-import { WORKFLOW_PATH } from '../../github/templates/pulse-agent-workflow';
-import { QA_WORKFLOW_PATH } from '../../github/templates/pulse-qa-workflow';
 import { agentVisibility, getWorkspaceMember, isWorkspaceAdmin } from '../../common/utils/agent-authorization';
 
+const WORKFLOW_PATH = '.github/workflows/pulse-agent.yml';
+const QA_WORKFLOW_PATH = '.github/workflows/pulse-qa.yml';
 const DEV_MCP_SECRET_NAME = 'PULSE_AGENT_MCP_KEY';
 const QA_MCP_SECRET_NAME = 'PULSE_QA_MCP_KEY';
 
@@ -72,14 +72,21 @@ export class DisconnectRepoAction extends PlatformActionHandler {
     const secretName: string = connection.secretName || (isQa ? QA_MCP_SECRET_NAME : DEV_MCP_SECRET_NAME);
     const workflowPath: string = connection.workflowPath || (isQa ? QA_WORKFLOW_PATH : WORKFLOW_PATH);
 
+    if (![DEV_MCP_SECRET_NAME, QA_MCP_SECRET_NAME].includes(secretName) || ![WORKFLOW_PATH, QA_WORKFLOW_PATH].includes(workflowPath)) {
+      throw new Error('La conexión no corresponde a un workflow antiguo de agentes; no se modificó ningún recurso.');
+    }
+
     const warnings: string[] = [];
 
     // Lo primero y lo único imprescindible: que la credencial deje de servir.
     if (connection.apiKeyId) {
-      await db
-        .collection('api_keys')
-        .doc(connection.apiKeyId)
-        .update({ revokedAt: new Date().toISOString() });
+      const keyRef = db.collection('api_keys').doc(connection.apiKeyId);
+      const key = (await keyRef.get()).data();
+      if (key && key.workspaceId === data.workspaceId && key.agentId === data.agentId && key.connectedRepo === data.repoFullName && !key.jobId) {
+        await keyRef.update({ revokedAt: new Date().toISOString() });
+      } else {
+        throw new Error('La clave registrada no pertenece a esta conexión antigua; no se modificó ninguna credencial.');
+      }
     }
 
     const installSnap = await db
@@ -114,7 +121,6 @@ export class DisconnectRepoAction extends PlatformActionHandler {
     }
 
     await agentRef.update({
-      allowedRepos: (agent.allowedRepos || []).filter((repo: string) => repo !== data.repoFullName),
       connectedRepos: connections.filter((c) => c.repoFullName !== data.repoFullName),
     });
 

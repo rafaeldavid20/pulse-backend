@@ -1,15 +1,12 @@
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
-import { getFirestore, Transaction } from 'firebase-admin/firestore';
-import { nanoid } from 'nanoid';
+import { getFirestore } from 'firebase-admin/firestore';
 import { githubAppId, githubAppPrivateKeyB64, mcpKeyPepper, runnerJobSigningPrivateKey } from '../common/secrets';
-import { dispatchRepositoryEvent } from '../github/client';
 import { resolveIssueRepo } from '../common/utils/repo-resolution';
-import { checkWorkspaceDispatchBudget, todayKey } from '../common/utils/dispatch-counter';
 import { checkIssueRunBudget } from '../common/utils/issue-run-budget';
 import { buildNeedsHumanEscalation } from '../common/utils/review-escalation';
-import { agentAllowedRepos, agentVisibility } from '../common/utils/agent-authorization';
+import { agentVisibility } from '../common/utils/agent-authorization';
 import { enqueueRunnerJob, DispatchReservation } from '../common/utils/runner-jobs';
-import { DISPATCH_COOLDOWN_MS, reportDispatchFailure, RunnerDispatchError } from '../common/utils/dispatch-failure';
+import { reportDispatchFailure, RunnerDispatchError } from '../common/utils/dispatch-failure';
 import { runnerProjectRepoAccess } from '../common/utils/project-repos';
 
 async function dispatchRunnerContinuation(
@@ -67,8 +64,13 @@ async function dispatchRework(
   if (review?.reworkDispatchedForAttempt === attempt || after.agent?.state === 'claimed' || ['done', 'canceled'].includes(after.status)) return;
   const startedAt = new Date().toISOString();
   const failPreflight = async (reason: string) => {
-    if (agent.runnerId) await reportDispatchFailure(db, issueId, agentId, startedAt, new RunnerDispatchError('preflight', [reason]), { mode: 'rework', attempt });
+    await reportDispatchFailure(db, issueId, agentId, startedAt, new RunnerDispatchError('preflight', [reason]), { mode: 'rework', attempt });
   };
+
+  if (!agent.runnerId) {
+    await failPreflight('Los agentes de GitHub Actions fueron retirados. Vinculá un Pulse Runner local antes de reintentar.');
+    return;
+  }
 
   // Defensa en profundidad: `reviews.submit` (D5) ya no deja pasar a
   // `changes_requested` con los intentos agotados (ahí el outcome es
@@ -162,78 +164,7 @@ async function dispatchRework(
   // rework: nunca caer a GitHub Actions después de haber ejecutado el primer
   // intento local. Revalidamos Runner y repo antes de emitir el envelope,
   // igual que en el dispatch inicial.
-  if (agent.runnerId) {
-    await dispatchRunnerContinuation(db, issueId, after, agentId, agent, authorized, repoFullName, { mode: 'rework', attempt });
-    return;
-  }
-
-  const issueRef = db.collection('issues').doc(issueId);
-  const decision = await db.runTransaction(async (tx: Transaction) => {
-    const issueSnap = await tx.get(issueRef);
-    const currentReview = issueSnap.data()?.review as Record<string, any> | undefined;
-    // Otro trigger concurrente ya lo despachó, o el intento ya no está
-    // rechazado (por ejemplo, un humano lo movió a mano).
-    if (!currentReview || currentReview.state !== 'changes_requested') {
-      return { allowed: false, reason: 'not-changes-requested' } as const;
-    }
-    if (currentReview.reworkDispatchedForAttempt === currentReview.attempt) {
-      return { allowed: false, reason: 'already-dispatched' } as const;
-    }
-
-    const budget = await checkWorkspaceDispatchBudget(tx, db, workspaceId);
-    if (!budget.allowed) return { allowed: false, reason: budget.reason } as const;
-
-    const now = new Date().toISOString();
-    tx.update(issueRef, {
-      'review.reworkDispatchedAt': now,
-      'review.reworkDispatchedForAttempt': currentReview.attempt,
-    });
-    return { allowed: true } as const;
-  });
-  if (!decision.allowed) {
-    console.log(`[AgentDispatch] rework for '${issueId}' not dispatched (${decision.reason}).`);
-    return;
-  }
-
-  // D15/TES-211: el runId se genera ANTES del dispatch para poder mandarlo en
-  // el `client_payload` — el paso de reporte del workflow lo necesita para
-  // saber qué registro de `agent_runs` cerrar con `runs.complete`.
-  const runId = `run-${nanoid(8)}`;
-  await dispatchRepositoryEvent(installation.installationId, repoFullName, 'pulse_task', {
-    issueId,
-    issueIdentifier: after.identifier,
-    workspaceId,
-    agentId,
-    agentKind: agent.kind || 'claude',
-    // El workflow usa esto para correr el job de re-trabajo en vez del de
-    // tarea nueva: sin rama ni PR nuevos, checkout de la rama existente y
-    // push al mismo PR.
-    mode: 'rework',
-    reviewAttempt: attempt,
-    runId,
-  });
-
-  // D15/TES-211: registro de runs y costo, mismo motivo que en el dispatch
-  // normal y el de traspaso.
-  await db
-    .collection('agent_runs')
-    .doc(runId)
-    .set({
-      id: runId,
-      issueId,
-      workspaceId,
-      agentId,
-      role: 'dev',
-      mode: 'rework',
-      repo: repoFullName,
-      reviewAttempt: attempt,
-      startedAt: new Date().toISOString(),
-      date: todayKey(),
-    });
-
-  console.log(
-    `[AgentDispatch] dispatched rework 'pulse_task' (attempt ${attempt}) for issue '${after.identifier}' (${issueId}) to '${repoFullName}'.`
-  );
+  await dispatchRunnerContinuation(db, issueId, after, agentId, agent, authorized, repoFullName, { mode: 'rework', attempt });
 }
 
 /**
@@ -276,9 +207,14 @@ async function dispatchHandoff(
   const reservation = { mode: 'handoff' as const, requestedAt: entry?.requestedAt };
   const startedAt = new Date().toISOString();
   const failPreflight = async (reason: string) => {
-    if (agent.runnerId) await reportDispatchFailure(db, issueId, agentId, startedAt, new RunnerDispatchError('preflight', [reason]), { ...reservation, repoFullName: targetRepo });
+    await reportDispatchFailure(db, issueId, agentId, startedAt, new RunnerDispatchError('preflight', [reason]), { ...reservation, repoFullName: targetRepo });
   };
 
+
+  if (!agent.runnerId) {
+    await failPreflight('Los agentes de GitHub Actions fueron retirados. Vinculá un Pulse Runner local antes de reintentar.');
+    return;
+  }
 
   // Tope de runs por issue (D8/TES-153), chequeado ANTES de tocar GitHub: un
   // traspaso que se re-pide una y otra vez es justo el bucle que este tope
@@ -324,76 +260,14 @@ async function dispatchHandoff(
     return;
   }
 
-  if (agent.runnerId) {
-    await dispatchRunnerContinuation(db, issueId, after, agentId, agent, authorized, targetRepo, reservation);
-    return;
-  }
-
-  const issueRef = db.collection('issues').doc(issueId);
-  const decision = await db.runTransaction(async (tx: Transaction) => {
-    const issueSnap = await tx.get(issueRef);
-    const pending: any[] = issueSnap.data()?.pendingRepoWork || [];
-    const entry = pending.find((e) => e.repoFullName === targetRepo);
-    // Otro trigger concurrente ya lo despachó, o el traspaso se cerró.
-    if (!entry || entry.dispatchedAt) return { allowed: false, reason: 'already-dispatched' } as const;
-
-    const budget = await checkWorkspaceDispatchBudget(tx, db, workspaceId);
-    if (!budget.allowed) return { allowed: false, reason: budget.reason } as const;
-
-    const now = new Date().toISOString();
-    tx.update(issueRef, {
-      pendingRepoWork: pending.map((e) => (e.repoFullName === targetRepo ? { ...e, dispatchedAt: now } : e)),
-      'agent.dispatchedAt': now,
-      'agent.dispatchedTo': agentId,
-    });
-    return { allowed: true } as const;
-  });
-  if (!decision.allowed) {
-    console.log(`[AgentDispatch] handoff for '${issueId}' to '${targetRepo}' not dispatched (${decision.reason}).`);
-    return;
-  }
-
-  // D15/TES-211: ver el comentario equivalente en `dispatchRework`.
-  const runId = `run-${nanoid(8)}`;
-  await dispatchRepositoryEvent(installation.installationId, targetRepo, 'pulse_task', {
-    issueId,
-    issueIdentifier: after.identifier,
-    workspaceId,
-    agentId,
-    agentKind: agent.kind || 'claude',
-    // El workflow usa esto para decirle al agente que es la continuación de un
-    // traspaso y que el detalle está en `pendingRepoWork` del issue.
-    handoffRepo: targetRepo,
-    runId,
-  });
-
-  // D15/TES-211: registro de runs y costo, ahora también del lado dev (antes
-  // solo `qa-dispatch.ts` creaba `agent_runs`) — sin esto, el tope de runs
-  // por issue no podía contar los traspasos que motivaron la historia.
-  await db
-    .collection('agent_runs')
-    .doc(runId)
-    .set({
-      id: runId,
-      issueId,
-      workspaceId,
-      agentId,
-      role: 'dev',
-      mode: 'handoff',
-      repo: targetRepo,
-      startedAt: new Date().toISOString(),
-      date: todayKey(),
-    });
-
-  console.log(`[AgentDispatch] dispatched handoff 'pulse_task' for issue '${after.identifier}' (${issueId}) to '${targetRepo}'.`);
+  await dispatchRunnerContinuation(db, issueId, after, agentId, agent, authorized, targetRepo, reservation);
 }
 
 /**
  * Fase 6's autonomous trigger: an issue becoming dispatchable — in `todo` and
  * assigned to an agent with `autonomousMode`, in either order — fires a
- * `repository_dispatch` event so
- * `.github/workflows/pulse-agent.yml` picks it up — no human has to open
- * Claude Code and say "take the next task."
+ * signed local Runner job. Agents without a Runner remain blocked with
+ * an actionable configuration diagnostic.
  *
  * Kill switches gate the dispatch, all checked before ever touching GitHub:
  * `agents/{agentId}.maxConcurrentIssues` (per-agent, how many issues it can
@@ -507,7 +381,11 @@ export const agentDispatchTrigger = onDocumentWritten(
         );
         return;
       }
-      const allowedRepos = agentAllowedRepos(agent);
+
+      if (!agent.runnerId) {
+        await reportDispatchFailure(db, event.params.issueId, agentId, new Date().toISOString(), new RunnerDispatchError('preflight', ['Los agentes de GitHub Actions fueron retirados. Vinculá un Pulse Runner local antes de reintentar.']));
+        return;
+      }
 
       const visibility = agentVisibility(agent);
       const responsibleMemberId = after.responsibleMemberId || (after.execution ? after.assigneeId : undefined);
@@ -583,10 +461,6 @@ export const agentDispatchTrigger = onDocumentWritten(
         await failPreflight('Habilitá el repositorio destino en la instalación GitHub del workspace antes de reintentar.');
         return;
       }
-      if (!agent.runnerId && allowedRepos.length > 0 && !allowedRepos.includes(preflightRepo.repoFullName)) {
-        await failPreflight('Conectá el repositorio destino al agente antes de reintentar.');
-        return;
-      }
       if (agent.runnerId) {
         const startedAt = new Date().toISOString();
         try {
@@ -604,120 +478,6 @@ export const agentDispatchTrigger = onDocumentWritten(
         return;
       }
 
-      const issueRef = db.collection('issues').doc(event.params.issueId);
-      const dispatchDecision = await db.runTransaction(async (tx: Transaction) => {
-        // Leer el propio issue dentro de la transacción, no el `after` del
-        // evento: dos triggers concurrentes parten del mismo `after` pero
-        // solo uno de ellos debe ganar la carrera a escribir la marca.
-        const issueSnap = await tx.get(issueRef);
-        const dispatchedAt: string | undefined = issueSnap.data()?.agent?.dispatchedAt;
-        const dispatchedTo: string | undefined = issueSnap.data()?.agent?.dispatchedTo;
-        if (dispatchedTo === agentId && dispatchedAt) {
-          const elapsedMs = Date.now() - new Date(dispatchedAt).getTime();
-          if (elapsedMs < DISPATCH_COOLDOWN_MS) {
-            return { allowed: false, reason: 'recent-dispatch', elapsedMs } as const;
-          }
-        }
-
-        const budget = await checkWorkspaceDispatchBudget(tx, db, workspaceId);
-        if (!budget.allowed) return { allowed: false, reason: budget.reason } as const;
-
-        tx.update(issueRef, {
-          'agent.dispatchedAt': new Date().toISOString(),
-          'agent.dispatchedTo': agentId,
-        });
-        return { allowed: true } as const;
-      });
-      if (!dispatchDecision.allowed) {
-        if (dispatchDecision.reason === 'recent-dispatch') {
-          console.log(
-            `[AgentDispatch] issue '${event.params.issueId}' already dispatched to agent '${agentId}' ${Math.round(
-              dispatchDecision.elapsedMs / 1000
-            )}s ago (cooldown ${DISPATCH_COOLDOWN_MS / 1000}s) and not released since, skipping dispatch.`
-          );
-        } else {
-          console.log(
-            `[AgentDispatch] dispatch blocked for workspace '${workspaceId}' (${dispatchDecision.reason}), skipping dispatch.`
-          );
-        }
-        return;
-      }
-
-      const installSnap = await db
-        .collection('github_installations')
-        .where('workspaceId', '==', workspaceId)
-        .limit(1)
-        .get();
-      if (installSnap.empty) {
-        console.log(`[AgentDispatch] workspace '${workspaceId}' has no GitHub installation, skipping dispatch.`);
-        return;
-      }
-      const installation = installSnap.docs[0].data();
-
-      // Cascada issue -> épica -> agente -> instalación. Antes era
-      // `agent.defaultRepo || after.git?.repoFullName`, que hacía ganar al
-      // default del agente sobre el repo puesto explícitamente en el issue —
-      // el override por issue era inalcanzable.
-      const { repoFullName, source } = await resolveIssueRepo(db, { ...after, id: event.params.issueId }, {
-        agentId,
-        installationRepos: installation.repositoryFullNames || [],
-      });
-
-      if (!repoFullName) {
-        console.log(`[AgentDispatch] no resolvable repo for agent '${agentId}' / issue '${event.params.issueId}', skipping dispatch.`);
-        return;
-      }
-
-      // Un repo fuera de la instalación no puede recibir el dispatch, y
-      // fallar acá con un mensaje claro es mejor que un 404 de GitHub.
-      const authorized: string[] = installation.repositoryFullNames || [];
-      if (!authorized.includes(repoFullName)) {
-        console.log(
-          `[AgentDispatch] '${repoFullName}' (via ${source}) is not in this workspace's GitHub installation, skipping dispatch.`
-        );
-        return;
-      }
-      if (!agent.runnerId && allowedRepos.length > 0 && !allowedRepos.includes(repoFullName)) {
-        console.log(
-          `[AgentDispatch] agent '${agentId}' is not connected to '${repoFullName}', skipping dispatch.`
-        );
-        return;
-      }
-
-      // D15/TES-211: ver el comentario equivalente en `dispatchRework`.
-      const runId = `run-${nanoid(8)}`;
-      await dispatchRepositoryEvent(installation.installationId, repoFullName, 'pulse_task', {
-        issueId: event.params.issueId,
-        issueIdentifier: after.identifier,
-        workspaceId,
-        agentId,
-        // Permite que varios runners escuchen el mismo tipo de evento y cada
-        // uno filtre por el suyo, en vez de inventar un tipo por proveedor.
-        agentKind: agent.kind || 'claude',
-        runId,
-      });
-
-      // D15/TES-211: registro de runs y costo (mismo motivo que en el
-      // traspaso de más arriba — sin esto, el tope de runs por issue no
-      // contaba los dispatches normales de dev).
-      await db
-        .collection('agent_runs')
-        .doc(runId)
-        .set({
-          id: runId,
-          issueId: event.params.issueId,
-          workspaceId,
-          agentId,
-          role: 'dev',
-          mode: 'task',
-          repo: repoFullName,
-          startedAt: new Date().toISOString(),
-          date: todayKey(),
-        });
-
-      console.log(
-        `[AgentDispatch] dispatched 'pulse_task' (${agent.kind || 'claude'}) for issue '${after.identifier}' (${event.params.issueId}) to '${repoFullName}' (repo via ${source}).`
-      );
     } catch (error) {
       console.error('[AgentDispatch] error handling issue write, will not retry:', error);
     }

@@ -1,12 +1,10 @@
 import { runnerPreflight } from '../../common/utils/runner-preflight';
 import { getFirestore, Transaction, FieldValue } from 'firebase-admin/firestore';
-import { nanoid } from 'nanoid';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { IssueReview } from '../../common/domain.generated';
 import { resolveIssueRepo } from '../../common/utils/repo-resolution';
 import { checkWorkspaceDispatchBudget, todayKey } from '../../common/utils/dispatch-counter';
-import { dispatchRepositoryEvent } from '../../github/client';
 import { enqueueRunnerJob } from '../../common/utils/runner-jobs';
 import { isRunnerAvailable } from '../../common/utils/runner-availability';
 import { runnerJobSigningPrivateKey } from '../../common/secrets';
@@ -123,9 +121,9 @@ export class ReviewsRerunAction extends PlatformActionHandler {
     }
     const qaCandidates = assignedQa
       ? [assignedQa]
-      : qaSnap.docs.filter((d) => d.data().autonomousMode === true && d.id !== executionAgentId && !d.data().archivedAt && (d.data().runnerId || d.data().reviewRepo === repoFullName));
+      : qaSnap.docs.filter((d) => d.data().autonomousMode === true && d.id !== executionAgentId && !d.data().archivedAt && !!d.data().runnerId);
     if (qaCandidates.length === 0) {
-      throw new Error(`No hay un agente QA habilitado con reviewRepo '${repoFullName}' para re-ejecutar la revisión.`);
+      throw new Error(`No hay un agente QA habilitado con Pulse Runner para revisar '${repoFullName}' para re-ejecutar la revisión.`);
     }
     const reviewRepos = [...new Set(prs.map((pr) => pr.repoFullName))];
     let qaDoc: (typeof qaSnap.docs)[number] | undefined;
@@ -142,15 +140,13 @@ export class ReviewsRerunAction extends PlatformActionHandler {
     if (qaDoc?.data().runnerId && !runner) {
       throw new Error(runnerProblems.join(' ') || 'No hay un Pulse Runner activo con la identidad QA configurada.');
     }
-    // Mantener Actions solo como compatibilidad si no hay QA Runner configurado.
-    // Con un QA Runner, mostrar su problema de disponibilidad en vez de cambiar
-    // de proveedor silenciosamente.
-    if (!qaDoc && runnerCandidates.length === 0) qaDoc = qaCandidates.find((candidate) => !candidate.data().runnerId);
+    // QA requiere un Runner disponible; no existe transporte alternativo.
     if (!qaDoc && runnerCandidates.length > 0) throw new Error(`El QA Runner del proyecto no está disponible para revisar '${repoFullName}'. ${runnerProblems.join(' ') || 'Revisá su identidad, sesión y conexión.'} No se enviará el issue a GitHub Actions.`);
     if (!qaDoc) throw new Error(`No hay un agente QA con Runner disponible para re-ejecutar la revisión de '${repoFullName}'.`);
     const qaAgent = qaDoc.data();
     const qaAgentId = qaDoc.id;
     const runnerId = runner?.id || (qaAgent.runnerId as string | undefined);
+    if (!runnerId || !runner) throw new Error('Vinculá un Pulse Runner local al agente QA. Los agentes de GitHub Actions fueron retirados.');
     if (runnerId) {
       const runnerSnap = await db.collection('runners').doc(runnerId).get();
       if (!runnerSnap.exists || runnerSnap.data()!.workspaceId !== issue.workspaceId || !isRunnerAvailable(runnerSnap.data()!)) throw new Error('El Pulse Runner del agente QA dejó de estar disponible o ya no cubre todos los repos.');
@@ -233,32 +229,7 @@ export class ReviewsRerunAction extends PlatformActionHandler {
         date: todayKey(),
       });
       console.log(`[ReviewsRerun] queued signed Runner review job '${job.id}' for '${issue.identifier}' to QA '${qaAgentId}'.`);
-    } else {
-      const prNumber = prs.find((pr) => pr.repoFullName === repoFullName)?.prNumber;
-      const runId = `run-${nanoid(8)}`;
-      await dispatchRepositoryEvent(installation.installationId, repoFullName, 'pulse_review', {
-        issueId: data.issueId,
-        issueIdentifier: issue.identifier,
-        workspaceId: issue.workspaceId,
-        agentId: qaAgentId,
-        agentKind: qaAgent.kind || 'claude',
-        reviewAttempt: nextAttempt,
-        prNumber,
-        runId,
-      });
-      await db.collection('agent_runs').doc(runId).set({
-        id: runId,
-        issueId: data.issueId,
-        workspaceId: issue.workspaceId,
-        agentId: qaAgentId,
-        role: 'qa',
-        mode: 'review',
-        repo: repoFullName,
-        reviewAttempt: nextAttempt,
-        startedAt: now,
-        date: todayKey(),
-      });
-      console.log(`[ReviewsRerun] re-despachada 'pulse_review' (intento ${nextAttempt}) a '${repoFullName}' vía GitHub Actions QA '${qaAgentId}'.`);
+
     }
 
     return { issueId: data.issueId, repoFullName, qaAgentId, attempt: nextAttempt };

@@ -5,7 +5,7 @@
  * entorno de la cadena (O5/TES-255), y un `repository_dispatch`
  * `pulse_deploy` corre validaciones y quick deploys (O4).
  *
- * Mismo contrato de versionado que `github/templates/pulse-agent-workflow.ts`:
+ * Contrato de versionado de despliegues Salesforce:
  * `DEPLOY_WORKFLOW_VERSION` va estampada en el archivo; si cambia, los repos ya
  * atados siguen con la vieja hasta que alguien los vuelva a atar.
  *

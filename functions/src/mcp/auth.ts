@@ -101,6 +101,12 @@ async function authenticateApiKey(parsed: { keyId: string; secret: string }): Pr
     }
   }
 
+  // Dedicated repository agent keys were minted only for retired Actions workflows.
+  // Manual API keys, Salesforce environment keys and short-lived Runner keys remain valid.
+  if (record.agentId && record.connectedRepo && !record.jobId) {
+    throw new McpAuthError('GitHub Actions agent credentials are retired. Use a local Pulse Runner.', 403);
+  }
+
   if (shouldTouchLastUsed(record.lastUsedAt)) {
     keyRef.update({ lastUsedAt: new Date().toISOString(), useCount: FieldValue.increment(1) }).catch((err) => {
       console.warn('[mcp/auth] Failed to update lastUsedAt (non-fatal):', err);

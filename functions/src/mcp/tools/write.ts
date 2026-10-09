@@ -362,7 +362,7 @@ export function registerWriteTools(server: McpServer, principal: McpPrincipal) {
 
   server.tool(
     'pulse_request_repo_work',
-    'Registers work still missing in ANOTHER repo of the workspace, so a new run picks it up there. Use it when your change needs a counterpart in a different repo: this session can only push to its own, so do NOT create branches or PRs elsewhere. Records a structured handoff on the issue (plus a comment) and, when your run ends, a new run is dispatched to the target repo. Fails if the repo is not allowed for the issue or has no agent workflow connected.',
+    'Registers work still missing in ANOTHER repo of the workspace, so a new run picks it up there. Use it only when the required change is outside the repositories authorized by the current Runner job; repositories in a signed multi-repository job can be worked on directly. Records a structured handoff on the issue (plus a comment) and, when your run ends, a new run is dispatched to the target repo. Fails if the repo is not allowed for the issue or the agent has no local Runner bound.',
     {
       identifier: z.string(),
       repoFullName: z.string().describe('"owner/repo" where the work is missing.'),
@@ -488,7 +488,7 @@ export function registerWriteTools(server: McpServer, principal: McpPrincipal) {
 
   server.tool(
     'pulse_report_run',
-    'Internal: called by the Pulse workflow report step (not by the model in normal use) to close out the agent_runs record this run\'s dispatch created — turns and costUsd read from the execution file\'s result message. Idempotent: completing an already-completed run is a no-op.',
+    'Internal: closes a run record for execution reporting to close out the agent_runs record this run\'s dispatch created — turns and costUsd read from the execution file\'s result message. Idempotent: completing an already-completed run is a no-op.',
     {
       runId: z.string(),
       outcome: z.enum(['pr_opened', 'verdict_submitted', 'released', 'ambiguous', 'failed', 'timeout']),
