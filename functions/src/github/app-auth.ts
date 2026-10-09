@@ -1,5 +1,5 @@
 import { createSign } from 'crypto';
-import { getFirestore } from 'firebase-admin/firestore';
+import { FieldValue, getFirestore } from 'firebase-admin/firestore';
 import { githubAppId, githubAppPrivateKeyB64 } from '../common/secrets';
 
 function base64url(input: Buffer | string): string {
@@ -32,9 +32,7 @@ interface CachedToken {
   expiresAt: string;
 }
 
-// Level 1: in-memory, cleared on cold start. Level 2 (Firestore) survives
-// across instances/cold starts — installation tokens live 1h, minting one
-// per cold start per instance would still be wasteful otherwise.
+// Installation tokens remain in process memory only; never persist in Pulse.
 const memCache = new Map<string, CachedToken>();
 const REFRESH_MARGIN_MS = 10 * 60 * 1000; // refresh at 50 min, not 60
 
@@ -54,11 +52,7 @@ export async function getInstallationToken(installationId: string): Promise<stri
   const db = getFirestore();
   const docRef = db.collection('github_installations').doc(installationId);
   const snap = await docRef.get();
-  const cached = snap.exists ? (snap.data()!.tokenCache as CachedToken | undefined) : undefined;
-  if (cached && new Date(cached.expiresAt).getTime() - now > REFRESH_MARGIN_MS) {
-    memCache.set(installationId, cached);
-    return cached.token;
-  }
+  if (snap.exists && snap.data()!.tokenCache !== undefined) await docRef.update({ tokenCache: FieldValue.delete() });
 
   const res = await fetch(`https://api.github.com/app/installations/${installationId}/access_tokens`, {
     method: 'POST',
@@ -69,13 +63,12 @@ export async function getInstallationToken(installationId: string): Promise<stri
     },
   });
   if (!res.ok) {
-    throw new Error(`No se pudo mintear un token de instalación de GitHub (HTTP ${res.status}): ${await res.text()}`);
+    throw new Error(`No se pudo mintear un token de instalación de GitHub (HTTP ${res.status})`);
   }
   const body = (await res.json()) as { token: string; expires_at: string };
   const fresh: CachedToken = { token: body.token, expiresAt: body.expires_at };
 
   memCache.set(installationId, fresh);
-  await docRef.set({ tokenCache: fresh }, { merge: true });
 
   return fresh.token;
 }

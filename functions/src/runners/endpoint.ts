@@ -11,6 +11,8 @@ import { DEV_SCOPES, QA_SCOPES } from '../mcp/scopes';
 import { isRunnerAvailable } from '../common/utils/runner-availability';
 import { parseRunnerUsageReport } from '../common/utils/runner-usage';
 import { safeRunnerJobResult, safeRunnerFailure } from '../common/utils/runner-result';
+import { parsePublication } from '../common/utils/runner-publication';
+import { upsertGitRef } from '../common/utils/project-repos';
 import { recordRunnerCompletion } from './record-completion';
 import { ReportReviewIncompleteAction } from '../actions/reviews/report-review-incomplete';
 
@@ -88,7 +90,13 @@ export const pulseRunnerHeartbeat = onRequest(
         res.status(404).json({ error: 'Runner job not found' }); return;
       }
       const job = snap.data()!;
-      cancelRequested = !!job.cancelRequestedAt || job.status !== 'delivered' || Date.parse(job.expiresAt) <= Date.now();
+      if (job.protocolVersion === 3) {
+        const db = getFirestore();
+        const access = await db.runTransaction(t => currentRunnerProjectAccess(db, job, t));
+        const agent = (await db.collection('agents').doc(job.agentId).get()).data();
+        cancelRequested = !access || !agent?.enabled || !!agent?.archivedAt || agent.runnerId !== runner.id || agent.workspaceId !== job.workspaceId;
+      }
+      cancelRequested = cancelRequested || !!job.cancelRequestedAt || job.status !== 'delivered' || Date.parse(job.expiresAt) <= Date.now();
     }
     await getFirestore().collection('runners').doc(runner.id).update({ status, lastHeartbeatAt: now, updatedAt: now,
       ...(readiness ? { readiness, readinessCheckedAt: now } : {}),
@@ -143,7 +151,7 @@ export const pulseRunnerPoll = onRequest(
         transaction.update(current.ref, { status: 'canceled', completedAt: deliveredAt, result: 'El acceso al proyecto cambió desde que se creó este job.' });
         return false;
       }
-      const check = runnerPreflight(currentAgent.exists ? { ...currentAgent.data(), id: job.agentId } : null, currentRunner.exists ? { ...currentRunner.data(), id: runner.id } : null, job.workspaceId, job.contextRepos || [job.repoFullName], job.mode, Date.now(), job.protocolVersion === 2);
+      const check = runnerPreflight(currentAgent.exists ? { ...currentAgent.data(), id: job.agentId } : null, currentRunner.exists ? { ...currentRunner.data(), id: runner.id } : null, job.workspaceId, job.contextRepos || [job.repoFullName], job.mode, Date.now(), [2, 3].includes(job.protocolVersion), !!job.recoveryOf);
       if (!check.ready) {
         transaction.update(current.ref, { status: 'canceled', completedAt: deliveredAt, result: check.problems.map((problem) => problem.message).join(' '), failure: { phase: 'preflight', category: 'configuration', correlationId: job.id } });
         return false;
@@ -220,9 +228,11 @@ export const pulseRunnerComplete = onRequest(
     } catch (error) {
       res.status(400).json({ error: (error as Error).message }); return;
     }
+    let publication;
+    try { publication = parsePublication(req.body?.publication, job); } catch { res.status(400).json({error: 'Invalid publication report'}); return; }
     const now = new Date().toISOString();
     const completion = await recordRunnerCompletion(
-      db, jobId, runner.id, provider, outcome, report, now, safeRunnerJobResult(req.body?.result), safeRunnerFailure(req.body?.failure, jobId),
+      db, jobId, runner.id, provider, outcome, report, now, safeRunnerJobResult(req.body?.result), safeRunnerFailure(req.body?.failure, jobId), publication,
     );
     if (completion !== 'written') {
       if (['completed', 'failed', 'canceled'].includes(completion)) { res.json({ jobId, status: completion, alreadyCompleted: true }); return; }
@@ -279,5 +289,61 @@ export const pulseRunnerComplete = onRequest(
       }
     }
     res.json({ jobId, status: outcome, completedAt: now });
+  },
+);
+
+/** Paired Runner reports an exact PR it verified locally, bounded by its active signed job. */
+export const pulseRunnerLinkPr = onRequest(
+  { region: 'us-east4', secrets: [mcpKeyPepper] },
+  async (req, res) => {
+    if (req.method !== 'POST') { res.status(405).json({error: 'Method Not Allowed'}); return; }
+    const runner = await authenticateRunner(req.headers.authorization);
+    if (!runner) { res.status(401).json({error: 'Invalid runner credential'}); return; }
+    const {jobId, repo, branch, sha, prNumber, prUrl, prState} = req.body || {};
+    if (typeof jobId !== 'string' || !/^rjob-[A-Za-z0-9_-]+$/.test(jobId)) {res.status(400).json({error: 'Invalid job'}); return;}
+    const db = getFirestore();
+    try {
+      await db.runTransaction(async t => {
+        const snap = await t.get(db.collection('runner_jobs').doc(jobId));
+        const job = snap.data();
+        if (!job || job.runnerId !== runner.id || job.workspaceId !== runner.data.workspaceId || job.status !== 'delivered' || job.cancelRequestedAt || Date.parse(job.expiresAt) <= Date.now()) throw new Error();
+        const target = job.publicationTargets?.find((e: any) => e.repo === repo);
+        if (!target || target.branch !== branch || !/^[a-f0-9]{40}$/.test(sha) || (target.sha && target.sha !== sha) || !Number.isSafeInteger(prNumber) || prNumber < 1 || prUrl !== `https://github.com/${repo}/pull/${prNumber}`) throw new Error();
+        const access = await currentRunnerProjectAccess(db, job, t);
+        if (!access) throw new Error();
+        const ref = db.collection('issues').doc(job.issueId);
+        const issue = (await t.get(ref)).data()!;
+        const now = new Date().toISOString();
+        const entry = {repoFullName: repo, branch, headSha: sha, prNumber, prUrl, prState: prState === 'open' ? 'open' : 'draft', lastSyncedAt: now};
+        t.update(ref, {gitRefs: upsertGitRef(issue.gitRefs || (issue.git?.repoFullName ? [issue.git] : []), entry), ...(repo === job.repoFullName ? {git: entry} : {}), updatedAt: now});
+        t.update(snap.ref, {linkedPublications: upsertGitRef(job.linkedPublications, {...entry, sha})});
+      });
+      res.json({linked: true});
+    } catch { res.status(409).json({error: 'Publication scope is no longer authorized'}); }
+  },
+);
+
+/** Durable public checkpoint before GitHub side effects, so expiry/restarts remain recoverable. */
+export const pulseRunnerPublication = onRequest(
+  {region: 'us-east4', secrets: [mcpKeyPepper]},
+  async (req, res) => {
+    if (req.method !== 'POST') {res.status(405).json({error: 'Method Not Allowed'}); return;}
+    const runner = await authenticateRunner(req.headers.authorization);
+    if (!runner) {res.status(401).json({error: 'Invalid runner credential'}); return;}
+    const jobId = req.body?.jobId;
+    if (typeof jobId !== 'string' || !/^rjob-[A-Za-z0-9_-]+$/.test(jobId)) {res.status(400).json({error:'Invalid job'}); return;}
+    try {
+      await getFirestore().runTransaction(async t => {
+        const snap = await t.get(getFirestore().collection('runner_jobs').doc(jobId));
+        const job = snap.data();
+        if (!job || job.runnerId !== runner.id || job.workspaceId !== runner.data.workspaceId || job.status !== 'delivered' || job.cancelRequestedAt || Date.parse(job.expiresAt) <= Date.now()) throw new Error();
+        if (!await currentRunnerProjectAccess(getFirestore(), job, t)) throw new Error();
+        const publication = parsePublication(req.body.publication, job);
+        if (!publication || publication.execution !== 'completed' || publication.repositories.some((e: any) => e.stage !== 'pending')) throw new Error();
+        if (job.publication && JSON.stringify(job.publication) !== JSON.stringify(publication)) throw new Error();
+        t.update(snap.ref, {publication});
+      });
+      res.json({recorded: true});
+    } catch {res.status(409).json({error:'Publication checkpoint is not authorized'});}
   },
 );
