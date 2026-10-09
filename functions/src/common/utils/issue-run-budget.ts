@@ -1,4 +1,4 @@
-import { Firestore } from 'firebase-admin/firestore';
+import { Firestore, Transaction } from 'firebase-admin/firestore';
 
 /**
  * Default de `Workspace.maxRunsPerIssue` (D8/TES-153): el bug que motivó esta
@@ -22,24 +22,27 @@ export type IssueRunBudgetDecision =
  * `Workspace.maxRunsPerIssue` (default `DEFAULT_MAX_RUNS_PER_ISSUE`) y
  * `Workspace.issueCostCapUsd` (sin tope si no está seteado).
  *
- * No transaccional a propósito: el caller lo evalúa ANTES de abrir la
- * transacción de dispatch (mismo lugar que ya ocupaba el chequeo de
- * `maxReviewAttempts` en `qa-dispatch.ts`), porque cuando se agota el tope el
- * caller tiene que escalar el issue a un humano, no solo saltear el dispatch.
+ * Los triggers lo evalúan antes del dispatch para poder escalar al humano.
+ * La solicitud humana también lo revalida dentro de la transacción de enqueue
+ * para que un cambio de presupuesto no pueda competir con la autorización.
  */
 export async function checkIssueRunBudget(
   db: Firestore,
   workspaceId: string,
-  issueId: string
+  issueId: string,
+  transaction?: Transaction,
 ): Promise<IssueRunBudgetDecision> {
-  const wsSnap = await db.collection('workspaces').doc(workspaceId).get();
+  const workspaceRef = db.collection('workspaces').doc(workspaceId);
+  const wsSnap = transaction ? await transaction.get(workspaceRef) : await workspaceRef.get();
   const workspace = wsSnap.exists ? wsSnap.data()! : {};
   const maxRuns: number = workspace.maxRunsPerIssue ?? DEFAULT_MAX_RUNS_PER_ISSUE;
   const costCapUsd: number | undefined = workspace.issueCostCapUsd;
 
   // A human return opens a new per-issue batch. Cost caps still use ALL runs.
-  const runsSnap = await db.collection('agent_runs').where('issueId', '==', issueId).get();
-  const issueSnap = await db.collection('issues').doc(issueId).get();
+  const runsQuery = db.collection('agent_runs').where('issueId', '==', issueId);
+  const issueRef = db.collection('issues').doc(issueId);
+  const runsSnap = transaction ? await transaction.get(runsQuery) : await runsQuery.get();
+  const issueSnap = transaction ? await transaction.get(issueRef) : await issueRef.get();
   const issue = issueSnap.exists ? issueSnap.data()! : {};
   const resetAt = issue.workspaceId === workspaceId && issue.runBudgetResetBy ? Date.parse(issue.runBudgetResetAt) : NaN;
   const validReset = Number.isFinite(resetAt) && resetAt <= Date.now();

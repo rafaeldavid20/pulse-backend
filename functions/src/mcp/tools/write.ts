@@ -1,3 +1,4 @@
+import { RequestReworkAction } from '../../actions/reviews/request-rework';
 import { getFirestore } from 'firebase-admin/firestore';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
@@ -43,6 +44,7 @@ type WritableActionCode =
   | 'github.createBranch'
   | 'github.linkPr'
   | 'labels.create'
+  | 'reviews.requestRework'
   | 'reviews.start'
   | 'reviews.submit'
   | 'reviews.resolveFinding'
@@ -64,6 +66,7 @@ const ACTIONS: Record<WritableActionCode, new (request: any, callerUid?: string)
   'github.createBranch': CreateBranchAction,
   'github.linkPr': LinkPrAction,
   'labels.create': CreateLabelAction,
+  'reviews.requestRework': RequestReworkAction,
   'reviews.start': ReviewsStartAction,
   'reviews.submit': ReviewsSubmitAction,
   'reviews.resolveFinding': ResolveFindingAction,
@@ -115,6 +118,18 @@ async function ensureAmbiguityLabel(workspaceId: string, teamId: string, actorUi
 
 export function registerWriteTools(server: McpServer, principal: McpPrincipal) {
   const actorUid = principal.agentId ?? principal.createdBy;
+
+  server.tool(
+    'pulse_request_rework',
+    'For personal human access only. Requests one dev rework job for a changes_requested issue, including shadow QA. Keeps the current PRs, human owner, QA mode and budgets; agents/job credentials cannot call it.',
+    { identifier: z.string(), comment: z.string().min(1).max(4000) },
+    async ({ identifier, comment }) => {
+      if (principal.agentId || principal.jobId) return textResult({ error: 'Solo un acceso personal puede solicitar una corrección.' });
+      const doc = await findIssue(principal.workspaceId, identifier);
+      if (!doc) return textResult({ error: `No issue found for '${identifier}'.` });
+      return runAction('reviews.requestRework', { issueId: doc.id, comment }, actorUid);
+    }
+  );
 
   server.tool(
     'pulse_next_task',
