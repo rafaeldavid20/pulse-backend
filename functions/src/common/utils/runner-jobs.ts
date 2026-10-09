@@ -22,7 +22,7 @@ export function runnerJobPayload(job: Omit<RunnerJob, 'signature'>): string {
   // Firestore (p. ej. deliveredAt) alteren la verificación del Runner.
   const contextRepos = [...new Set(job.contextRepos || [job.repoFullName])].sort().join(',');
   const fields = [job.id, job.workspaceId, job.issueId, job.agentId, job.runnerId, job.repoFullName, contextRepos, job.mode, job.issuedAt, job.expiresAt, job.signatureAlgorithm, job.signingKeyId];
-  return (job.protocolVersion === 3 ? [...fields, 3, job.projectId, publicationPayload(job.publicationTargets), job.recoveryOf || ''] : job.protocolVersion === 2 ? [...fields, 2, job.projectId] : fields).join('.');
+  return (job.protocolVersion === 3 ? [...fields, 3, job.projectId, publicationPayload(job.publicationTargets), job.recoveryOf || '', ...(job.prPublicationMode !== undefined ? [job.prPublicationMode] : [])] : job.protocolVersion === 2 ? [...fields, 2, job.projectId] : fields).join('.');
 }
 
 export function signRunnerJob(job: Omit<RunnerJob, 'signature'>, privateKey: string): string {
@@ -42,7 +42,9 @@ export async function enqueueRunnerJob(
   const issuedAt = new Date().toISOString();
   const expiresAt = new Date(Date.now() + JOB_TTL_MS).toISOString();
   const contextRepos = [...new Set(input.contextRepos || [input.repoFullName])].sort();
-  const unsigned = { id: `rjob-${nanoid(12)}`, ...input, contextRepos, issuedAt, expiresAt, signatureAlgorithm: 'ed25519' as const, signingKeyId };
+  // The caller cannot override the authenticated agent setting.
+  const { prPublicationMode: _ignoredMode, ...dispatchInput } = input;
+  const unsigned = { id: `rjob-${nanoid(12)}`, ...dispatchInput, contextRepos, issuedAt, expiresAt, signatureAlgorithm: 'ed25519' as const, signingKeyId };
   let job: RunnerJob = { ...unsigned, signature: '' };
   const agentRef = db.collection('agents').doc(job.agentId);
   await db.runTransaction(async (transaction) => {
@@ -88,6 +90,7 @@ export async function enqueueRunnerJob(
     if (count >= (runner.data()!.maxConcurrentJobs || 1)) throw new RunnerDispatchError('enqueue', ['El Runner ya alcanzó su capacidad de jobs activos. Esperá a que termine el trabajo activo y reintentá.']);
     const access = await currentRunnerProjectAccess(db, job, transaction);
     if (!access) throw new RunnerDispatchError('preflight', ['El proyecto del issue debe declarar repos autorizados en este workspace; el contexto de revisión debe incluir todos los repos actuales del proyecto y sus PRs.']);
+    let prPublicationMode = agent.data()?.prPublicationMode ?? 'draft';
     let publicationTargets: PublicationTarget[] | undefined;
     const localApp = runner.data()?.readiness?.jobProtocolVersion === 3 && job.mode !== 'review';
     if (localApp) {
@@ -106,6 +109,7 @@ export async function enqueueRunnerJob(
     if (input.recoveryOf) {
       const original = await transaction.get(db.collection('runner_jobs').doc(input.recoveryOf));
       const data = original.data();
+      prPublicationMode = data?.prPublicationMode ?? 'draft';
       if (!data || data.runnerId !== job.runnerId || data.workspaceId !== job.workspaceId || data.issueId !== job.issueId || data.projectId !== access.projectId || data.agentId !== job.agentId || data.retriedByJobId || data.publication?.execution !== 'completed' || !['failed', 'canceled', 'expired'].includes(data.status) || !publicationTargets?.length) throw new Error('La publicación original ya fue reintentada o no es recuperable.');
       if (publicationTargets.length !== data.publication.repositories.length || new Set(publicationTargets.map(t => t.repo)).size !== publicationTargets.length || contextRepos.join(',') !== [...new Set<string>(data.contextRepos || [data.repoFullName])].sort().join(',')) throw new Error('El reintento debe conservar todo el alcance original.');
       for (const target of publicationTargets) {
@@ -114,7 +118,10 @@ export async function enqueueRunnerJob(
         if (!entry || entry.sha !== target.sha || entry.branch !== target.branch || previous.base !== target.base || previous.appId !== target.appId || previous.installationId !== target.installationId || previous.slug !== target.slug) throw new Error('La identidad o alcance de publicación cambió.');
       }
     }
-    const envelope = { ...unsigned, projectId: access.projectId, protocolVersion: localApp ? 3 as const : 2 as const, ...(publicationTargets ? { publicationTargets } : {}) };
+    if (!['draft', 'ready'].includes(prPublicationMode)) throw new Error('Modo de publicación de PR inválido.');
+    const supportsPublicationMode = localApp && runner.data()?.readiness?.prPublicationModeVersion === 1;
+    if (job.mode !== 'review' && prPublicationMode === 'ready' && !supportsPublicationMode) throw new RunnerDispatchError('preflight', ['Actualizá @pulsehub/runner y reiniciá el servicio para publicar PR listos para revisión.']);
+    const envelope = { ...(supportsPublicationMode ? { prPublicationMode } : {}), ...unsigned, projectId: access.projectId, protocolVersion: localApp ? 3 as const : 2 as const, ...(publicationTargets ? { publicationTargets } : {}) };
     job = { ...envelope, signature: signRunnerJob(envelope, privateKey) };
     if (reservation) {
       // Budget writes are last: Firestore requires every read before writes.

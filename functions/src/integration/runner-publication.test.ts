@@ -12,17 +12,17 @@ if (!getApps().length) initializeApp({projectId:'pulse-integration'});
 process.env.MCP_KEY_PEPPER='synthetic-test-pepper';
 const db=getFirestore();
 const key=generateKeyPairSync('ed25519').privateKey.export({type:'pkcs8',format:'pem'}).toString();
-async function fixture() {
+async function fixture(mode?: 'draft' | 'ready', capable = false) {
   const suffix=randomBytes(6).toString('hex'), workspaceId=`ws-${suffix}`,projectId=`project-${suffix}`,issueId=`issue-${suffix}`,agentId=`agent-${suffix}`,runnerId=`runner-${suffix}`;
   const repos=['owner/repo','owner/app'];
   const githubApps=repos.map(repo=>({projectId,repo,appId:'1',installationId:'2',slug:'local-app',base:'main',ready:true}));
   const secret='synthetic-device-secret-12345678901234567890';
-  const readiness={workspaceId,identities:[{agentId,kind:'codex',role:'dev'}],providers:{codex:{cli:true,session:true},claude:{cli:false,session:false}},repositories:[],jobProtocolVersion:3,githubApps};
+  const readiness={workspaceId,identities:[{agentId,kind:'codex',role:'dev'}],providers:{codex:{cli:true,session:true},claude:{cli:false,session:false}},repositories:[],jobProtocolVersion:3,githubApps,...(capable?{prPublicationModeVersion:1}:{})};
   await Promise.all([
     db.collection('issues').doc(issueId).set({workspaceId,projectId,identifier:'TES-991'}),
     db.collection('projects').doc(projectId).set({workspaceId,repoFullNames:repos}),
     db.collection('github_installations').doc(workspaceId).set({workspaceId,repositoryFullNames:repos}),
-    db.collection('agents').doc(agentId).set({id:agentId,workspaceId,runnerId,enabled:true,kind:'codex',role:'dev',ownerMemberId:'owner',visibility:'personal'}),
+    db.collection('agents').doc(agentId).set({id:agentId,workspaceId,runnerId,enabled:true,kind:'codex',role:'dev',ownerMemberId:'owner',visibility:'personal',...(mode?{prPublicationMode:mode}:{})}),
     db.collection('runners').doc(runnerId).set({id:runnerId,workspaceId,ownerMemberId:'owner',status:'online',lastHeartbeatAt:new Date().toISOString(),readinessCheckedAt:new Date().toISOString(),readiness,deviceSecretHash:hashApiKeySecret(secret,process.env.MCP_KEY_PEPPER!)}),
   ]);
   const input={workspaceId,projectId,issueId,agentId,runnerId,repoFullName:repos[0],contextRepos:repos,mode:'task' as const};
@@ -93,4 +93,27 @@ test('service App also stops persisting installation tokens and clears its legac
     assert.equal(await getInstallationToken(id),'fresh-sentinel');assert.equal(await getInstallationToken(id),'fresh-sentinel');assert.equal(calls,1);
     const data=(await db.collection('github_installations').doc(id).get()).data();assert.equal(data?.tokenCache,undefined);assert(!JSON.stringify(data).includes('sentinel'));
   } finally {global.fetch=originalFetch;if(oldId===undefined)delete process.env.GITHUB_APP_ID;else process.env.GITHUB_APP_ID=oldId;if(oldKey===undefined)delete process.env.GITHUB_APP_PRIVATE_KEY_B64;else process.env.GITHUB_APP_PRIVATE_KEY_B64=oldKey;}
+});
+
+
+test('publication policy comes from agent settings and is frozen for recovery', async()=>{
+  const f=await fixture('ready',true);
+  assert.equal(f.job.prPublicationMode,'ready');
+  await call(pulseRunnerPublication,f.credential,{jobId:f.job.id,publication:f.report});
+  await db.collection('runner_jobs').doc(f.job.id).update({status:'failed'});
+  await db.collection('agents').doc(f.input.agentId).update({prPublicationMode:'draft'});
+  const targets=f.job.publicationTargets!.map(t=>({...t,sha:'a'.repeat(40)}));
+  const retry=await enqueueRunnerJob(db,{...f.input,prPublicationMode:'draft',recoveryOf:f.job.id,publicationTargets:targets},key);
+  assert.equal(retry.prPublicationMode,'ready');
+  await db.collection('runner_jobs').doc(retry.id).update({status:'completed'});
+  const next=await enqueueRunnerJob(db,{...f.input,prPublicationMode:'ready'},key);
+  assert.equal(next.prPublicationMode,'draft','caller cannot override current agent setting');
+});
+test('old Runners retain default draft jobs and refuse ready publication', async()=>{
+  const f=await fixture();assert.equal(f.job.prPublicationMode,undefined);
+  await db.collection('runner_jobs').doc(f.job.id).update({status:'completed'});
+  await db.collection('agents').doc(f.input.agentId).update({prPublicationMode:'ready'});
+  await assert.rejects(enqueueRunnerJob(db,f.input,key),/Runner instalado no admite/);
+  await db.collection('runners').doc(f.input.runnerId).update({'readiness.prPublicationModeVersion':1});
+  assert.equal((await enqueueRunnerJob(db,f.input,key)).prPublicationMode,'ready');
 });
