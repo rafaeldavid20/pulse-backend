@@ -465,7 +465,8 @@ export function registerWriteTools(server: McpServer, principal: McpPrincipal) {
     async ({ identifier, ...rest }) => {
       const doc = await findIssue(principal.workspaceId, identifier);
       if (!doc) return textResult({ error: `No issue found for '${identifier}'.` });
-      return runAction('reviews.resolveFinding', { issueId: doc.id, ...rest }, actorUid);
+      const res = await new ResolveFindingAction({ actionCode: 'reviews.resolveFinding', data: { issueId: doc.id, ...rest } }, actorUid, undefined, principal).run();
+      return textResult(res.success ? res.data : { error: res.error });
     }
   );
 
@@ -483,7 +484,8 @@ export function registerWriteTools(server: McpServer, principal: McpPrincipal) {
     async ({ identifier, checks }) => {
       const doc = await findIssue(principal.workspaceId, identifier);
       if (!doc) return textResult({ error: `No issue found for '${identifier}'.` });
-      return runAction('reviews.reportCriteria', { issueId: doc.id, checks }, actorUid);
+      const res = await new ReportCriteriaAction({ actionCode: 'reviews.reportCriteria', data: { issueId: doc.id, checks } }, actorUid, undefined, principal).run();
+      return textResult(res.success ? res.data : { error: res.error });
     }
   );
 
