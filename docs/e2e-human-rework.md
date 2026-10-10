@@ -15,6 +15,19 @@ criterios del issue y registrar lo que realmente falta.
 6. QA revisa nuevamente los PRs sobre sus SHAs vigentes. El veredicto debe
    corresponder al código actualizado, sin sustituirlo por un override humano.
 
+## Límites y bloqueos
+
+- QA en modo sombra registra el veredicto, pero no despacha automáticamente una
+  corrección ni cambia el estado o la asignación del issue. La persona responsable
+  debe solicitar la corrección desde Pulse.
+- Solicitar una corrección retoma el intento existente: no reinicia los
+  presupuestos ni los intentos de revisión, y conserva el modo de QA.
+- La corrección requiere permisos válidos para solicitarla y ejecutar el trabajo,
+  un Runner preparado y el PR abierto. Si falta alguno de estos requisitos, el
+  recorrido queda bloqueado hasta resolverlo.
+- El trabajo continúa en la misma rama y el mismo PR, conservando al responsable
+  humano. Este PR de prueba no debe mergearse automáticamente.
+
 ## Alcance de la evidencia
 
 Las pruebas locales de UI, Functions y Firestore no demuestran por sí solas que
