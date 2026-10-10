@@ -1,3 +1,4 @@
+import { RequestReworkAction } from '../actions/reviews/request-rework';
 import { PreflightAgentAction } from '../actions/runners/preflight-agent';
 import { PlatformActionRequest, PlatformActionResponse } from '../common/platform-actions/interfaces';
 import { CreateIssueAction } from '../actions/issues/create-issue';
@@ -248,6 +249,8 @@ export async function dispatchPlatformAction(
       return new DismissFindingAction(request, callerUid, callerEmail).run();
     case 'reviews.rerun':
       return new ReviewsRerunAction(request, callerUid, callerEmail).run();
+    case 'reviews.requestRework':
+      return new RequestReworkAction(request, callerUid, callerEmail).run();
     case 'reviews.returnToAgent':
       return new ReturnToAgentAction(request, callerUid, callerEmail).run();
 

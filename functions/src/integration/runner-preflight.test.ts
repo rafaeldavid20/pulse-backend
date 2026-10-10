@@ -204,7 +204,10 @@ test('rework recovery keeps the QA attempt and finding repo across real status t
   const task = await f.emit();
   await db.collection('runner_jobs').doc(task.id).update({ status: 'completed' });
   await ref.update({ status: 'in_progress', responsibleMemberId: f.owner,
-    git: { repoFullName: 'owner/repo' }, review: { state: 'pending', attempt: 1 } });
+    git: { repoFullName: 'owner/repo' }, gitRefs: [
+      { repoFullName: 'owner/repo', branch: 'pul/int-repo', prNumber: 1, prState: 'open' },
+      { repoFullName: 'owner/finding', branch: 'pul/int-finding', prNumber: 2, prState: 'open' },
+    ], review: { state: 'pending', attempt: 1 } });
   await db.collection('projects').doc(f.workspaceId).update({ repoFullNames: ['owner/repo', 'owner/finding'] });
   await db.collection('github_installations').doc(f.workspaceId).update({ repositoryFullNames: ['owner/repo', 'owner/finding'] });
   await db.collection('agents').doc(f.agentId).update({ allowedRepos: ['owner/repo', 'owner/finding'] });
@@ -266,7 +269,7 @@ for (const mode of ['handoff', 'rework'] as const) {
     const reservation = mode === 'handoff' ? { mode, requestedAt } : { mode, attempt: 1 };
     await db.collection('agents').doc(f.agentId).update({ autonomousMode: true });
     await db.collection('issues').doc(f.issueId).update({
-      status: 'in_progress', responsibleMemberId: f.owner, git: { repoFullName: 'owner/repo' },
+      status: 'in_progress', responsibleMemberId: f.owner, git: { repoFullName: 'owner/repo', ...(mode === 'rework' ? { branch: 'pul/int-rework', prNumber: 1, prState: 'open' } : {}) },
       // A previous successful task cooldown must not hide continuation errors.
       agent: { state: 'idle', dispatchedAt: new Date(Date.now() - 1000).toISOString(), dispatchedTo: f.agentId },
       ...(mode === 'handoff' ? { pendingRepoWork: [{ repoFullName: 'owner/repo', requestedAt }] }

@@ -1,3 +1,4 @@
+import { reworkRepositories } from '../common/utils/human-rework';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { getFirestore } from 'firebase-admin/firestore';
 import { githubAppId, githubAppPrivateKeyB64, mcpKeyPepper, runnerJobSigningPrivateKey } from '../common/secrets';
@@ -20,7 +21,7 @@ async function dispatchRunnerContinuation(
     if (!access || !access.repos.includes(repo)) throw new RunnerDispatchError('preflight', ['Configurá repositorios en el proyecto y habilitalos en la instalación GitHub; el repositorio destino debe pertenecer a ambos.']);
     await enqueueRunnerJob(db, {
       workspaceId: issue.workspaceId, projectId: access.projectId, issueId, agentId,
-      runnerId: agent.runnerId, repoFullName: repo, contextRepos: access.repos, mode: reservation.mode,
+      runnerId: agent.runnerId, repoFullName: repo, contextRepos: reservation.mode === 'rework' ? reworkRepositories(issue, access.repos, repo) : access.repos, mode: reservation.mode,
     }, runnerJobSigningPrivateKey.value(), 'runner-job-v1', reservation);
   } catch (error) {
     await reportDispatchFailure(db, issueId, agentId, startedAt, error, reservation.mode === 'handoff' ? { ...reservation, repoFullName: repo } : reservation);

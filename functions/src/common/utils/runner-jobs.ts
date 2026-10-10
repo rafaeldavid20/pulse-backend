@@ -6,6 +6,8 @@ import { runnerPreflight } from './runner-preflight';
 import { currentRunnerProjectAccess } from './project-repos';
 import { DISPATCH_COOLDOWN_MS, RunnerDispatchError } from './dispatch-failure';
 import { checkWorkspaceDispatchBudget, todayKey } from './dispatch-counter';
+import { assertHumanReworkRequester, reworkRepositories } from './human-rework';
+import { checkIssueRunBudget } from './issue-run-budget';
 import { RunnerJob } from '../domain.generated';
 
 // Un adaptador local puede necesitar instalar dependencias, ejecutar tests y
@@ -29,7 +31,7 @@ export function signRunnerJob(job: Omit<RunnerJob, 'signature'>, privateKey: str
   return base64url(sign(null, Buffer.from(runnerJobPayload(job)), privateKey));
 }
 
-export type DispatchReservation = boolean | { mode: 'handoff'; requestedAt: string } | { mode: 'rework'; attempt: number };
+export type DispatchReservation = boolean | { mode: 'handoff'; requestedAt: string } | { mode: 'rework'; attempt: number; requestedBy?: string; comment?: string };
 
 /** Crea un trabajo de vida corta. El documento no contiene ninguna credencial de proveedor. */
 export async function enqueueRunnerJob(
@@ -78,6 +80,20 @@ export async function enqueueRunnerJob(
         throw new RunnerDispatchError('enqueue', ['El intento de retrabajo ya fue enviado o cambió.'], true);
       }
     }
+    const humanRequest = reservation && reservation !== true && reservation.mode === 'rework' && reservation.requestedBy ? reservation : undefined;
+    if (humanRequest) {
+      const requester = humanRequest.requestedBy!;
+      const member = await transaction.get(db.collection('members').doc(`${job.workspaceId}_${requester}`));
+      const callerAgent = await transaction.get(db.collection('agents').doc(requester));
+      if (callerAgent.exists || agent.data()!.role !== 'dev' || !agent.data()!.enabled || !['in_review', 'in_progress', 'todo'].includes(issue!.status)) throw new Error('La solicitud humana ya no está autorizada.');
+      assertHumanReworkRequester(requester, member.data(), agent.data(), issue);
+      if ((issue!.pendingRepoWork || []).some((entry: any) => !entry.dispatchedAt)) throw new Error('El issue tiene un traspaso pendiente.');
+      const qaId = issue!.review.reviewerId || issue!.review.dispatchedTo;
+      const qa = qaId ? await transaction.get(db.collection('agents').doc(qaId)) : undefined;
+      if (humanRequest.attempt >= (qa?.data()?.maxReviewAttempts ?? 2)) throw new Error('No quedan intentos de revisión disponibles.');
+      const issueBudget = await checkIssueRunBudget(db, job.workspaceId, job.issueId, transaction);
+      if (!issueBudget.withinBudget) throw new Error('El issue alcanzó su límite de ejecuciones o costo.');
+    }
     const runner = await transaction.get(db.collection('runners').doc(job.runnerId));
     const preflight = runnerPreflight({ ...agent.data(), id: job.agentId }, runner.exists ? { ...runner.data(), id: job.runnerId } : null, job.workspaceId, contextRepos, job.mode, Date.now(), true, !!input.recoveryOf);
     if (!preflight.ready) throw new RunnerDispatchError('preflight', preflight.problems.map((problem) => `${problem.message} ${problem.action}`));
@@ -90,6 +106,10 @@ export async function enqueueRunnerJob(
     if (count >= (runner.data()!.maxConcurrentJobs || 1)) throw new RunnerDispatchError('enqueue', ['El Runner ya alcanzó su capacidad de jobs activos. Esperá a que termine el trabajo activo y reintentá.']);
     const access = await currentRunnerProjectAccess(db, job, transaction);
     if (!access) throw new RunnerDispatchError('preflight', ['El proyecto del issue debe declarar repos autorizados en este workspace; el contexto de revisión debe incluir todos los repos actuales del proyecto y sus PRs.']);
+    if (reservation && reservation !== true && reservation.mode === 'rework' && !input.recoveryOf) {
+      const currentRepos = reworkRepositories(issue, access.repos, job.repoFullName);
+      if (currentRepos.join(',') !== contextRepos.join(',')) throw new RunnerDispatchError('enqueue', ['Los PRs del issue cambiaron; volvé a solicitar la corrección.']);
+    }
     let prPublicationMode = agent.data()?.prPublicationMode ?? 'draft';
     let publicationTargets: PublicationTarget[] | undefined;
     const localApp = runner.data()?.readiness?.jobProtocolVersion === 3 && job.mode !== 'review';
@@ -135,12 +155,21 @@ export async function enqueueRunnerJob(
         : { 'review.reworkDispatchedAt': issuedAt, 'review.reworkDispatchedForAttempt': reservation.attempt };
       transaction.update(issueRef, {
         ...modeMarks,
+        ...(humanRequest ? { status: 'in_progress', 'git.lastSyncedStatus': 'in_progress', updatedAt: issuedAt, updatedBy: humanRequest.requestedBy } : {}),
         'agent.dispatchedAt': issuedAt, 'agent.dispatchedTo': job.agentId,
         'agent.dispatchFailure': FieldValue.delete(), 'agent.blockedReason': FieldValue.delete(), 'agent.state': 'idle',
       });
       transaction.create(db.collection('agent_runs').doc(job.id), {
         id: job.id, issueId: job.issueId, workspaceId: job.workspaceId, agentId: job.agentId,
-        role: 'dev', mode: job.mode, ...(reservation !== true && reservation.mode === 'rework' ? { reviewAttempt: reservation.attempt } : {}), repo: job.repoFullName, runnerId: job.runnerId, startedAt: issuedAt, date: todayKey(),
+        role: 'dev', mode: job.mode, ...(humanRequest ? { requestedBy: humanRequest.requestedBy } : {}), ...(reservation !== true && reservation.mode === 'rework' ? { reviewAttempt: reservation.attempt } : {}), repo: job.repoFullName, runnerId: job.runnerId, startedAt: issuedAt, date: todayKey(),
+      });
+    }
+    if (humanRequest) {
+      const commentId = `cmt-${job.id}`;
+      transaction.create(db.collection('comments').doc(commentId), {
+        id: commentId, workspaceId: job.workspaceId, issueId: job.issueId, authorId: humanRequest.requestedBy,
+        body: `**Corrección solicitada al agente**: se retoma el intento ${humanRequest.attempt} en los mismos PRs; se conservan el modo de QA y los límites.\n\n${humanRequest.comment}`,
+        source: 'web', createdAt: issuedAt,
       });
     }
     if (input.recoveryOf) transaction.update(db.collection('runner_jobs').doc(input.recoveryOf), { retriedByJobId: job.id, retryRequestedAt: issuedAt });
