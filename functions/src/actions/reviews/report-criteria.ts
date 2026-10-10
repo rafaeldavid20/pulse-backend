@@ -1,3 +1,5 @@
+import type { McpPrincipal } from '../../mcp/auth';
+import { assertIssueDev } from './dev-authorization';
 import { getFirestore } from 'firebase-admin/firestore';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
@@ -25,7 +27,7 @@ function normalizeChecks(input: unknown): DevCriterionCheck[] {
 
 /**
  * `reviews.reportCriteria` (D5, para la autoverificación del dev de D13): el
- * dev asignado declara, criterio por criterio, si cumplió la rúbrica antes de
+ * dev asignado o ejecutor delegado autorizado declara, criterio por criterio, si cumplió la rúbrica antes de
  * abrir el PR. Reemplazo completo (como `acceptanceCriteria` en
  * `issues.update`) — no un upsert — para que un run que corrige su propia
  * autoverificación no deje entradas viejas colgando.
@@ -37,7 +39,7 @@ export class ReportCriteriaAction extends PlatformActionHandler {
   private issueId?: string;
   private resolvedWorkspaceId?: string;
 
-  constructor(request: PlatformActionRequest, callerUid?: string, callerEmail?: string) {
+  constructor(request: PlatformActionRequest, callerUid?: string, callerEmail?: string, private readonly principal?: McpPrincipal) {
     super('reviews.reportCriteria', request, callerUid, callerEmail);
     this.issueId = request.data?.issueId;
   }
@@ -60,24 +62,24 @@ export class ReportCriteriaAction extends PlatformActionHandler {
     }
 
     const issueRef = db.collection('issues').doc(data.issueId);
-    const issueSnap = await issueRef.get();
-    if (!issueSnap.exists) throw new Error(`El issue con ID '${data.issueId}' no existe.`);
-    const issue = issueSnap.data()!;
+    return db.runTransaction(async (transaction) => {
+      const issueSnap = await transaction.get(issueRef);
+      if (!issueSnap.exists) throw new Error(`El issue con ID '${data.issueId}' no existe.`);
+      const issue = issueSnap.data()!;
 
-    if (issue.assigneeId !== actorUid) {
-      throw new Error('Solo el dev asignado a este issue puede reportar su autoverificación.');
-    }
+      await assertIssueDev(db, transaction, data.issueId, issue, actorUid, this.principal);
 
-    const checks = normalizeChecks(data.checks);
+      const checks = normalizeChecks(data.checks);
 
-    await issueRef.update(
-      cleanUndefined({
-        devSelfCheck: checks,
-        updatedAt: new Date().toISOString(),
-        updatedBy: actorUid,
-      })
-    );
+      transaction.update(issueRef,
+        cleanUndefined({
+          devSelfCheck: checks,
+          updatedAt: new Date().toISOString(),
+          updatedBy: actorUid,
+        })
+      );
 
-    return { issueId: data.issueId, devSelfCheck: checks };
+      return { issueId: data.issueId, devSelfCheck: checks };
+    });
   }
 }
