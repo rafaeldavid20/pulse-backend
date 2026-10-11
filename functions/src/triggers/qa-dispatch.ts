@@ -1,10 +1,10 @@
+import { reviewRequestRefs } from '../common/utils/review-request';
 import { runnerPreflight } from '../common/utils/runner-preflight';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
-import { getFirestore, Transaction, FieldValue } from 'firebase-admin/firestore';
+import { getFirestore } from 'firebase-admin/firestore';
 import { githubAppId, githubAppPrivateKeyB64, runnerJobSigningPrivateKey } from '../common/secrets';
 import { getPullRequestOrigin } from '../github/client';
 import { resolveIssueRepo } from '../common/utils/repo-resolution';
-import { checkWorkspaceDispatchBudget, todayKey } from '../common/utils/dispatch-counter';
 import { checkIssueRunBudget } from '../common/utils/issue-run-budget';
 import { buildNeedsHumanEscalation } from '../common/utils/review-escalation';
 import { enqueueRunnerJob } from '../common/utils/runner-jobs';
@@ -13,12 +13,6 @@ import { isRunnerAvailable } from '../common/utils/runner-availability';
 import { findProjectQaRunner } from '../common/utils/qa-runner';
 
 const DEFAULT_MAX_REVIEW_ATTEMPTS = 2;
-
-// Mismo hueco que TES-130 pero del lado de QA: el workflow de revisión tarda
-// en arrancar y reclamar (`review.claimedBy`, D5), así que un guard que solo
-// mire el estado actual del issue no alcanza para separar dos disparos que
-// ocurren antes de que cualquiera llegue a reclamar.
-const DISPATCH_COOLDOWN_MS = 10 * 60 * 1000;
 
 async function assertRunnerCapacity(db: FirebaseFirestore.Firestore, runnerId: string, maxConcurrentJobs: number) {
   const jobs = await db.collection('runner_jobs').where('runnerId', '==', runnerId).get();
@@ -95,7 +89,7 @@ export const qaDispatchTrigger = onDocumentWritten(
 
       const issueId = event.params.issueId;
       const enteredInReview = after.status === 'in_review' && before?.status !== 'in_review';
-      if (!enteredInReview) return;
+      if (!enteredInReview || after.review?.manualRequest || after.review?.state === 'running') return;
 
       const prs = reviewablePrs(after);
       if (!prs) {
@@ -109,6 +103,7 @@ export const qaDispatchTrigger = onDocumentWritten(
       const recordDispatchError = async (message: string) => {
         await db.runTransaction(async (tx) => {
           const current = await tx.get(issueRef);
+          if (current.data()?.review?.manualRequest || current.data()?.review?.state === 'running') return;
           if (current.data()?.status !== 'in_review' || current.data()?.qaAssigneeId !== after.qaAssigneeId) return;
           tx.update(issueRef, { 'review.dispatchError': message, updatedAt: new Date().toISOString() });
         });
@@ -219,7 +214,11 @@ export const qaDispatchTrigger = onDocumentWritten(
       if (attempt >= maxReviewAttempts) {
         console.log(`[QaDispatch] issue '${issueId}' agotó los intentos de revisión (${attempt}/${maxReviewAttempts}), needs_human, skipping dispatch.`);
         if (review?.state !== 'needs_human') {
-          await issueRef.update({ 'review.state': 'needs_human', updatedAt: new Date().toISOString() });
+          await db.runTransaction(async tx => {
+            const current = (await tx.get(issueRef)).data();
+            if (current?.review?.manualRequest || current?.review?.state === 'running' || (current?.review?.attempt ?? 0) !== attempt) return;
+            tx.update(issueRef, { 'review.state': 'needs_human', updatedAt: new Date().toISOString() });
+          });
         }
         return;
       }
@@ -234,7 +233,11 @@ export const qaDispatchTrigger = onDocumentWritten(
             `[QaDispatch] issue '${issueId}' alcanzó el tope de runs por issue (${runBudget.limit}), needs_human, skipping dispatch.`
           );
           const escalation = await buildNeedsHumanEscalation(db, after);
-          await issueRef.update({ ...escalation, 'review.state': 'needs_human' });
+          await db.runTransaction(async tx => {
+            const current = (await tx.get(issueRef)).data();
+            if (current?.review?.manualRequest || current?.review?.state === 'running' || (current?.review?.attempt ?? 0) !== attempt) return;
+            tx.update(issueRef, { ...escalation, 'review.state': 'needs_human' });
+          });
         } else {
           console.log(
             `[QaDispatch] issue '${issueId}' alcanzó el techo de costo por issue (USD ${runBudget.capUsd}), skipping dispatch.`
@@ -299,42 +302,6 @@ export const qaDispatchTrigger = onDocumentWritten(
         }
       }
 
-      const dispatchDecision = await db.runTransaction(async (tx: Transaction) => {
-        const issueSnap = await tx.get(issueRef);
-        const dispatchedAt: string | undefined = issueSnap.data()?.review?.dispatchedAt;
-        const dispatchedTo: string | undefined = issueSnap.data()?.review?.dispatchedTo;
-        if (dispatchedTo === qaAgentId && dispatchedAt) {
-          const elapsedMs = Date.now() - new Date(dispatchedAt).getTime();
-          if (elapsedMs < DISPATCH_COOLDOWN_MS) {
-            return { allowed: false, reason: 'recent-dispatch', elapsedMs } as const;
-          }
-        }
-
-        const budget = await checkWorkspaceDispatchBudget(tx, db, workspaceId);
-        if (!budget.allowed) return { allowed: false, reason: budget.reason } as const;
-
-        tx.update(issueRef, {
-          'review.dispatchError': FieldValue.delete(),
-          'review.dispatchedAt': new Date().toISOString(),
-          'review.dispatchedTo': qaAgentId,
-        });
-        return { allowed: true } as const;
-      });
-      if (!dispatchDecision.allowed) {
-        if (dispatchDecision.reason === 'recent-dispatch') {
-          console.log(
-            `[QaDispatch] issue '${issueId}' ya despachado a QA '${qaAgentId}' ${Math.round(
-              dispatchDecision.elapsedMs / 1000
-            )}s atrás (cooldown ${DISPATCH_COOLDOWN_MS / 1000}s), skipping dispatch.`
-          );
-        } else {
-          console.log(`[QaDispatch] dispatch blocked for workspace '${workspaceId}' (${dispatchDecision.reason}), skipping dispatch.`);
-        }
-        return;
-      }
-
-
-      const nextAttempt = attempt + 1;
       if (runnerId && runner) {
         const job = await enqueueRunnerJob(db, {
           workspaceId,
@@ -344,20 +311,7 @@ export const qaDispatchTrigger = onDocumentWritten(
           repoFullName,
           contextRepos: (await db.collection('projects').doc(after.projectId).get()).data()?.repoFullNames || [],
           mode: 'review',
-        }, runnerJobSigningPrivateKey.value());
-        await db.collection('agent_runs').doc(job.id).set({
-          id: job.id,
-          issueId,
-          workspaceId,
-          agentId: qaAgentId,
-          runnerId,
-          role: 'qa',
-          mode: 'review',
-          repo: repoFullName,
-          reviewAttempt: nextAttempt,
-          startedAt: new Date().toISOString(),
-          date: todayKey(),
-        });
+        }, runnerJobSigningPrivateKey.value(), 'runner-job-v1', { mode: 'review', attempt, refs: reviewRequestRefs(after) });
         console.log(`[QaDispatch] queued signed Runner review job '${job.id}' for issue '${after.identifier}' to QA '${qaAgentId}'.`);
 
       }

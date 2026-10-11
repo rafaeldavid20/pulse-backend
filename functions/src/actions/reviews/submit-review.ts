@@ -168,6 +168,7 @@ export class ReviewsSubmitAction extends PlatformActionHandler {
 
     const now = new Date().toISOString();
     const closedAttempt: IssueReviewAttempt = {
+      requestSource: review.requestSource, requestedBy: review.requestedBy, requestedAt: review.requestedAt, requestJobId: review.requestJobId,
       state: outcome,
       reviewerId: actorUid,
       attempt: review.attempt,
@@ -208,7 +209,7 @@ export class ReviewsSubmitAction extends PlatformActionHandler {
         updates['git.lastSyncedStatus'] = 'in_progress';
       } else if (outcome === 'needs_human') {
         needsHumanLeadId = await resolveReviewLead(db, issue);
-        nextReview.previousAssigneeId = issue.assigneeId || undefined;
+        nextReview.previousAssigneeId = review.previousAssigneeId || issue.assigneeId || undefined;
         updates.assigneeId = needsHumanLeadId || null;
         if (capped) {
           // Intentos agotados: es un rechazo real, solo que lo termina de

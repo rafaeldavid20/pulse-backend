@@ -55,12 +55,12 @@ Module._load = function (name: string, ...args: any[]) {
     getPullRequestOrigin: async () => ({ headRepoFullName: 'owner/repo', headRef: 'pul/test', headSha: 'new' }),
     dispatchRepositoryEvent: async (_install: any, _repo: any, _event: any, payload: any) => { dispatches.push(payload.agentId); },
   };
-  if (name.endsWith('/common/utils/runner-jobs')) return { enqueueRunnerJob: async (_db: any, input: any) => { dispatches.push(input.agentId); runnerJobs.push(input); return { ...input, id: 'job-test' }; } };
+  if (name.endsWith('/common/utils/runner-jobs')) return { enqueueRunnerJob: async (_db: any, input: any) => { update({ 'review.dispatchedTo': input.agentId, 'review.dispatchedAt': new Date().toISOString(), 'review.dispatchError': deleted }); dispatches.push(input.agentId); runnerJobs.push(input); return { ...input, id: 'job-test' }; } };
   if (name.endsWith('/common/utils/repo-resolution')) return { resolveIssueRepo: async () => ({ repoFullName: 'owner/repo' }) };
   if (name.endsWith('/common/utils/dispatch-counter')) return { checkWorkspaceDispatchBudget: async () => ({ allowed: true }), todayKey: () => '2026-10-01' };
   if (name.endsWith('/common/utils/issue-run-budget')) return { checkIssueRunBudget: async () => ({ withinBudget: true }) };
   if (name === '../../common/platform-actions/handler') return {
-    PlatformActionHandler: class { action: any; constructor(_code: string, request: any) { this.action = request; } },
+    PlatformActionHandler: class { action: any; caller = { uid: 'human' }; constructor(_code: string, request: any) { this.action = request; } },
   };
   return originalLoad.call(this, name, ...args);
 };
