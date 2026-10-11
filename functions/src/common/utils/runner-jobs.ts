@@ -8,6 +8,7 @@ import { DISPATCH_COOLDOWN_MS, RunnerDispatchError } from './dispatch-failure';
 import { checkWorkspaceDispatchBudget, todayKey } from './dispatch-counter';
 import { assertHumanReworkRequester, reworkRepositories } from './human-rework';
 import { checkIssueRunBudget } from './issue-run-budget';
+import { assertReviewRequest } from './review-request';
 import { RunnerJob } from '../domain.generated';
 
 // Un adaptador local puede necesitar instalar dependencias, ejecutar tests y
@@ -31,7 +32,7 @@ export function signRunnerJob(job: Omit<RunnerJob, 'signature'>, privateKey: str
   return base64url(sign(null, Buffer.from(runnerJobPayload(job)), privateKey));
 }
 
-export type DispatchReservation = boolean | { mode: 'handoff'; requestedAt: string } | { mode: 'rework'; attempt: number; requestedBy?: string; comment?: string };
+export type DispatchReservation = { mode: 'review'; attempt: number; refs: string; requestedBy?: string } | boolean | { mode: 'handoff'; requestedAt: string } | { mode: 'rework'; attempt: number; requestedBy?: string; comment?: string };
 
 /** Crea un trabajo de vida corta. El documento no contiene ninguna credencial de proveedor. */
 export async function enqueueRunnerJob(
@@ -67,7 +68,7 @@ export async function enqueueRunnerJob(
         throw new RunnerDispatchError('enqueue', ['La issue ya tiene un dispatch reciente.'], true);
       }
     }
-    if (reservation && reservation !== true) {
+    if (reservation && reservation !== true && reservation.mode !== 'review') {
       if (!issue || ['done', 'canceled'].includes(issue.status) || (issue.execution?.agentId || issue.assigneeId) !== job.agentId || issue.agent?.state === 'claimed') {
         throw new RunnerDispatchError('enqueue', ['La issue ya no está disponible para este dispatch.'], true);
       }
@@ -93,6 +94,22 @@ export async function enqueueRunnerJob(
       if (humanRequest.attempt >= (qa?.data()?.maxReviewAttempts ?? 2)) throw new Error('No quedan intentos de revisión disponibles.');
       const issueBudget = await checkIssueRunBudget(db, job.workspaceId, job.issueId, transaction);
       if (!issueBudget.withinBudget) throw new Error('El issue alcanzó su límite de ejecuciones o costo.');
+    }
+    const reviewRequest = reservation && reservation !== true && reservation.mode === 'review' ? reservation : undefined;
+    if (reviewRequest) {
+      if (job.mode !== 'review' || agent.data()!.role !== 'qa' || !agent.data()!.enabled) throw new Error('El agente QA ya no está habilitado.');
+      assertReviewRequest(issue, reviewRequest.attempt, reviewRequest.refs, !!reviewRequest.requestedBy, agent.data()!.maxReviewAttempts ?? 2);
+      if (reviewRequest.requestedBy) {
+        const member = await transaction.get(db.collection('members').doc(`${job.workspaceId}_${reviewRequest.requestedBy}`));
+        const callerAgent = await transaction.get(db.collection('agents').doc(reviewRequest.requestedBy));
+        if (!member.exists || member.data()?.isAgent || callerAgent.exists) throw new Error('Solo un miembro humano del workspace puede solicitar una revisión manual.');
+      }
+      if ((issue!.execution?.agentId || issue!.assigneeId) === job.agentId || (issue!.qaAssigneeId && issue!.qaAssigneeId !== job.agentId)) throw new Error('Cambió el agente QA asignado. Revisá la asignación y volvé a solicitar QA.');
+      if (!reviewRequest.requestedBy && issue!.review?.dispatchedTo === job.agentId && Date.now() - Date.parse(issue!.review.dispatchedAt || '') < DISPATCH_COOLDOWN_MS) throw new RunnerDispatchError('enqueue', ['La issue ya tiene un dispatch QA reciente.'], true);
+      const issueBudget = await checkIssueRunBudget(db, job.workspaceId, job.issueId, transaction);
+      if (!issueBudget.withinBudget) throw new Error('La issue alcanzó su límite de ejecuciones o costo. Revisá el presupuesto antes de solicitar QA.');
+      const issueJobs = await transaction.get(db.collection('runner_jobs').where('issueId', '==', job.issueId));
+      if (issueJobs.docs.some(snap => ['pending', 'delivered'].includes(snap.data().status) && (!Number.isFinite(Date.parse(snap.data().expiresAt)) || Date.parse(snap.data().expiresAt) > Date.now()))) throw new Error('La issue ya tiene un job activo. Esperá a que termine antes de solicitar QA.');
     }
     const runner = await transaction.get(db.collection('runners').doc(job.runnerId));
     const preflight = runnerPreflight({ ...agent.data(), id: job.agentId }, runner.exists ? { ...runner.data(), id: job.runnerId } : null, job.workspaceId, contextRepos, job.mode, Date.now(), true, !!input.recoveryOf);
@@ -142,7 +159,11 @@ export async function enqueueRunnerJob(
     const supportsPublicationMode = localApp && runner.data()?.readiness?.prPublicationModeVersion === 1;
     if (job.mode !== 'review' && prPublicationMode === 'ready' && !supportsPublicationMode) throw new RunnerDispatchError('preflight', ['Actualizá @pulsehub/runner y reiniciá el servicio para publicar PR listos para revisión.']);
     const envelope = { ...(supportsPublicationMode ? { prPublicationMode } : {}), ...unsigned, projectId: access.projectId, protocolVersion: localApp ? 3 as const : 2 as const, ...(publicationTargets ? { publicationTargets } : {}) };
-    job = { ...envelope, signature: signRunnerJob(envelope, privateKey) };
+    try {
+      job = { ...envelope, signature: signRunnerJob(envelope, privateKey) };
+    } catch {
+      throw new RunnerDispatchError('enqueue', ['No se pudo firmar el job. Revisá la configuración de firma del backend y reintentá; no se reservó ni consumió presupuesto.']);
+    }
     if (reservation) {
       // Budget writes are last: Firestore requires every read before writes.
       // Aborting any validation/signing/commit leaves no cooldown or spend.
@@ -150,18 +171,38 @@ export async function enqueueRunnerJob(
       if (!budget.allowed) throw new RunnerDispatchError('budget', [budget.reason === 'paused'
         ? 'Los agentes están pausados. Reanudalos en Ajustes para reintentar.'
         : 'Se alcanzó el límite diario de dispatches o costo del workspace. Revisá el presupuesto en Ajustes o reintentá al día siguiente.']);
-      const modeMarks = reservation === true ? {} : reservation.mode === 'handoff'
-        ? { pendingRepoWork: issue!.pendingRepoWork.map((e: any) => e.repoFullName === job.repoFullName ? { ...e, dispatchedAt: issuedAt } : e) }
-        : { 'review.reworkDispatchedAt': issuedAt, 'review.reworkDispatchedForAttempt': reservation.attempt };
+      let modeMarks: Record<string, any> = {};
+      if (reviewRequest) {
+        modeMarks = {
+          'review.dispatchedAt': issuedAt, 'review.dispatchedTo': job.agentId,
+          'review.dispatchError': FieldValue.delete(), 'review.queuedJobId': job.id,
+          ...(reviewRequest.requestedBy ? { 'review.manualRequest': {
+            jobId: job.id, requestedBy: reviewRequest.requestedBy,
+            requestedAt: issuedAt, expiresAt, attempt: reviewRequest.attempt + 1,
+          } } : {}),
+        };
+      } else if (reservation !== true && reservation.mode === 'handoff') {
+        modeMarks = { pendingRepoWork: issue!.pendingRepoWork.map((e: any) => e.repoFullName === job.repoFullName ? { ...e, dispatchedAt: issuedAt } : e) };
+      } else if (reservation !== true && reservation.mode === 'rework') {
+        modeMarks = { 'review.reworkDispatchedAt': issuedAt, 'review.reworkDispatchedForAttempt': reservation.attempt };
+      }
       transaction.update(issueRef, {
         ...modeMarks,
         ...(humanRequest ? { status: 'in_progress', 'git.lastSyncedStatus': 'in_progress', updatedAt: issuedAt, updatedBy: humanRequest.requestedBy } : {}),
-        'agent.dispatchedAt': issuedAt, 'agent.dispatchedTo': job.agentId,
-        'agent.dispatchFailure': FieldValue.delete(), 'agent.blockedReason': FieldValue.delete(), 'agent.state': 'idle',
+        ...(reviewRequest ? { updatedAt: issuedAt } : { 'agent.dispatchedAt': issuedAt, 'agent.dispatchedTo': job.agentId,
+        'agent.dispatchFailure': FieldValue.delete(), 'agent.blockedReason': FieldValue.delete(), 'agent.state': 'idle' }),
       });
       transaction.create(db.collection('agent_runs').doc(job.id), {
         id: job.id, issueId: job.issueId, workspaceId: job.workspaceId, agentId: job.agentId,
-        role: 'dev', mode: job.mode, ...(humanRequest ? { requestedBy: humanRequest.requestedBy } : {}), ...(reservation !== true && reservation.mode === 'rework' ? { reviewAttempt: reservation.attempt } : {}), repo: job.repoFullName, runnerId: job.runnerId, startedAt: issuedAt, date: todayKey(),
+        role: reviewRequest ? 'qa' : 'dev', mode: job.mode,
+        ...(reviewRequest ? {
+          reviewAttempt: reviewRequest.attempt + 1,
+          requestSource: reviewRequest.requestedBy ? 'manual' : 'automatic',
+          ...(reviewRequest.requestedBy ? { requestedBy: reviewRequest.requestedBy } : {}),
+        } : {}),
+        ...(humanRequest ? { requestedBy: humanRequest.requestedBy } : {}),
+        ...(reservation !== true && reservation.mode === 'rework' ? { reviewAttempt: reservation.attempt } : {}),
+        repo: job.repoFullName, runnerId: job.runnerId, startedAt: issuedAt, date: todayKey(),
       });
     }
     if (humanRequest) {
