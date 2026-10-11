@@ -2,6 +2,8 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { agentVisibility, canAssignExecutionAgent } from '../../common/utils/agent-authorization';
+import { resolveIssueRepo } from '../../common/utils/repo-resolution';
+import { runnerProjectRepoAccess } from '../../common/utils/project-repos';
 
 /** Assigns an executor without replacing the human accountable for the issue. */
 export class AssignExecutionAgentAction extends PlatformActionHandler {
@@ -52,6 +54,27 @@ export class AssignExecutionAgentAction extends PlatformActionHandler {
           ? 'Los agentes públicos se asignan mediante procesos del workspace, no desde la asignación manual.'
           : 'Solo podés asignar tus agentes personales a issues de los que sos responsable.'
       );
+    }
+
+    // Validate permanent routing requirements before accepting an executor.
+    // Availability is checked at dispatch: an offline Runner can still be assigned.
+    if (agent.runnerId) {
+      if (!issue.projectId) {
+        throw new Error('Elegí un proyecto con repositorios configurados antes de asignar el agente ejecutor.');
+      }
+      const installations = await db.collection('github_installations')
+        .where('workspaceId', '==', issue.workspaceId).get();
+      const installationRepos: string[] = [...new Set(installations.docs.flatMap((doc) =>
+        doc.data().suspendedAt ? [] : doc.data().repositoryFullNames || []
+      ))];
+      const access = await runnerProjectRepoAccess(db, issue, installationRepos);
+      if (!access || access.repos.length === 0) {
+        throw new Error('Configurá repositorios en el proyecto y habilitalos en la instalación GitHub del workspace antes de asignar el agente ejecutor.');
+      }
+      const { repoFullName } = await resolveIssueRepo(db, issue, { agentId, installationRepos });
+      if (!repoFullName || !access.repos.includes(repoFullName)) {
+        throw new Error('Elegí un repositorio de la issue que pertenezca al proyecto y esté habilitado en GitHub antes de asignar el agente ejecutor.');
+      }
     }
 
     const now = new Date().toISOString();
