@@ -13,7 +13,7 @@ import { runnerProjectRepoAccess } from '../common/utils/project-repos';
 async function dispatchRunnerContinuation(
   db: FirebaseFirestore.Firestore, issueId: string, issue: FirebaseFirestore.DocumentData,
   agentId: string, agent: FirebaseFirestore.DocumentData, authorized: string[], repo: string,
-  reservation: Exclude<DispatchReservation, boolean>,
+  reservation: Exclude<DispatchReservation, boolean | { mode: 'review' }>,
 ) {
   const startedAt = new Date().toISOString();
   try {

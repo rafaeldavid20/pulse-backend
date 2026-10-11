@@ -15,8 +15,8 @@ const CLOSED_STATES = new Set(['approved', 'changes_requested', 'stale']);
  * prioridad, solo reclamar de forma atómica el que le corresponde a este
  * agente.
  *
- * `needs_human` nunca es candidato: ese estado es un pedido explícito de que
- * decida una persona, no algo que un QA deba volver a tomar.
+ * `needs_human` solo es candidato con una solicitud manual pendiente para
+ * un único intento adicional, autorizada al emitir su job.
  */
 export class ReviewsStartAction extends PlatformActionHandler {
   private workspaceId?: string;
@@ -44,7 +44,7 @@ export class ReviewsStartAction extends PlatformActionHandler {
       const candidatesQuery = db
         .collection('issues')
         .where('workspaceId', '==', data.workspaceId)
-        .where('status', '==', 'in_review');
+        .where('status', 'in', ['in_review', 'in_progress', 'todo']);
       const snap = await tx.get(candidatesQuery);
 
       const candidates = snap.docs
@@ -57,7 +57,10 @@ export class ReviewsStartAction extends PlatformActionHandler {
           if (data.issueId && ref.id !== data.issueId) return false;
           const review = issue.review as IssueReview | undefined;
           if (review?.dispatchedTo !== actorUid) return false;
-          if (review.state === 'needs_human') return false;
+          const manual = review.manualRequest?.attempt === (review.attempt || 0) + 1;
+          const resumingManual = review.requestSource === 'manual' && review.state === 'running' && review.claimedBy === actorUid;
+          if (issue.status !== 'in_review' && !((manual || resumingManual) && ['in_progress', 'todo'].includes(issue.status))) return false;
+          if (review.state === 'needs_human' && !manual) return false;
           if (review.state === 'running' && review.claimedBy && review.claimedBy !== actorUid) return false;
           return true;
         })
@@ -72,6 +75,11 @@ export class ReviewsStartAction extends PlatformActionHandler {
       }
 
       const { ref, issue } = candidates[0];
+      const pendingRequest = issue.review?.manualRequest;
+      if (pendingRequest) {
+        const job = (await tx.get(db.collection('runner_jobs').doc(pendingRequest.jobId))).data();
+        if (!job || job.issueId !== ref.id || job.agentId !== actorUid || job.mode !== 'review' || !['pending', 'delivered'].includes(job.status) || (!Number.isFinite(Date.parse(job.expiresAt)) || Date.parse(job.expiresAt) <= Date.now())) throw new Error('La solicitud manual ya no tiene un job activo. Volvé a solicitar QA desde la issue.');
+      }
       const proof = (await tx.get(db.collection('qa_source_preflights').doc(`${ref.id}_${actorUid}`))).data();
       const project = issue.projectId ? (await tx.get(db.collection('projects').doc(issue.projectId))).data() : null;
       const refs = (issue.gitRefs?.length ? issue.gitRefs : [issue.git]).filter((entry: any) => entry?.prNumber);
@@ -82,7 +90,7 @@ export class ReviewsStartAction extends PlatformActionHandler {
       const now = new Date().toISOString();
 
       const resumingSelf = review?.state === 'running' && review.claimedBy === actorUid;
-      const startingNewAttempt = !review || CLOSED_STATES.has(review.state) || review.state === 'needs_human';
+      const startingNewAttempt = !review || !!review.manualRequest || CLOSED_STATES.has(review.state) || review.state === 'needs_human';
 
       let history = review?.history || [];
       let attempt = review?.attempt || 0;
@@ -90,15 +98,15 @@ export class ReviewsStartAction extends PlatformActionHandler {
 
       if (resumingSelf) {
         // No-op: keep attempt/startedAt from the in-progress claim.
-      } else if (startingNewAttempt && review) {
+      } else if (startingNewAttempt && review && (review.attempt || 0) > 0) {
         // Archive the previous closed attempt before opening a new one — the
         // top-level `review` is always the current attempt, `history` holds
         // everything closed before it (D3).
-        const { history: _drop, claimedBy: _cb, claimedAt: _ca, previousAssigneeId: _pa, ...archived } = review;
+        const { history: _drop, claimedBy: _cb, claimedAt: _ca, previousAssigneeId: _pa, manualRequest: _mr, queuedJobId: _qj, dispatchedTo: _dt, dispatchedAt: _da, dispatchError: _de, ...archived } = review;
         history = [...history, archived];
         attempt = (review.attempt || 0) + 1;
         startedAt = now;
-      } else if (!review) {
+      } else if (startingNewAttempt) {
         attempt = 1;
         startedAt = now;
       } else {
@@ -106,7 +114,11 @@ export class ReviewsStartAction extends PlatformActionHandler {
         attempt = review.attempt || 1;
       }
 
+      const manualRequest = review?.manualRequest?.attempt === attempt ? review.manualRequest : undefined;
       const nextReview: IssueReview = {
+        ...(manualRequest ? { requestSource: 'manual' as const, requestedBy: manualRequest.requestedBy, requestedAt: manualRequest.requestedAt, requestJobId: manualRequest.jobId } : resumingSelf ? { requestSource: review?.requestSource, requestedBy: review?.requestedBy, requestedAt: review?.requestedAt, requestJobId: review?.requestJobId } : {}),
+        previousAssigneeId: review?.previousAssigneeId,
+        dispatchedTo: actorUid, dispatchedAt: review?.dispatchedAt,
         state: 'running',
         reviewerId: actorUid,
         attempt,

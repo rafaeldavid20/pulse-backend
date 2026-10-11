@@ -5,7 +5,7 @@
 // dominio de Pulse. Para cambiar algo de acá, editá ese archivo y corré
 // `npm run sync:types` desde `pulse-app`.
 //
-// SOURCE_HASH: 04bcd02667ab322b
+// SOURCE_HASH: 8f0a8c22c58eb9c2
 // ============================================================
 
 /**
@@ -1024,10 +1024,15 @@ export interface ReviewPrRef {
  * estos, no un árbol.
  */
 export interface IssueReviewAttempt {
+  /** One explicitly requested review; never renews automatic attempts or budgets. */
+  requestSource?: 'manual' | 'automatic';
+  requestedBy?: string;
+  requestedAt?: string;
+  requestJobId?: string;
   state: ReviewState;
   /** Agente `role: 'qa'` que corrió (o está corriendo) este intento. */
   reviewerId?: string;
-  /** 1-based. Tope en `Agent.maxReviewAttempts`; agotado sin aprobación, el cierre es `needs_human`. */
+  /** 1-based y creciente. maxReviewAttempts limita el loop automático; un humano puede solicitar un intento adicional. */
   attempt: number;
   /** Resumen en lenguaje natural del veredicto, para humanos — los datos estructurados van en `findings`/`criteriaResults`. */
   verdict?: string;
@@ -1050,11 +1055,14 @@ export interface IssueReviewAttempt {
 
 /**
  * Intento de revisión de QA en curso sobre un issue (D3). Se guarda embebido
- * en el issue en vez de en una subcolección: el volumen es acotado (tope de
- * `Agent.maxReviewAttempts`) y así viaja entero en `pulse_get_issue` sin una
+ * en el issue en vez de en una subcolección; incluye los intentos manuales
+ * adicionales y así viaja entero en `pulse_get_issue` sin una
  * lectura aparte.
  */
 export interface IssueReview extends IssueReviewAttempt {
+  /** Pending manual authorization, consumed by reviews.start for this attempt only. */
+  manualRequest?: { jobId: string; requestedBy: string; requestedAt: string; expiresAt: string; attempt: number };
+  queuedJobId?: string;
   /**
    * Lock de la revisión, separado de `IssueAgentState` a propósito: mientras
    * el QA revisa, el dev sigue con el issue reclamado (`agent.state`) — son

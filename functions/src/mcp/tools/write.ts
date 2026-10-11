@@ -415,7 +415,7 @@ export function registerWriteTools(server: McpServer, principal: McpPrincipal) {
 
   server.tool(
     'pulse_next_review',
-    'For QA agents. Atomically claims the review that qa-dispatch assigned to this agent (an issue in in_review with review.dispatchedTo set to this agent), with a lock just like pulse_next_task. Pass the identifier of the issue this run was dispatched for: without it, two reviews dispatched in parallel to the same agent can be swapped. Returns found:false if nothing is waiting.',
+    'For QA agents. Atomically claims the review that qa-dispatch assigned to this agent (an issue with review.dispatchedTo set to this agent; explicit manual requests also allow active issues escalated to needs_human), with a lock just like pulse_next_task. Pass the identifier of the issue this run was dispatched for: without it, two reviews dispatched in parallel to the same agent can be swapped. Returns found:false if nothing is waiting.',
     { identifier: z.string().optional().describe('Issue this run was dispatched for ("ENG-142").') },
     async ({ identifier }) => {
       if (!identifier) return runAction('reviews.start', { workspaceId: principal.workspaceId }, actorUid);

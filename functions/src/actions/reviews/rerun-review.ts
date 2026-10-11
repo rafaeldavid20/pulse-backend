@@ -1,60 +1,19 @@
 import { runnerPreflight } from '../../common/utils/runner-preflight';
-import { getFirestore, Transaction, FieldValue } from 'firebase-admin/firestore';
+import { getFirestore } from 'firebase-admin/firestore';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { IssueReview } from '../../common/domain.generated';
 import { resolveIssueRepo } from '../../common/utils/repo-resolution';
-import { checkWorkspaceDispatchBudget, todayKey } from '../../common/utils/dispatch-counter';
+import { getWorkspaceMember } from '../../common/utils/agent-authorization';
+import { reviewRequestRefs } from '../../common/utils/review-request';
+import { getPullRequestOrigin } from '../../github/client';
 import { enqueueRunnerJob } from '../../common/utils/runner-jobs';
 import { isRunnerAvailable } from '../../common/utils/runner-availability';
 import { runnerJobSigningPrivateKey } from '../../common/secrets';
 import { qaAssignmentError } from '../../common/utils/qa-assignment';
 import { findProjectQaRunner } from '../../common/utils/qa-runner';
 
-const DEFAULT_MAX_REVIEW_ATTEMPTS = 2;
-
-interface ReviewablePr {
-  repoFullName: string;
-  prNumber: number;
-}
-
-/** Mismo criterio que `qaDispatchTrigger` (D4): todos los PRs abiertos, sin traspasos pendientes. */
-function reviewablePrs(issue: FirebaseFirestore.DocumentData): ReviewablePr[] | null {
-  if ((issue.pendingRepoWork || []).length > 0) return null;
-  const refs: any[] =
-    Array.isArray(issue.gitRefs) && issue.gitRefs.length > 0
-      ? issue.gitRefs
-      : issue.git?.repoFullName
-        ? [issue.git]
-        : [];
-  if (refs.length === 0) return null;
-  if (!refs.every((r) => r?.prNumber !== undefined && r.prState === 'open')) return null;
-  return refs.map((r) => ({ repoFullName: r.repoFullName, prNumber: r.prNumber }));
-}
-
-/**
- * `reviews.rerun` (D7): "Re-ejecutar QA" — un humano vuelve a despachar la
- * revisión a pedido, en vez de esperar a que `qaDispatchTrigger` (D4) lo haga
- * solo. A diferencia de ese trigger automático, acá se pisan a propósito sus
- * dos guardas pensadas para dispatches automáticos: el cooldown
- * anti-doble-disparo y el anti-ping-pong por SHA sin cambios — un click es,
- * por definición, un pedido explícito y único, no un loop. El circuit
- * breaker diario y el kill switch (`checkWorkspaceDispatchBudget`, D8/TES-153)
- * sí se respetan: protegen el costo del workspace sin importar quién dispare,
- * y `agentsPaused` no puede sortearse con un click.
- *
- * Si todavía no existe un intento (por ejemplo, porque no había un agente QA
- * elegible al entrar en revisión), se puede despachar después de corregir la
- * configuración. Si el intento actual sigue `running` (el caso típico: un run que no
- * arrancó o se colgó antes de que el barrido de 30min lo escale), se
- * re-despacha ESE MISMO intento — no consume uno nuevo, y el próximo
- * `pulse_next_review` del agente QA lo retoma vía la rama `resumingSelf` de
- * `reviews.start`. Si el intento anterior ya cerró (`approved`/
- * `changes_requested`/`stale`) pero el issue sigue `in_review`, se despacha
- * como si fuera uno nuevo (`reviews.start` lo archiva en `history` al
- * reclamarlo), sujeto al mismo tope `maxReviewAttempts` que el dispatch
- * automático.
- */
+/** Explicit human QA request: one transactional job, with no reset of automatic limits. */
 export class ReviewsRerunAction extends PlatformActionHandler {
   private issueId?: string;
   private resolvedWorkspaceId?: string;
@@ -69,7 +28,11 @@ export class ReviewsRerunAction extends PlatformActionHandler {
     const snap = await getFirestore().collection('issues').doc(this.issueId).get();
     if (!snap.exists) return false;
     this.resolvedWorkspaceId = snap.data()!.workspaceId;
-    return this.isWorkspaceMember(this.resolvedWorkspaceId!);
+    if (!this.caller.uid) return false;
+    const db = getFirestore();
+    const member = await getWorkspaceMember(db, this.resolvedWorkspaceId!, this.caller.uid);
+    const agent = await db.collection('agents').doc(this.caller.uid).get();
+    return !!member && !member.isAgent && !agent.exists;
   }
 
   protected async handleAction(): Promise<Record<string, any>> {
@@ -85,19 +48,11 @@ export class ReviewsRerunAction extends PlatformActionHandler {
     if (!issueSnap.exists) throw new Error(`El issue con ID '${data.issueId}' no existe.`);
     const issue = issueSnap.data()!;
 
-    if (issue.status !== 'in_review') {
-      throw new Error(`El issue '${issue.identifier}' no está en revisión (status '${issue.status}'), no hay nada que re-ejecutar.`);
-    }
-
+    if (!['in_review', 'in_progress', 'todo'].includes(issue.status)) throw new Error('Solo se puede solicitar QA en una issue activa con PRs elegibles.');
     const review = issue.review as IssueReview | undefined;
-    if (review?.state === 'needs_human') {
-      throw new Error('La revisión está escalada a needs_human: usá "Devolver al agente" o "Aprobar igual" en vez de re-ejecutar.');
-    }
-
-    const prs = reviewablePrs(issue);
-    if (!prs) {
-      throw new Error(`El issue '${issue.identifier}' no tiene todos sus PRs abiertos (o hay trabajo pendiente en otro repo), no se puede re-ejecutar la revisión.`);
-    }
+    if (review?.state === 'running') throw new Error('QA sigue activo. Esperá a que termine antes de solicitar otra revisión.');
+    const refs = reviewRequestRefs(issue);
+    const prs: Array<{repoFullName: string; prNumber: number; branch?: string}> = issue.gitRefs?.length ? issue.gitRefs : [issue.git];
 
     const { repoFullName } = await resolveIssueRepo(db, { ...issue, id: data.issueId }, { agentId: issue.execution?.agentId || issue.assigneeId });
     if (!repoFullName) {
@@ -167,14 +122,7 @@ export class ReviewsRerunAction extends PlatformActionHandler {
       }
     }
 
-    const isResendingCurrentAttempt = review?.state === 'running';
-    const maxAttempts = qaAgent.maxReviewAttempts ?? DEFAULT_MAX_REVIEW_ATTEMPTS;
-    const nextAttempt = isResendingCurrentAttempt ? review!.attempt || 1 : (review?.attempt || 0) + 1;
-    if (!isResendingCurrentAttempt && nextAttempt > maxAttempts) {
-      throw new Error(
-        `El issue '${issue.identifier}' ya agotó sus ${maxAttempts} intentos de revisión. Usá "Devolver al agente" para reiniciarlos, o "Aprobar igual" para forzar un veredicto.`
-      );
-    }
+    const nextAttempt = (review?.attempt || 0) + 1;
 
     const installSnap = await db.collection('github_installations').where('workspaceId', '==', issue.workspaceId).limit(1).get();
     if (installSnap.empty) {
@@ -182,56 +130,25 @@ export class ReviewsRerunAction extends PlatformActionHandler {
     }
     const installation = installSnap.docs[0].data();
     const authorized: string[] = installation.repositoryFullNames || [];
-    if (!authorized.includes(repoFullName)) {
+    if (!authorized.includes(repoFullName) || prs.some(pr => !authorized.includes(pr.repoFullName))) {
       throw new Error(`'${repoFullName}' no está autorizado en la instalación de GitHub de este workspace.`);
     }
 
-    const budget = await db.runTransaction((tx: Transaction) => checkWorkspaceDispatchBudget(tx, db, issue.workspaceId));
-    if (!budget.allowed) {
-      const reasonMessage =
-        budget.reason === 'paused'
-          ? 'los agentes de este workspace están pausados (agentsPaused).'
-          : budget.reason === 'daily-cost-cap'
-            ? `se alcanzó el techo de gasto diario del workspace (USD ${budget.capUsd}).`
-            : `se alcanzó el límite diario de dispatches del workspace (${budget.limit}/día).`;
-      throw new Error(`No se puede re-ejecutar la revisión: ${reasonMessage}`);
+    let origins;
+    try {
+      origins = await Promise.all(prs.map(pr => getPullRequestOrigin(installation.installationId, pr.repoFullName, pr.prNumber)));
+    } catch {
+      throw new Error('No se pudieron verificar los PRs en GitHub. Revisá la conexión del workspace y reintentá.');
     }
-
-    const now = new Date().toISOString();
-    await issueRef.update({
-      'review.dispatchError': FieldValue.delete(),
-      'review.dispatchedAt': now,
-      'review.dispatchedTo': qaAgentId,
-      updatedAt: now,
+    if (prs.some((pr, i) => origins[i].headRepoFullName !== pr.repoFullName || (pr.branch && origins[i].headRef !== pr.branch))) throw new Error('Los PRs deben provenir de las ramas registradas en sus repositorios. Revisá los PRs vinculados.');
+    const job = await enqueueRunnerJob(db, {
+      workspaceId: issue.workspaceId, issueId: data.issueId, agentId: qaAgentId,
+      runnerId, repoFullName,
+      contextRepos: (await db.collection('projects').doc(issue.projectId).get()).data()?.repoFullNames || [],
+      mode: 'review',
+    }, runnerJobSigningPrivateKey.value(), 'runner-job-v1', {
+      mode: 'review', attempt: review?.attempt || 0, refs, requestedBy: this.caller.uid!,
     });
-
-    if (runnerId && runner) {
-      const job = await enqueueRunnerJob(db, {
-        workspaceId: issue.workspaceId,
-        issueId: data.issueId,
-        agentId: qaAgentId,
-        runnerId,
-        repoFullName,
-        contextRepos: (await db.collection('projects').doc(issue.projectId).get()).data()?.repoFullNames || [],
-        mode: 'review',
-      }, runnerJobSigningPrivateKey.value());
-      await db.collection('agent_runs').doc(job.id).set({
-        id: job.id,
-        issueId: data.issueId,
-        workspaceId: issue.workspaceId,
-        agentId: qaAgentId,
-        runnerId,
-        role: 'qa',
-        mode: 'review',
-        repo: repoFullName,
-        reviewAttempt: nextAttempt,
-        startedAt: now,
-        date: todayKey(),
-      });
-      console.log(`[ReviewsRerun] queued signed Runner review job '${job.id}' for '${issue.identifier}' to QA '${qaAgentId}'.`);
-
-    }
-
-    return { issueId: data.issueId, repoFullName, qaAgentId, attempt: nextAttempt };
+    return { issueId: data.issueId, jobId: job.id, repoFullName, qaAgentId, attempt: nextAttempt, requestSource: 'manual' };
   }
 }
