@@ -1,4 +1,4 @@
-import { runnerPreflight } from './runner-preflight';
+import { isTransientRunnerPreflight, runnerPreflight } from './runner-preflight';
 
 /**
  * Resolve a QA agent to its configured Runner, or to another Runner owned by
@@ -20,6 +20,7 @@ export async function findProjectQaRunner(
   );
   const problems: string[] = [];
   const busyRunnerIds: string[] = [];
+  const unavailableRunnerIds: string[] = [];
 
   for (const runner of [...bound, ...shared]) {
     const preflight = runnerPreflight(
@@ -34,7 +35,8 @@ export async function findProjectQaRunner(
     if (!preflight.ready) {
       // Unrelated shared Runners are not configuration advice for this QA.
       if (runner.id === agent.runnerId || runner.readiness?.identities?.some((identity: any) => identity.agentId === agent.id)) {
-        problems.push(...preflight.problems.map((problem) => `${problem.message} ${problem.action}`));
+        if (isTransientRunnerPreflight(preflight, runner)) unavailableRunnerIds.push(runner.id);
+        else problems.push(...preflight.problems.map((problem) => `${problem.message} ${problem.action}`));
       }
       continue;
     }
@@ -51,8 +53,8 @@ export async function findProjectQaRunner(
       continue;
     }
 
-    return { runner, problems: [] as string[], busyRunnerIds: [] as string[] };
+    return { runner, problems: [] as string[], busyRunnerIds: [] as string[], unavailableRunnerIds: [] as string[] };
   }
 
-  return { runner: undefined, problems: Array.from(new Set(problems)), busyRunnerIds };
+  return { runner: undefined, problems: Array.from(new Set(problems)), busyRunnerIds, unavailableRunnerIds };
 }

@@ -1,5 +1,5 @@
 import { reviewRequestRefs } from '../common/utils/review-request';
-import { runnerPreflight } from '../common/utils/runner-preflight';
+import { isTransientRunnerPreflight, runnerPreflight } from '../common/utils/runner-preflight';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { RunnerDispatchError } from '../common/utils/dispatch-failure';
@@ -11,10 +11,10 @@ import { checkIssueRunBudget } from '../common/utils/issue-run-budget';
 import { buildNeedsHumanEscalation } from '../common/utils/review-escalation';
 import { enqueueRunnerJob } from '../common/utils/runner-jobs';
 import { qaAssignmentError } from '../common/utils/qa-assignment';
-import { isRunnerAvailable } from '../common/utils/runner-availability';
 import { findProjectQaRunner } from '../common/utils/qa-runner';
 
 const DEFAULT_MAX_REVIEW_ATTEMPTS = 2;
+const availabilityWait = 'QA pendiente: el Runner está desconectado o su verificación local venció; se iniciará automáticamente cuando vuelva a estar preparado.';
 
 async function assertRunnerCapacity(db: FirebaseFirestore.Firestore, runnerId: string, maxConcurrentJobs: number) {
   const jobs = await db.collection('runner_jobs').where('runnerId', '==', runnerId).get();
@@ -148,11 +148,12 @@ export async function dispatchPendingQa(issueId: string) {
     let runner: FirebaseFirestore.DocumentData | undefined;
     let runnerProblems: string[] = [];
     const busyRunnerIds: string[] = [];
+    const unavailableRunnerIds: string[] = [];
     if (qaDoc?.data()?.runnerId) {
       const selectedQa = { ...qaDoc.data()!, id: qaDoc.id };
       const result = await findProjectQaRunner(db, selectedQa, workspaceId, reviewRepos);
       if (!result.runner) {
-        await recordDispatchError(result.busyRunnerIds.length ? 'QA pendiente: el Runner está ocupado; se iniciará automáticamente cuando haya capacidad.' : result.problems.join(' ') || 'No hay un Pulse Runner activo con la identidad QA configurada.', result.busyRunnerIds);
+        await recordDispatchError(result.busyRunnerIds.length ? 'QA pendiente: el Runner está ocupado; se iniciará automáticamente cuando haya capacidad.' : result.unavailableRunnerIds.length ? availabilityWait : result.problems.join(' ') || 'No hay un Pulse Runner activo con la identidad QA configurada.', [...result.busyRunnerIds, ...result.unavailableRunnerIds]);
         return;
       }
       runner = result.runner;
@@ -161,14 +162,14 @@ export async function dispatchPendingQa(issueId: string) {
       const runnerCandidates = qaCandidates.filter((item) => !!item.data().runnerId);
       for (const candidate of runnerCandidates) {
         const result = await findProjectQaRunner(db, { ...candidate.data(), id: candidate.id }, workspaceId, reviewRepos);
-        if (!result.runner) { runnerProblems.push(...result.problems); busyRunnerIds.push(...result.busyRunnerIds); continue; }
+        if (!result.runner) { runnerProblems.push(...result.problems); busyRunnerIds.push(...result.busyRunnerIds); unavailableRunnerIds.push(...result.unavailableRunnerIds); continue; }
         qaDoc = candidate;
         runner = result.runner;
         break;
       }
       // Ningún candidato puede ejecutar QA sin un Runner disponible.
       if (!qaDoc && runnerCandidates.length > 0) {
-        await recordDispatchError(busyRunnerIds.length ? 'QA pendiente: el Runner está ocupado; se iniciará automáticamente cuando haya capacidad.' : `El QA Runner del proyecto no está disponible para '${repoFullName}'. ${[...new Set(runnerProblems)].join(' ') || 'Revisá su identidad y conexión.'} No se enviará el issue a GitHub Actions.`, busyRunnerIds);
+        await recordDispatchError(busyRunnerIds.length ? 'QA pendiente: el Runner está ocupado; se iniciará automáticamente cuando haya capacidad.' : unavailableRunnerIds.length ? availabilityWait : `El QA Runner del proyecto no está disponible para '${repoFullName}'. ${[...new Set(runnerProblems)].join(' ') || 'Revisá su identidad y conexión.'} No se enviará el issue a GitHub Actions.`, [...busyRunnerIds, ...unavailableRunnerIds]);
         return;
       }
     }
@@ -185,13 +186,17 @@ export async function dispatchPendingQa(issueId: string) {
       // `runner` se preparó al elegir el candidato y se revalida justo antes
       // de encolar para evitar enviar un job a un Runner que cambió de estado.
       const runnerSnap = await db.collection('runners').doc(runnerId).get();
-      if (!runnerSnap.exists || runnerSnap.data()!.workspaceId !== workspaceId || !isRunnerAvailable(runnerSnap.data()!)) {
+      if (!runnerSnap.exists || runnerSnap.data()!.workspaceId !== workspaceId) {
         await recordDispatchError('El Runner QA no está disponible o no cubre todos los repos. Corregí su configuración y volvé a despachar QA.');
         return;
       }
       runner = runnerSnap.data()!;
       const preflight = runnerPreflight({ ...qaAgent, id: qaAgentId, runnerId }, { ...runner, id: runnerId }, workspaceId, reviewRepos, 'review', Date.now(), true);
-      if (!preflight.ready) { await recordDispatchError(preflight.problems.map((problem) => `${problem.message} ${problem.action}`).join(' ')); return; }
+      if (!preflight.ready) {
+        const transient = isTransientRunnerPreflight(preflight, runner);
+        await recordDispatchError(transient ? availabilityWait : preflight.problems.map((problem) => `${problem.message} ${problem.action}`).join(' '), transient ? [runnerId] : []);
+        return;
+      }
       try {
         await assertRunnerCapacity(db, runnerId, runner.maxConcurrentJobs || 1);
       } catch {
@@ -325,7 +330,7 @@ export async function dispatchPendingQa(issueId: string) {
       } catch (error) {
         if (error instanceof RunnerDispatchError && error.silent) return;
         await recordDispatchError(error instanceof RunnerDispatchError && error.retryable
-          ? 'QA pendiente: el Runner está ocupado; se iniciará automáticamente cuando haya capacidad.'
+          ? error.stage === 'preflight' ? availabilityWait : 'QA pendiente: el Runner está ocupado; se iniciará automáticamente cuando haya capacidad.'
           : error instanceof RunnerDispatchError ? error.reasons.join(' ') : 'No se pudo emitir QA. Revisá permisos, presupuesto y preparación del Runner.',
           error instanceof RunnerDispatchError && error.retryable ? [runnerId] : []);
       }

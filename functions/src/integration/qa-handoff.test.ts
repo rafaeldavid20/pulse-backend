@@ -13,7 +13,11 @@ if (!getApps().length) initializeApp({ projectId: 'pulse-integration' });
 const db = getFirestore();
 runnerJobSigningPrivateKey.value = () => generateKeyPairSync('ed25519').privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
 let headSha = 'a'.repeat(40);
-mock.method(github, 'getPullRequestOrigin', async (_: string, repo: string) => ({ headSha, headRef: 'pul/test', headRepoFullName: repo, baseRepoFullName: repo, state: 'open', merged: false, draft: false }));
+let beforeEnqueue: (() => Promise<void>) | undefined;
+mock.method(github, 'getPullRequestOrigin', async (_: string, repo: string) => {
+  await beforeEnqueue?.();
+  return { headSha, headRef: 'pul/test', headRepoFullName: repo, baseRepoFullName: repo, state: 'open', merged: false, draft: false };
+});
 
 async function fixture(identifier = 'TES-341', qaMode = 'shadow') {
   const suffix = randomBytes(6).toString('hex');
@@ -102,4 +106,56 @@ test('waiting handoff uses changed PR set and new live SHA', async () => {
   assert.equal((await qaJobs(f)).length, 1);
   const context = JSON.parse((await current(f)).review.dispatchedContext);
   assert.deepEqual(context[2], [['owner/repo', 2, headSha]]);
+});
+
+for (const selected of [false, true]) {
+  for (const outage of ['offline', 'heartbeat', 'readiness']) {
+    test(`durable QA survives ${outage} and recovers once (${selected ? 'selected' : 'automatic'} QA)`, async () => {
+      const f = await fixture();
+      if (selected) await db.collection('issues').doc(f.id).update({ qaAssigneeId: f.qa });
+      await dispatchPendingQa(f.id);
+      const stale = new Date(Date.now() - 180_000).toISOString();
+      await db.collection('runners').doc(f.runner).update(outage === 'offline' ? { status: 'offline' }
+        : outage === 'heartbeat' ? { lastHeartbeatAt: stale } : { readinessCheckedAt: stale });
+      await retryPendingQa(f.ws);
+      // Completion while unavailable must also preserve the recovery signal.
+      await complete(f);
+      await retryPendingQa(f.ws);
+      const waiting = await current(f);
+      assert.deepEqual(waiting.review.dispatchPending.runnerIds, [f.runner]);
+      assert.match(waiting.review.dispatchError, /automáticamente/);
+      assert.doesNotMatch(waiting.review.dispatchError, /login|install|diagnose|volvé a despachar/);
+      assert.equal(waiting.review.attempt, undefined);
+      assert.equal((await qaJobs(f)).length, 0); assert.equal(await spent(f), 0);
+      const now = new Date().toISOString();
+      await db.collection('runners').doc(f.runner).update({ status: 'online', lastHeartbeatAt: now, readinessCheckedAt: now });
+      await Promise.all([retryPendingQa(f.ws), retryPendingQa(f.ws, f.runner)]);
+      assert.equal((await qaJobs(f)).length, 1); assert.equal(await spent(f), 1);
+      assert.equal((await current(f)).review.dispatchPending, undefined);
+    });
+  }
+}
+for (const failure of ['revoked', 'session']) {
+  test(`permanent ${failure} failure clears pending even with stale readiness`, async () => {
+    const f = await fixture(); await dispatchPendingQa(f.id);
+    await db.collection('runners').doc(f.runner).update({ readinessCheckedAt: '2000-01-01T00:00:00.000Z',
+      ...(failure === 'revoked' ? { revokedAt: new Date().toISOString() } : { 'readiness.providers.codex.session': false }) });
+    await retryPendingQa(f.ws);
+    assert.equal((await current(f)).review.dispatchPending, undefined);
+    await complete(f);
+    assert.equal((await qaJobs(f)).length, 0); assert.equal(await spent(f), 0);
+  });
+}
+
+test('disconnect after PR lookup remains pending at transactional enqueue preflight', async () => {
+  const f = await fixture();
+  await db.collection('runner_jobs').doc(f.devJob).update({ status: 'completed' });
+  beforeEnqueue = async () => { await db.collection('runners').doc(f.runner).update({ status: 'offline' }); };
+  try { await dispatchPendingQa(f.id); } finally { beforeEnqueue = undefined; }
+  assert.deepEqual((await current(f)).review.dispatchPending.runnerIds, [f.runner]);
+  assert.match((await current(f)).review.dispatchError, /desconectado/);
+  assert.equal((await qaJobs(f)).length, 0); assert.equal(await spent(f), 0);
+  await db.collection('runners').doc(f.runner).update({ status: 'online' });
+  await Promise.all([retryPendingQa(f.ws), retryPendingQa(f.ws)]);
+  assert.equal((await qaJobs(f)).length, 1); assert.equal(await spent(f), 1);
 });

@@ -2,7 +2,7 @@ import { FieldValue, Firestore } from 'firebase-admin/firestore';
 import { sign } from 'crypto';
 import { nanoid } from 'nanoid';
 import { publicationPayload, PublicationTarget, validBranch } from './runner-publication';
-import { runnerPreflight } from './runner-preflight';
+import { isTransientRunnerPreflight, runnerPreflight } from './runner-preflight';
 import { currentRunnerProjectAccess } from './project-repos';
 import { DISPATCH_COOLDOWN_MS, RunnerDispatchError } from './dispatch-failure';
 import { checkWorkspaceDispatchBudget, todayKey } from './dispatch-counter';
@@ -115,7 +115,7 @@ export async function enqueueRunnerJob(
     }
     const runner = await transaction.get(db.collection('runners').doc(job.runnerId));
     const preflight = runnerPreflight({ ...agent.data(), id: job.agentId }, runner.exists ? { ...runner.data(), id: job.runnerId } : null, job.workspaceId, contextRepos, job.mode, Date.now(), true, !!input.recoveryOf);
-    if (!preflight.ready) throw new RunnerDispatchError('preflight', preflight.problems.map((problem) => `${problem.message} ${problem.action}`));
+    if (!preflight.ready) throw new RunnerDispatchError('preflight', preflight.problems.map((problem) => `${problem.message} ${problem.action}`), false, job.mode === 'review' && isTransientRunnerPreflight(preflight, runner.data()));
     const active = await transaction.get(db.collection('runner_jobs').where('runnerId', '==', job.runnerId));
     const activeJobs = active.docs.filter((snap) => ['pending', 'delivered'].includes(snap.data().status) && (!Number.isFinite(Date.parse(snap.data().expiresAt)) || Date.parse(snap.data().expiresAt) > Date.now()));
     if (reservation && activeJobs.some((snap) => snap.data().issueId === job.issueId && snap.data().agentId === job.agentId)) {

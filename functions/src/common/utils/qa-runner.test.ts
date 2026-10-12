@@ -66,3 +66,27 @@ test('same-owner Runner lacking this QA identity contributes no setup or login a
   assert.deepEqual(result.problems, []);
   assert.deepEqual(result.busyRunnerIds, []);
 });
+
+for (const outage of ['offline', 'heartbeat', 'readiness']) {
+  test(`prepared QA with temporary ${outage} failure remains retryable`, async () => {
+    const runner = readyRunner('runner-old', 'owner', [{ agentId: 'qa-codex', kind: 'codex', role: 'qa' }],
+      outage === 'offline' ? { status: 'offline' } : outage === 'heartbeat'
+        ? { lastHeartbeatAt: new Date(now - 180_000).toISOString() }
+        : { readinessCheckedAt: new Date(now - 180_000).toISOString() });
+    const result = await findProjectQaRunner(database([runner]), qaAgent, 'ws', ['owner/repo'], now);
+    assert.equal(result.runner, undefined);
+    assert.deepEqual(result.unavailableRunnerIds, ['runner-old']);
+    assert.deepEqual(result.problems, []);
+  });
+}
+test('revocation and invalid session remain permanent even when readiness is stale', async () => {
+  for (const failure of ['revoked', 'session']) {
+    const runner = readyRunner('runner-old', 'owner', [{ agentId: 'qa-codex', kind: 'codex', role: 'qa' }],
+      { readinessCheckedAt: new Date(now - 180_000).toISOString() });
+    if (failure === 'revoked') Object.assign(runner, { revokedAt: new Date(now).toISOString() });
+    else runner.readiness.providers.codex.session = false;
+    const result = await findProjectQaRunner(database([runner]), qaAgent, 'ws', ['owner/repo'], now);
+    assert.deepEqual(result.unavailableRunnerIds, []);
+    assert.ok(result.problems.length);
+  }
+});
