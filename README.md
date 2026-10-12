@@ -73,7 +73,11 @@ quemar créditos indefinidamente:
   arriba, un loop atascado en un solo issue nunca dispara el circuit breaker
   diario del workspace.
 - **`workspaces.update`** (Platform Action, `minRole: 'admin'`): setea los
-  cinco campos de arriba. **`workspaces.getAgentBudget`**: resumen de hoy
+  cinco campos de arriba y el `name` del workspace. El nombre se recorta y
+  debe tener entre 1 y 100 caracteres, sin caracteres de control; `slug` e
+  identidad no son editables. Un payload sin campos editables se rechaza.
+  Las actualizaciones directas de workspaces desde el cliente están bloqueadas
+  por las reglas de Firestore. **`workspaces.getAgentBudget`**: resumen de hoy
   ("3/5 dispatches · USD 4,20/10", desglosado por rol dev/qa) para el botón
   "Pausar agentes" y la sección de guardarraíles en Settings — necesario
   porque `agent_dispatch_counters`/`agent_runs` son Admin-SDK-only. Ninguna de

@@ -4,12 +4,13 @@ import { PlatformActionRequest } from '../../common/platform-actions/interfaces'
 import { cleanUndefined } from '../../common/utils/clean';
 
 /**
- * Guardarraíles de costo y seguridad configurables por workspace (D8/TES-153):
+ * Nombre y guardarraíles de costo y seguridad configurables por workspace (D8/TES-153):
  * el kill switch (`agentsPaused`), el tope diario de dispatches y los techos
  * de gasto/runs por día e issue. Lo que muestra el botón "Pausar agentes" del
  * command palette y la sección de Settings.
  */
 const WORKSPACE_WRITABLE_FIELDS = [
+  'name',
   'agentsPaused',
   'dailyDispatchLimit',
   'dailyCostCapUsd',
@@ -53,6 +54,12 @@ export class UpdateWorkspaceAction extends PlatformActionHandler {
     if (data.agentsPaused !== undefined && typeof data.agentsPaused !== 'boolean') {
       throw new Error('agentsPaused debe ser booleano.');
     }
+    if (data.name !== undefined && (
+      typeof data.name !== 'string' || !data.name.trim() || data.name.trim().length > 100 ||
+      /[\u0000-\u001f\u007f]/.test(data.name)
+    )) {
+      throw new Error('El nombre del workspace debe tener entre 1 y 100 caracteres y no contener caracteres de control.');
+    }
     for (const field of POSITIVE_INT_FIELDS) {
       const value = data[field];
       if (value !== undefined && (typeof value !== 'number' || !Number.isInteger(value) || value <= 0)) {
@@ -69,6 +76,10 @@ export class UpdateWorkspaceAction extends PlatformActionHandler {
     const updates: Record<string, any> = {};
     for (const field of WORKSPACE_WRITABLE_FIELDS) {
       if (data[field] !== undefined) updates[field] = data[field];
+    }
+    if (updates.name !== undefined) updates.name = updates.name.trim();
+    if (Object.keys(updates).length === 0) {
+      throw new Error('Indicá al menos un campo editable del workspace.');
     }
 
     await workspaceRef.update(cleanUndefined(updates));
