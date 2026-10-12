@@ -32,7 +32,7 @@ export function signRunnerJob(job: Omit<RunnerJob, 'signature'>, privateKey: str
   return base64url(sign(null, Buffer.from(runnerJobPayload(job)), privateKey));
 }
 
-export type DispatchReservation = { mode: 'review'; attempt: number; refs: string; requestedBy?: string } | boolean | { mode: 'handoff'; requestedAt: string } | { mode: 'rework'; attempt: number; requestedBy?: string; comment?: string };
+export type DispatchReservation = { mode: 'review'; attempt: number; refs: string; context?: string; requestedBy?: string } | boolean | { mode: 'handoff'; requestedAt: string } | { mode: 'rework'; attempt: number; requestedBy?: string; comment?: string };
 
 /** Crea un trabajo de vida corta. El documento no contiene ninguna credencial de proveedor. */
 export async function enqueueRunnerJob(
@@ -98,18 +98,20 @@ export async function enqueueRunnerJob(
     const reviewRequest = reservation && reservation !== true && reservation.mode === 'review' ? reservation : undefined;
     if (reviewRequest) {
       if (job.mode !== 'review' || agent.data()!.role !== 'qa' || !agent.data()!.enabled) throw new Error('El agente QA ya no está habilitado.');
+      if (!reviewRequest.requestedBy && reviewRequest.context && issue?.review?.dispatchedContext === reviewRequest.context) throw new RunnerDispatchError('enqueue', ['Este contexto QA ya fue despachado.'], true);
       assertReviewRequest(issue, reviewRequest.attempt, reviewRequest.refs, !!reviewRequest.requestedBy, agent.data()!.maxReviewAttempts ?? 2);
       if (reviewRequest.requestedBy) {
         const member = await transaction.get(db.collection('members').doc(`${job.workspaceId}_${reviewRequest.requestedBy}`));
         const callerAgent = await transaction.get(db.collection('agents').doc(reviewRequest.requestedBy));
         if (!member.exists || member.data()?.isAgent || callerAgent.exists) throw new Error('Solo un miembro humano del workspace puede solicitar una revisión manual.');
       }
+      if (!reviewRequest.requestedBy && !issue!.qaAssigneeId && !agent.data()!.autonomousMode) throw new RunnerDispatchError('preflight', ['El QA ya no tiene habilitado el modo autónomo.']);
       if ((issue!.execution?.agentId || issue!.assigneeId) === job.agentId || (issue!.qaAssigneeId && issue!.qaAssigneeId !== job.agentId)) throw new Error('Cambió el agente QA asignado. Revisá la asignación y volvé a solicitar QA.');
       if (!reviewRequest.requestedBy && issue!.review?.dispatchedTo === job.agentId && Date.now() - Date.parse(issue!.review.dispatchedAt || '') < DISPATCH_COOLDOWN_MS) throw new RunnerDispatchError('enqueue', ['La issue ya tiene un dispatch QA reciente.'], true);
       const issueBudget = await checkIssueRunBudget(db, job.workspaceId, job.issueId, transaction);
       if (!issueBudget.withinBudget) throw new Error('La issue alcanzó su límite de ejecuciones o costo. Revisá el presupuesto antes de solicitar QA.');
       const issueJobs = await transaction.get(db.collection('runner_jobs').where('issueId', '==', job.issueId));
-      if (issueJobs.docs.some(snap => ['pending', 'delivered'].includes(snap.data().status) && (!Number.isFinite(Date.parse(snap.data().expiresAt)) || Date.parse(snap.data().expiresAt) > Date.now()))) throw new Error('La issue ya tiene un job activo. Esperá a que termine antes de solicitar QA.');
+      if (issueJobs.docs.some(snap => ['pending', 'delivered'].includes(snap.data().status) && (!Number.isFinite(Date.parse(snap.data().expiresAt)) || Date.parse(snap.data().expiresAt) > Date.now()))) throw new RunnerDispatchError('enqueue', ['La issue espera a que termine el job activo.'], false, true);
     }
     const runner = await transaction.get(db.collection('runners').doc(job.runnerId));
     const preflight = runnerPreflight({ ...agent.data(), id: job.agentId }, runner.exists ? { ...runner.data(), id: job.runnerId } : null, job.workspaceId, contextRepos, job.mode, Date.now(), true, !!input.recoveryOf);
@@ -120,7 +122,7 @@ export async function enqueueRunnerJob(
       throw new RunnerDispatchError('enqueue', ['La issue ya tiene un job activo.'], true);
     }
     const count = activeJobs.length;
-    if (count >= (runner.data()!.maxConcurrentJobs || 1)) throw new RunnerDispatchError('enqueue', ['El Runner ya alcanzó su capacidad de jobs activos. Esperá a que termine el trabajo activo y reintentá.']);
+    if (count >= (runner.data()!.maxConcurrentJobs || 1)) throw new RunnerDispatchError('enqueue', ['El Runner ya alcanzó su capacidad de jobs activos.'], false, true);
     const access = await currentRunnerProjectAccess(db, job, transaction);
     if (!access) throw new RunnerDispatchError('preflight', ['El proyecto del issue debe declarar repos autorizados en este workspace; el contexto de revisión debe incluir todos los repos actuales del proyecto y sus PRs.']);
     if (reservation && reservation !== true && reservation.mode === 'rework' && !input.recoveryOf) {
@@ -175,7 +177,8 @@ export async function enqueueRunnerJob(
       if (reviewRequest) {
         modeMarks = {
           'review.dispatchedAt': issuedAt, 'review.dispatchedTo': job.agentId,
-          'review.dispatchError': FieldValue.delete(), 'review.queuedJobId': job.id,
+          ...(reviewRequest.context ? { 'review.dispatchedContext': reviewRequest.context } : {}),
+          'review.dispatchError': FieldValue.delete(), 'review.dispatchPending': FieldValue.delete(), 'review.queuedJobId': job.id,
           ...(reviewRequest.requestedBy ? { 'review.manualRequest': {
             jobId: job.id, requestedBy: reviewRequest.requestedBy,
             requestedAt: issuedAt, expiresAt, attempt: reviewRequest.attempt + 1,

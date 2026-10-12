@@ -42,11 +42,27 @@ test('a matching identity on another member Runner is not borrowed', async () =>
   assert.equal(result.runner, undefined);
 });
 
-test('a same-owner Runner without the QA identity returns actionable preflight failures', async () => {
-  const runner = readyRunner('runner-dev', 'owner', [{ agentId: 'codex-runner', kind: 'codex', role: 'dev' }]);
+test('a bound Runner without the QA identity returns actionable preflight failures', async () => {
+  const runner = readyRunner('runner-old', 'owner', [{ agentId: 'codex-runner', kind: 'codex', role: 'dev' }]);
 
   const result = await findProjectQaRunner(database([runner]), qaAgent, 'ws', ['owner/app'], now);
 
   assert.equal(result.runner, undefined);
   assert.match(result.problems.join(' '), /identidad local/);
+});
+
+test('prepared busy QA reports capacity separately from unrelated shared Runner login advice', async () => {
+  const bound = readyRunner('runner-old', 'owner', [{ agentId: 'qa-codex', kind: 'codex', role: 'qa' }]);
+  const unrelated = { id: 'unrelated', workspaceId: 'ws', ownerMemberId: 'owner', status: 'offline' };
+  const result = await findProjectQaRunner(database([bound, unrelated], [{ runnerId: 'runner-old', status: 'delivered', expiresAt: new Date(now + 60_000).toISOString() }]), qaAgent, 'ws', ['owner/repo'], now);
+  assert.equal(result.runner, undefined);
+  assert.deepEqual(result.busyRunnerIds, ['runner-old']);
+  assert.deepEqual(result.problems, []);
+});
+test('same-owner Runner lacking this QA identity contributes no setup or login advice', async () => {
+  const unrelated = { id: 'unrelated', workspaceId: 'ws', ownerMemberId: 'owner', status: 'offline' };
+  const result = await findProjectQaRunner(database([unrelated]), qaAgent, 'ws', ['owner/repo'], now);
+  assert.equal(result.runner, undefined);
+  assert.deepEqual(result.problems, []);
+  assert.deepEqual(result.busyRunnerIds, []);
 });

@@ -146,6 +146,9 @@ export async function getPullRequestHeadSha(
 }
 
 export interface PullRequestOrigin {
+  state?: 'open' | 'closed';
+  merged?: boolean;
+  draft?: boolean;
   headSha: string;
   headRef: string;
   /** `null` si el fork de origen ya se borró — se trata igual que un fork (D18). */
@@ -169,10 +172,12 @@ export async function getPullRequestOrigin(
     installationId,
     `/repos/${repoFullName}/pulls/${prNumber}`
   )) as {
+    state: 'open' | 'closed'; merged: boolean; draft: boolean;
     head: { sha: string; ref: string; repo: { full_name: string } | null };
     base: { repo: { full_name: string } };
   };
   return {
+    state: body.state, merged: body.merged, draft: body.draft,
     headSha: body.head.sha,
     headRef: body.head.ref,
     headRepoFullName: body.head.repo?.full_name ?? null,
