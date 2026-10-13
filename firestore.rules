@@ -34,7 +34,9 @@ service cloud.firestore {
     
     // Workspace documents
     match /workspaces/{workspaceId} {
-      allow read, write: if isAuthenticated();
+      allow read, create, delete: if isAuthenticated();
+      // Renames and guardrails must go through workspaces.update (admin/owner).
+      allow update: if false;
     }
     
     // Workspace members collection
