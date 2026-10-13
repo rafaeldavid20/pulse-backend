@@ -19,7 +19,7 @@ export { githubSetup, githubCallback } from './github/install-flow';
 export { githubWebhook } from './github/webhook';
 export { salesforceCallback } from './salesforce/oauth-flow';
 export { agentDispatchTrigger } from './triggers/agent-dispatch';
-export { qaDispatchTrigger } from './triggers/qa-dispatch';
+export { qaDispatchTrigger, qaCapacityTrigger, qaPendingScheduled } from './triggers/qa-dispatch';
 export { issueNotificationsTrigger } from './triggers/notify-on-issue-write';
 export { autoCreateCyclesScheduled } from './scheduled/auto-create-cycles';
 export { dueSoonRemindersScheduled } from './scheduled/notify-due-soon';

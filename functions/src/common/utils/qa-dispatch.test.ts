@@ -9,6 +9,8 @@ let issue: Record<string, any>;
 let agents: Record<string, any>[];
 let dispatches: string[];
 let runnerJobs: Record<string, any>[];
+let activeJobs: Record<string, any>[] = [];
+let liveOrigin: Record<string, any> = {};
 let runners: Record<string, any> = {};
 let project: Record<string, any> = { repoFullNames: ['owner/repo', 'owner/backend', 'owner/runner'] };
 const deleted = Symbol('delete');
@@ -33,6 +35,8 @@ const db = {
         const rows = name === 'agents'
           ? agents.filter((agent) => filters.every(([field, value]) => agent[field] === value))
           : name === 'runners' ? Object.values(runners).filter((runner: any) => filters.every(([field, value]) => runner[field] === value))
+          : name === 'runner_jobs' ? activeJobs.filter(job => filters.every(([field, value]) => job[field] === value))
+          : name === 'issues' ? [issue].filter(row => filters.every(([field, value]) => row[field] === value))
           : name === 'github_installations' ? [{ installationId: 1, repositoryFullNames: ['owner/repo', 'owner/backend', 'owner/runner'] }] : [];
         return { empty: rows.length === 0, docs: rows.map((row) => snapshot(row, row.id)) };
       },
@@ -52,10 +56,10 @@ const db = {
 Module._load = function (name: string, ...args: any[]) {
   if (name === 'firebase-admin/firestore') return { getFirestore: () => db, FieldValue: { delete: () => deleted } };
   if (name.endsWith('/github/client')) return {
-    getPullRequestOrigin: async () => ({ headRepoFullName: 'owner/repo', headRef: 'pul/test', headSha: 'new' }),
+    getPullRequestOrigin: async () => ({ headRepoFullName: 'owner/repo', headRef: 'pul/test', headSha: 'new', ...liveOrigin }),
     dispatchRepositoryEvent: async (_install: any, _repo: any, _event: any, payload: any) => { dispatches.push(payload.agentId); },
   };
-  if (name.endsWith('/common/utils/runner-jobs')) return { enqueueRunnerJob: async (_db: any, input: any) => { update({ 'review.dispatchedTo': input.agentId, 'review.dispatchedAt': new Date().toISOString(), 'review.dispatchError': deleted }); dispatches.push(input.agentId); runnerJobs.push(input); return { ...input, id: 'job-test' }; } };
+  if (name.endsWith('/common/utils/runner-jobs')) return { enqueueRunnerJob: async (_db: any, input: any) => { update({ 'review.dispatchedTo': input.agentId, 'review.dispatchedAt': new Date().toISOString(), 'review.dispatchError': deleted, 'review.dispatchPending': deleted }); dispatches.push(input.agentId); runnerJobs.push(input); return { ...input, id: 'job-test' }; } };
   if (name.endsWith('/common/utils/repo-resolution')) return { resolveIssueRepo: async () => ({ repoFullName: 'owner/repo' }) };
   if (name.endsWith('/common/utils/dispatch-counter')) return { checkWorkspaceDispatchBudget: async () => ({ allowed: true }), todayKey: () => '2026-10-01' };
   if (name.endsWith('/common/utils/issue-run-budget')) return { checkIssueRunBudget: async () => ({ withinBudget: true }) };
@@ -64,7 +68,7 @@ Module._load = function (name: string, ...args: any[]) {
   };
   return originalLoad.call(this, name, ...args);
 };
-const { qaDispatchTrigger } = require('../../triggers/qa-dispatch');
+const { qaDispatchTrigger, qaCapacityTrigger, retryPendingQa } = require('../../triggers/qa-dispatch');
 const { ReviewsRerunAction } = require('../../actions/reviews/rerun-review');
 Module._load = originalLoad;
 
@@ -76,7 +80,7 @@ const qa = (id: string, extra: Record<string, any> = {}) => {
 function reset() {
   issue = { workspaceId: 'ws', identifier: 'TES-303', status: 'in_review', assigneeId: 'human', execution: { agentId: 'dev' },
     git: { repoFullName: 'owner/repo', prNumber: 1, prState: 'open', branch: 'pul/test' } };
-  dispatches = []; runnerJobs = []; runners = {}; project = { repoFullNames: ['owner/repo', 'owner/backend', 'owner/runner'] };
+  dispatches = []; runnerJobs = []; activeJobs = []; liveOrigin = {}; runners = {}; project = { repoFullNames: ['owner/repo', 'owner/backend', 'owner/runner'] };
 }
 const run = () => qaDispatchTrigger.run({ params: { issueId: 'issue' }, data: { before: snapshot({ status: 'in_progress' }), after: snapshot(structuredClone(issue)) } });
 
@@ -213,3 +217,36 @@ for (const manual of [false, true]) {
     assert.deepEqual(dispatches, []); assert.equal(issue.review.dispatchedAt, undefined);
   });
 }
+
+for (const regression of ['TES-340', 'TES-341']) {
+  test(`${regression}: shared Runner publication completes and wakes durable QA`, async () => {
+    reset(); issue.identifier = regression; agents = [qa('shared')];
+    activeJobs = [{ id: 'dev-publication', runnerId: 'runner-shared', status: 'delivered', expiresAt: new Date(Date.now() + 60_000).toISOString() }];
+    await run(); await run();
+    assert.equal(dispatches.length, 0);
+    assert.equal(issue.review.attempt, undefined);
+    assert.equal(issue.review.dispatchedAt, undefined);
+    assert.deepEqual(issue.review.dispatchPending, { reason: 'capacity', runnerIds: ['runner-shared'] });
+    assert.doesNotMatch(issue.review.dispatchError, /login|install|volvé a despachar/);
+    const before = { ...activeJobs[0], workspaceId: 'ws' }; activeJobs = [];
+    await qaCapacityTrigger.run({ data: { before: snapshot(before), after: snapshot({ ...before, status: 'completed' }) } });
+    assert.deepEqual(dispatches, ['shared']);
+    assert.equal(issue.review.dispatchPending, undefined);
+    assert.equal(issue.review.dispatchError, undefined);
+  });
+}
+test('scheduled recovery skips canceled issues and non-reviewable PRs', async () => {
+  for (const change of ['cancel', 'closed', 'draft']) {
+    reset(); agents = [qa('shared')];
+    activeJobs = [{ runnerId: 'runner-shared', status: 'delivered' }];
+    await run(); activeJobs = [];
+    if (change === 'cancel') issue.status = 'canceled'; else issue.git.prState = change;
+    await retryPendingQa(); assert.deepEqual(dispatches, []);
+  }
+});
+test('live closed PR blocks QA before its webhook arrives', async () => {
+  reset(); agents = [qa('shared')]; liveOrigin = { state: 'closed', merged: false };
+  await run(); assert.deepEqual(dispatches, []);
+  assert.match(issue.review.dispatchError, /cerrado/);
+  assert.equal(issue.review.dispatchPending, undefined);
+});

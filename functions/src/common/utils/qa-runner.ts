@@ -1,4 +1,4 @@
-import { runnerPreflight } from './runner-preflight';
+import { isTransientRunnerPreflight, runnerPreflight } from './runner-preflight';
 
 /**
  * Resolve a QA agent to its configured Runner, or to another Runner owned by
@@ -19,6 +19,8 @@ export async function findProjectQaRunner(
     runner.id !== agent.runnerId && !!agent.ownerMemberId && runner.ownerMemberId === agent.ownerMemberId,
   );
   const problems: string[] = [];
+  const busyRunnerIds: string[] = [];
+  const unavailableRunnerIds: string[] = [];
 
   for (const runner of [...bound, ...shared]) {
     const preflight = runnerPreflight(
@@ -31,7 +33,11 @@ export async function findProjectQaRunner(
       true,
     );
     if (!preflight.ready) {
-      problems.push(...preflight.problems.map((problem) => `${problem.message} ${problem.action}`));
+      // Unrelated shared Runners are not configuration advice for this QA.
+      if (runner.id === agent.runnerId || runner.readiness?.identities?.some((identity: any) => identity.agentId === agent.id)) {
+        if (isTransientRunnerPreflight(preflight, runner)) unavailableRunnerIds.push(runner.id);
+        else problems.push(...preflight.problems.map((problem) => `${problem.message} ${problem.action}`));
+      }
       continue;
     }
 
@@ -43,12 +49,12 @@ export async function findProjectQaRunner(
       return !Number.isFinite(expiresAt) || expiresAt > now;
     }).length;
     if (activeJobs >= (runner.maxConcurrentJobs || 1)) {
-      problems.push('El Pulse Runner QA ya alcanzó su límite de jobs activos. Esperá a que termine otro job y volvé a despachar.');
+      busyRunnerIds.push(runner.id);
       continue;
     }
 
-    return { runner, problems: [] as string[] };
+    return { runner, problems: [] as string[], busyRunnerIds: [] as string[], unavailableRunnerIds: [] as string[] };
   }
 
-  return { runner: undefined, problems: Array.from(new Set(problems)) };
+  return { runner: undefined, problems: Array.from(new Set(problems)), busyRunnerIds, unavailableRunnerIds };
 }

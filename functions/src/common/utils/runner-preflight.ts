@@ -73,6 +73,12 @@ export function runnerPreflight(agent: any, runner: any, workspaceId: string, re
   return { ready: problems.length === 0, problems, githubApps: readiness?.githubApps || [], identity: identity || null, checkedAt: runner?.readinessCheckedAt || null };
 }
 
+/** Freshness/connection can recover automatically; configuration failures cannot. */
+export function isTransientRunnerPreflight(check: ReturnType<typeof runnerPreflight>, runner: any): boolean {
+  return !!runner?.readiness && !runner.revokedAt && check.problems.length > 0 &&
+    check.problems.every(problem => ['runner', 'readiness'].includes(problem.code));
+}
+
 /** Persist preparation failures before reserving a task, rework or handoff. */
 export async function runnerPreflightForDispatch(db: FirebaseFirestore.Firestore, issueId: string, agent: any, runner: any, workspaceId: string, repos: string[], mode: string) {
   const check = runnerPreflight(agent, runner, workspaceId, repos, mode, Date.now(), true);

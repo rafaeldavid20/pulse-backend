@@ -42,11 +42,51 @@ test('a matching identity on another member Runner is not borrowed', async () =>
   assert.equal(result.runner, undefined);
 });
 
-test('a same-owner Runner without the QA identity returns actionable preflight failures', async () => {
-  const runner = readyRunner('runner-dev', 'owner', [{ agentId: 'codex-runner', kind: 'codex', role: 'dev' }]);
+test('a bound Runner without the QA identity returns actionable preflight failures', async () => {
+  const runner = readyRunner('runner-old', 'owner', [{ agentId: 'codex-runner', kind: 'codex', role: 'dev' }]);
 
   const result = await findProjectQaRunner(database([runner]), qaAgent, 'ws', ['owner/app'], now);
 
   assert.equal(result.runner, undefined);
   assert.match(result.problems.join(' '), /identidad local/);
+});
+
+test('prepared busy QA reports capacity separately from unrelated shared Runner login advice', async () => {
+  const bound = readyRunner('runner-old', 'owner', [{ agentId: 'qa-codex', kind: 'codex', role: 'qa' }]);
+  const unrelated = { id: 'unrelated', workspaceId: 'ws', ownerMemberId: 'owner', status: 'offline' };
+  const result = await findProjectQaRunner(database([bound, unrelated], [{ runnerId: 'runner-old', status: 'delivered', expiresAt: new Date(now + 60_000).toISOString() }]), qaAgent, 'ws', ['owner/repo'], now);
+  assert.equal(result.runner, undefined);
+  assert.deepEqual(result.busyRunnerIds, ['runner-old']);
+  assert.deepEqual(result.problems, []);
+});
+test('same-owner Runner lacking this QA identity contributes no setup or login advice', async () => {
+  const unrelated = { id: 'unrelated', workspaceId: 'ws', ownerMemberId: 'owner', status: 'offline' };
+  const result = await findProjectQaRunner(database([unrelated]), qaAgent, 'ws', ['owner/repo'], now);
+  assert.equal(result.runner, undefined);
+  assert.deepEqual(result.problems, []);
+  assert.deepEqual(result.busyRunnerIds, []);
+});
+
+for (const outage of ['offline', 'heartbeat', 'readiness']) {
+  test(`prepared QA with temporary ${outage} failure remains retryable`, async () => {
+    const runner = readyRunner('runner-old', 'owner', [{ agentId: 'qa-codex', kind: 'codex', role: 'qa' }],
+      outage === 'offline' ? { status: 'offline' } : outage === 'heartbeat'
+        ? { lastHeartbeatAt: new Date(now - 180_000).toISOString() }
+        : { readinessCheckedAt: new Date(now - 180_000).toISOString() });
+    const result = await findProjectQaRunner(database([runner]), qaAgent, 'ws', ['owner/repo'], now);
+    assert.equal(result.runner, undefined);
+    assert.deepEqual(result.unavailableRunnerIds, ['runner-old']);
+    assert.deepEqual(result.problems, []);
+  });
+}
+test('revocation and invalid session remain permanent even when readiness is stale', async () => {
+  for (const failure of ['revoked', 'session']) {
+    const runner = readyRunner('runner-old', 'owner', [{ agentId: 'qa-codex', kind: 'codex', role: 'qa' }],
+      { readinessCheckedAt: new Date(now - 180_000).toISOString() });
+    if (failure === 'revoked') Object.assign(runner, { revokedAt: new Date(now).toISOString() });
+    else runner.readiness.providers.codex.session = false;
+    const result = await findProjectQaRunner(database([runner]), qaAgent, 'ws', ['owner/repo'], now);
+    assert.deepEqual(result.unavailableRunnerIds, []);
+    assert.ok(result.problems.length);
+  }
 });

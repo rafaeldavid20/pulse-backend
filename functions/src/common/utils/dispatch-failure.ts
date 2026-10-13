@@ -11,7 +11,7 @@ export const DISPATCH_COOLDOWN_MS = 10 * 60 * 1000;
 
 /** Only trusted, fixed diagnostics belong in an issue; never exception text. */
 export class RunnerDispatchError extends Error {
-  constructor(public stage: Failure['stage'], public reasons: string[], public silent = false) {
+  constructor(public stage: Failure['stage'], public reasons: string[], public silent = false, public retryable = false) {
     super(reasons.join(' '));
   }
 }
