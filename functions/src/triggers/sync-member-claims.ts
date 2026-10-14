@@ -14,39 +14,44 @@ import { getAuth } from 'firebase-admin/auth';
  *
  * Skips agent members entirely: an agent's `userId` (e.g. `agent-claude`) is
  * not a real Firebase Auth uid — it never signs in, so `setCustomUserClaims`
- * would just throw "no user record found" for it.
+ * would just throw "no user record found" for it. Transient failures are
+ * re-delivered by the event retry policy instead of being acknowledged.
  */
 export const syncMemberClaimsTrigger = onDocumentWritten(
   {
     document: 'members/{memberId}',
     region: 'us-east4',
+    retry: true,
   },
   async (event) => {
-    try {
-      const before = event.data?.before.data();
-      const after = event.data?.after.data();
-      const member = after ?? before;
-      if (!member) return;
+    const before = event.data?.before.data();
+    const after = event.data?.after.data();
+    const member = after ?? before;
+    if (!member) return;
 
-      if (before?.isAgent || after?.isAgent) return;
+    if (before?.isAgent || after?.isAgent) return;
 
-      const userId: string | undefined = member.userId;
-      if (!userId) return;
+    const userId: string | undefined = member.userId;
+    if (!userId) return;
 
-      const db = getFirestore();
-      const snap = await db.collection('members').where('userId', '==', userId).get();
+    const db = getFirestore();
+    const snap = await db.collection('members').where('userId', '==', userId).get();
 
-      const ws: Record<string, string> = {};
-      for (const doc of snap.docs) {
-        const data = doc.data();
-        if (data.isAgent) continue;
-        if (data.workspaceId && data.role) ws[data.workspaceId] = data.role;
-      }
-
-      await getAuth().setCustomUserClaims(userId, { ws });
-      console.log(`[SyncMemberClaims] set claims for '${userId}': ${Object.keys(ws).length} workspace(s).`);
-    } catch (error) {
-      console.error('[SyncMemberClaims] error handling member write, will not retry:', error);
+    const ws: Record<string, string> = {};
+    for (const doc of snap.docs) {
+      const data = doc.data();
+      if (data.isAgent) continue;
+      if (data.workspaceId && data.role) ws[data.workspaceId] = data.role;
     }
+
+    try {
+      await getAuth().setCustomUserClaims(userId, { ws });
+    } catch (error) {
+      // Deleting an Auth account can leave membership cleanup events behind.
+      // Redelivery cannot recreate that user; other errors must retry.
+      if ((error as { code?: string }).code === 'auth/user-not-found') return;
+      throw error;
+    }
+    console.log(`[SyncMemberClaims] set claims for '${userId}': ${Object.keys(ws).length} workspace(s).`);
   }
 );
