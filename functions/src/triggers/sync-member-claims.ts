@@ -44,7 +44,14 @@ export const syncMemberClaimsTrigger = onDocumentWritten(
       if (data.workspaceId && data.role) ws[data.workspaceId] = data.role;
     }
 
-    await getAuth().setCustomUserClaims(userId, { ws });
+    try {
+      await getAuth().setCustomUserClaims(userId, { ws });
+    } catch (error) {
+      // Deleting an Auth account can leave membership cleanup events behind.
+      // Redelivery cannot recreate that user; other errors must retry.
+      if ((error as { code?: string }).code === 'auth/user-not-found') return;
+      throw error;
+    }
     console.log(`[SyncMemberClaims] set claims for '${userId}': ${Object.keys(ws).length} workspace(s).`);
   }
 );

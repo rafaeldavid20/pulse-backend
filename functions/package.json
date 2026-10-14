@@ -7,7 +7,7 @@
   "scripts": {
     "build": "tsc",
     "test": "npm run build && node --test lib/common/utils/*.test.js",
-    "test:integration": "npm run build && firebase emulators:exec --only firestore \"node --test lib/integration/*.test.js\"",
+    "test:integration": "npm run build && firebase emulators:exec --project demo-pulse-local --only firestore \"node --test lib/integration/*.test.js\"",
     "build:watch": "tsc --watch",
     "serve": "npm run build && firebase serve --only functions",
     "shell": "npm run build && firebase functions:shell",
@@ -18,7 +18,8 @@
     "migrate:agent-roles": "node scripts/migrate-agent-roles.mjs",
     "migrate:api-key-scopes": "node scripts/migrate-api-key-scopes.mjs",
     "migrate:label-ids": "node scripts/migrate-label-ids.mjs",
-    "seed:mvp-dod": "node scripts/seed-mvp-definition-of-done.mjs"
+    "seed:mvp-dod": "node scripts/seed-mvp-definition-of-done.mjs",
+    "test:rules": "npm run build && firebase emulators:exec --project demo-pulse-tes333 --only firestore \"node --test lib/rules/*.test.js\""
   },
   "engines": {
     "node": "20"
@@ -34,7 +35,9 @@
     "zod": "^4.5.4"
   },
   "devDependencies": {
+    "@firebase/rules-unit-testing": "5.0.0",
     "@types/node": "^20.11.0",
+    "firebase": "12.17.1",
     "typescript": "^5.3.3"
   },
   "private": true
