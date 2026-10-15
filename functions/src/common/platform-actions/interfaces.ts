@@ -82,6 +82,8 @@ export type PlatformActionCode =
   | 'reviews.dismissFinding'
   | 'reviews.rerun'
   | 'reviews.requestRework'
+  | 'issues.requestDevelopment'
+  | 'issues.developmentStatus'
   | 'reviews.returnToAgent'
   | 'runs.complete';
 

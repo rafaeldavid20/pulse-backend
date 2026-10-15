@@ -249,6 +249,9 @@ export async function dispatchPlatformAction(
       return new DismissFindingAction(request, callerUid, callerEmail).run();
     case 'reviews.rerun':
       return new ReviewsRerunAction(request, callerUid, callerEmail).run();
+    case 'issues.requestDevelopment':
+    case 'issues.developmentStatus':
+      return new RequestReworkAction(request, callerUid, callerEmail, request.actionCode).run();
     case 'reviews.requestRework':
       return new RequestReworkAction(request, callerUid, callerEmail).run();
     case 'reviews.returnToAgent':

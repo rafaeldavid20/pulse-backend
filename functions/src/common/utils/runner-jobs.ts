@@ -1,5 +1,7 @@
 import { FieldValue, Firestore } from 'firebase-admin/firestore';
-import { sign } from 'crypto';
+import { sign, createHash } from 'crypto';
+import { activityLease } from './run-activity';
+import { activeDevelopmentJob, hasExecutionLease } from './development-execution';
 import { nanoid } from 'nanoid';
 import { publicationPayload, PublicationTarget, validBranch } from './runner-publication';
 import { isTransientRunnerPreflight, runnerPreflight } from './runner-preflight';
@@ -32,7 +34,7 @@ export function signRunnerJob(job: Omit<RunnerJob, 'signature'>, privateKey: str
   return base64url(sign(null, Buffer.from(runnerJobPayload(job)), privateKey));
 }
 
-export type DispatchReservation = { mode: 'review'; attempt: number; refs: string; context?: string; requestedBy?: string } | boolean | { mode: 'handoff'; requestedAt: string } | { mode: 'rework'; attempt: number; requestedBy?: string; comment?: string };
+export type DispatchReservation = { mode: 'review'; attempt: number; refs: string; context?: string; requestedBy?: string } | boolean | { mode: 'handoff'; requestedAt: string } | { mode: 'rework'; attempt: number; requestedBy?: string; comment?: string; requestId?: string } | { mode: 'task'; requestedBy: string; requestId: string };
 
 /** Crea un trabajo de vida corta. El documento no contiene ninguna credencial de proveedor. */
 export async function enqueueRunnerJob(
@@ -60,6 +62,31 @@ export async function enqueueRunnerJob(
     }
     const issueRef = db.collection('issues').doc(job.issueId);
     const issue = reservation ? (await transaction.get(issueRef)).data() : undefined;
+    const humanRequest = reservation && reservation !== true && (reservation.mode === 'rework' || reservation.mode === 'task') && reservation.requestedBy ? reservation : undefined;
+    const requester = humanRequest?.requestedBy;
+    const requestRef = humanRequest && 'requestId' in humanRequest && humanRequest.requestId
+      ? db.collection('development_requests').doc(createHash('sha256').update(`${job.issueId}:${requester}:${humanRequest.requestId}`).digest('hex')) : undefined;
+    if (humanRequest) {
+      const member = await transaction.get(db.collection('members').doc(`${job.workspaceId}_${requester}`));
+      const callerAgent = await transaction.get(db.collection('agents').doc(requester!));
+      if (!issue || issue.workspaceId !== job.workspaceId || callerAgent.exists || agent.data()!.role !== 'dev' || !agent.data()!.enabled) throw new Error('La solicitud humana ya no está autorizada.');
+      assertHumanReworkRequester(requester!, member.data(), agent.data(), issue);
+      // Return the original receipt even after completion, expiry or a lost HTTP response.
+      if (requestRef) {
+        const receipt = await transaction.get(requestRef);
+        if (receipt.exists) {
+          const previous = await transaction.get(db.collection('runner_jobs').doc(receipt.data()!.jobId));
+          if (!previous.exists) throw new Error('No se encontró el job de la solicitud.');
+          job = previous.data() as RunnerJob;
+          return;
+        }
+      }
+    }
+    const issueJobs = humanRequest ? await transaction.get(db.collection('runner_jobs').where('issueId', '==', job.issueId)) : undefined;
+    const issueRuns = humanRequest ? await transaction.get(db.collection('agent_runs').where('issueId', '==', job.issueId)) : undefined;
+    if (humanRequest && (issueJobs!.docs.some(s => activeDevelopmentJob(s.data())) || hasExecutionLease(issue!, issueRuns!.docs.map(s => s.data())))) {
+      throw new RunnerDispatchError('enqueue', ['El issue tiene una ejecución viva o un job en cola. Esperá a que termine; consultá el diagnóstico del Runner.'], true);
+    }
     if (reservation === true) {
       if (!issue || issue.status !== 'todo' || (issue.execution?.agentId || issue.assigneeId) !== job.agentId || issue.agent?.state === 'claimed') {
         throw new RunnerDispatchError('enqueue', ['La issue ya no está disponible para este dispatch.'], true);
@@ -69,7 +96,7 @@ export async function enqueueRunnerJob(
       }
     }
     if (reservation && reservation !== true && reservation.mode !== 'review') {
-      if (!issue || ['done', 'canceled'].includes(issue.status) || (issue.execution?.agentId || issue.assigneeId) !== job.agentId || issue.agent?.state === 'claimed') {
+      if (!issue || ['done', 'canceled'].includes(issue.status) || (issue.execution?.agentId || issue.assigneeId) !== job.agentId || (!humanRequest && issue.agent?.state === 'claimed')) {
         throw new RunnerDispatchError('enqueue', ['La issue ya no está disponible para este dispatch.'], true);
       }
       if (reservation.mode === 'handoff') {
@@ -77,23 +104,32 @@ export async function enqueueRunnerJob(
         if (job.mode !== 'handoff' || !entry || entry.requestedAt !== reservation.requestedAt || entry.dispatchedAt) {
           throw new RunnerDispatchError('enqueue', ['El traspaso ya fue enviado o cambió.'], true);
         }
-      } else if (job.mode !== 'rework' || issue.review?.state !== 'changes_requested' || issue.review.attempt !== reservation.attempt || issue.review.reworkDispatchedForAttempt === reservation.attempt) {
+      } else if (reservation.mode === 'task') {
+        if (job.mode !== 'task' || !['todo', 'in_progress'].includes(issue.status) || issue.review?.state || (issue.gitRefs || [issue.git]).some((ref: any) => ref?.prNumber)) throw new Error('El issue requiere resolver su revisión o PR existente antes de iniciar desarrollo.');
+      } else if (job.mode !== 'rework' || issue.review?.state !== 'changes_requested' || issue.review.attempt !== reservation.attempt || (!humanRequest && issue.review.reworkDispatchedForAttempt === reservation.attempt)) {
         throw new RunnerDispatchError('enqueue', ['El intento de retrabajo ya fue enviado o cambió.'], true);
       }
     }
-    const humanRequest = reservation && reservation !== true && reservation.mode === 'rework' && reservation.requestedBy ? reservation : undefined;
     if (humanRequest) {
-      const requester = humanRequest.requestedBy!;
-      const member = await transaction.get(db.collection('members').doc(`${job.workspaceId}_${requester}`));
-      const callerAgent = await transaction.get(db.collection('agents').doc(requester));
-      if (callerAgent.exists || agent.data()!.role !== 'dev' || !agent.data()!.enabled || !['in_review', 'in_progress', 'todo'].includes(issue!.status)) throw new Error('La solicitud humana ya no está autorizada.');
-      assertHumanReworkRequester(requester, member.data(), agent.data(), issue);
+      if (!['in_review', 'in_progress', 'todo'].includes(issue!.status)) throw new Error('Reabrí el issue antes de ejecutar desarrollo.');
       if ((issue!.pendingRepoWork || []).some((entry: any) => !entry.dispatchedAt)) throw new Error('El issue tiene un traspaso pendiente.');
-      const qaId = issue!.review.reviewerId || issue!.review.dispatchedTo;
-      const qa = qaId ? await transaction.get(db.collection('agents').doc(qaId)) : undefined;
-      if (humanRequest.attempt >= (qa?.data()?.maxReviewAttempts ?? 2)) throw new Error('No quedan intentos de revisión disponibles.');
+      if (humanRequest.mode === 'rework') {
+        const qaId = issue!.review.reviewerId || issue!.review.dispatchedTo;
+        const qa = qaId ? await transaction.get(db.collection('agents').doc(qaId)) : undefined;
+        if (humanRequest.attempt >= (qa?.data()?.maxReviewAttempts ?? 2)) throw new Error('No quedan intentos de revisión disponibles. Usá la recuperación de revisión escalada.');
+      }
       const issueBudget = await checkIssueRunBudget(db, job.workspaceId, job.issueId, transaction);
-      if (!issueBudget.withinBudget) throw new Error('El issue alcanzó su límite de ejecuciones o costo.');
+      if (!issueBudget.withinBudget) throw new Error('El issue alcanzó su límite de ejecuciones o costo. Revisá los límites con un administrador.');
+      const agentJobs = await transaction.get(db.collection('runner_jobs').where('agentId', '==', job.agentId));
+      const occupied = new Set(agentJobs.docs.filter(s => activeDevelopmentJob(s.data()) && s.data().issueId !== job.issueId).map(s => s.data().issueId));
+      const agentRuns = await transaction.get(db.collection('agent_runs').where('agentId', '==', job.agentId));
+      for (const snap of agentRuns.docs) if (snap.data().issueId !== job.issueId && activityLease(snap.data())) occupied.add(snap.data().issueId);
+      const agentIssues = await transaction.get(db.collection('issues').where('workspaceId', '==', job.workspaceId));
+      for (const snap of agentIssues.docs) {
+        const other = snap.data();
+        if (snap.id !== job.issueId && (other.execution?.agentId || other.assigneeId) === job.agentId && hasExecutionLease(other, [])) occupied.add(snap.id);
+      }
+      if (occupied.size >= (agent.data()!.maxConcurrentIssues ?? 1)) throw new Error('El agente alcanzó su capacidad de issues activos. Esperá a que termine otra ejecución.');
     }
     const reviewRequest = reservation && reservation !== true && reservation.mode === 'review' ? reservation : undefined;
     if (reviewRequest) {
@@ -191,7 +227,7 @@ export async function enqueueRunnerJob(
       }
       transaction.update(issueRef, {
         ...modeMarks,
-        ...(humanRequest ? { status: 'in_progress', 'git.lastSyncedStatus': 'in_progress', updatedAt: issuedAt, updatedBy: humanRequest.requestedBy } : {}),
+        ...(humanRequest ? { 'agent.claimedAt': FieldValue.delete(), 'agent.claimedBy': FieldValue.delete(), status: 'in_progress', 'git.lastSyncedStatus': 'in_progress', updatedAt: issuedAt, updatedBy: humanRequest.requestedBy } : {}),
         ...(reviewRequest ? { updatedAt: issuedAt } : { 'agent.dispatchedAt': issuedAt, 'agent.dispatchedTo': job.agentId,
         'agent.dispatchFailure': FieldValue.delete(), 'agent.blockedReason': FieldValue.delete(), 'agent.state': 'idle' }),
       });
@@ -209,10 +245,14 @@ export async function enqueueRunnerJob(
       });
     }
     if (humanRequest) {
+      if (requestRef) transaction.create(requestRef, { issueId: job.issueId, workspaceId: job.workspaceId, requestedBy: requester, jobId: job.id, mode: job.mode, createdAt: issuedAt, ...(issue!.agent?.state === 'claimed' ? { recoveredClaim: { state: issue!.agent.state, ...(issue!.agent.claimedBy ? { claimedBy: issue!.agent.claimedBy } : {}), ...(issue!.agent.claimedAt ? { claimedAt: issue!.agent.claimedAt } : {}) } } : {}) });
+      for (const snap of issueJobs!.docs) {
+        if (['pending', 'delivered'].includes(snap.data().status)) transaction.update(snap.ref, { status: 'expired', expiredAt: issuedAt });
+      }
       const commentId = `cmt-${job.id}`;
       transaction.create(db.collection('comments').doc(commentId), {
         id: commentId, workspaceId: job.workspaceId, issueId: job.issueId, authorId: humanRequest.requestedBy,
-        body: `**Corrección solicitada al agente**: se retoma el intento ${humanRequest.attempt} en los mismos PRs; se conservan el modo de QA y los límites.\n\n${humanRequest.comment}`,
+        body: humanRequest.mode === 'rework' ? `**Corrección solicitada al agente**: se retoma el intento ${humanRequest.attempt} en los mismos PRs; se conservan el modo de QA y los límites.\n\n${humanRequest.comment || ''}` : '**Desarrollo solicitado al agente**: se conservan el responsable, ejecutor y los límites.',
         source: 'web', createdAt: issuedAt,
       });
     }
