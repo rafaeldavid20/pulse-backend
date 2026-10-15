@@ -8,6 +8,7 @@
     "build": "tsc",
     "test": "npm run build && node --test lib/common/utils/*.test.js",
     "test:integration": "npm run build && firebase emulators:exec --project demo-pulse-local --only firestore \"node --test lib/integration/*.test.js\"",
+    "test:profiles": "npm run build && firebase emulators:exec --project demo-pulse-local --only firestore \"node --test lib/integration/runner-profiles.cross-repo.js\"",
     "build:watch": "tsc --watch",
     "serve": "npm run build && firebase serve --only functions",
     "shell": "npm run build && firebase functions:shell",

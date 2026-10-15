@@ -10,6 +10,7 @@ export interface RunnerReadiness {
   prPublicationModeVersion?: 1;
   githubApps?: Array<{projectId: string; repo: string; appId: string; installationId: string; slug: string; base?: string; ready: boolean}>;
   qaSourceProtocolVersion?: 1;
+  profileProtocolVersion?: 1;
 }
 
 /** Explicit allow-list: CLI output, account data and credentials never reach storage. */
@@ -31,6 +32,7 @@ export function parseRunnerReadiness(value: any): RunnerReadiness {
   if (value.jobProtocolVersion !== undefined && !([2, 3].includes(value.jobProtocolVersion))) throw new Error('Invalid Runner job protocol.');
   if (value.prPublicationModeVersion !== undefined && value.prPublicationModeVersion !== 1) throw new Error('Invalid PR publication mode version.');
   if (value.qaSourceProtocolVersion !== undefined && value.qaSourceProtocolVersion !== 1) throw new Error('Invalid QA source protocol.');
+  if (value.profileProtocolVersion !== undefined && value.profileProtocolVersion !== 1) throw new Error('Invalid profile protocol.');
   const githubApps = value.githubApps === undefined ? [] : value.githubApps;
   if (!Array.isArray(githubApps) || githubApps.length > 100) throw new Error('Invalid GitHub App readiness.');
   const seen = new Set<string>();
@@ -41,7 +43,7 @@ export function parseRunnerReadiness(value: any): RunnerReadiness {
     seen.add(key);
     return { projectId: e.projectId, repo: e.repo, appId: e.appId, installationId: e.installationId, slug: e.slug, ready: e.ready, ...(e.ready ? {base: e.base} : {}) };
   });
-  return { ...(value.prPublicationModeVersion === 1 ? { prPublicationModeVersion: 1 as const } : {}), githubApps: safeApps, workspaceId: value.workspaceId, identities, providers, repositories, ...(value.qaSourceProtocolVersion === 1 ? { qaSourceProtocolVersion: 1 as const } : {}), ...([2, 3].includes(value.jobProtocolVersion) ? { jobProtocolVersion: value.jobProtocolVersion as 2 | 3 } : {}) };
+  return { ...(value.profileProtocolVersion === 1 ? { profileProtocolVersion: 1 as const } : {}), ...(value.prPublicationModeVersion === 1 ? { prPublicationModeVersion: 1 as const } : {}), githubApps: safeApps, workspaceId: value.workspaceId, identities, providers, repositories, ...(value.qaSourceProtocolVersion === 1 ? { qaSourceProtocolVersion: 1 as const } : {}), ...([2, 3].includes(value.jobProtocolVersion) ? { jobProtocolVersion: value.jobProtocolVersion as 2 | 3 } : {}) };
 }
 
 export function runnerPreflight(agent: any, runner: any, workspaceId: string, repos: string[], mode: string, now = Date.now(), projectScoped = false, publicationOnly = false) {

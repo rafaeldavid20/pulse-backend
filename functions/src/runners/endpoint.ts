@@ -1,4 +1,5 @@
 import { RUN_ACTIVITY_TTL_MS } from '../common/utils/run-activity';
+import { exchangeRunnerProfiles } from './profiles';
 import { findPendingRunnerJob } from '../common/utils/pending-runner-job';
 import { configureRunnerRepos } from './configure-repos';
 import { currentRunnerProjectAccess } from '../common/utils/project-repos';
@@ -22,6 +23,17 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
+
+export const pulseRunnerProfiles = onRequest(
+  { region: 'us-east4', secrets: [mcpKeyPepper] },
+  async (req, res) => {
+    if (req.method !== 'POST') { res.status(405).json({ error: 'Method Not Allowed' }); return; }
+    const runner = await authenticateRunner(req.headers.authorization);
+    if (!runner) { res.status(401).json({ error: 'Invalid runner credential' }); return; }
+    try { res.json(await exchangeRunnerProfiles(getFirestore(), runner.id, req.body)); }
+    catch { res.status(400).json({ error: 'Invalid profile exchange' }); }
+  },
+);
 
 function parseCredential(authorization?: string): { runnerId: string; secret: string } | null {
   const token = authorization?.replace(/^Bearer\s+/i, '').trim();
@@ -118,7 +130,7 @@ export const pulseRunnerHeartbeat = onRequest(
       });
     }
     await getFirestore().collection('runners').doc(runner.id).update({ status, lastHeartbeatAt: now, updatedAt: now,
-      ...(readiness ? { readiness, readinessCheckedAt: now } : {}),
+      ...(readiness ? { readiness, readinessCheckedAt: now, profileVersion: readiness.profileProtocolVersion || 0 } : {}),
     });
     res.json({ runnerId: runner.id, status, lastHeartbeatAt: now, cancelRequested });
   },

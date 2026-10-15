@@ -1,4 +1,5 @@
 import { getFirestore } from 'firebase-admin/firestore';
+import { randomUUID } from 'crypto';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { cleanUndefined } from '../../common/utils/clean';
@@ -97,6 +98,7 @@ export class UpdateAgentAction extends PlatformActionHandler {
     }
 
     const updates: Record<string, any> = { updatedAt: new Date().toISOString() };
+    if (data.runnerId !== undefined && data.runnerId !== agent.runnerId) updates.profileBinding = randomUUID();
     for (const field of AGENT_WRITABLE_FIELDS) {
       if (data[field] !== undefined) updates[field] = data[field];
     }
