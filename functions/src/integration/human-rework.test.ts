@@ -162,3 +162,128 @@ test('MCP personal access can request rework; missing scope and agent credential
   assert.equal((await counts(f)).jobs, 0);
   const result = await mcp(f); assert.ok(result.jobId, JSON.stringify(result)); assert.equal(result.mode, 'rework'); assert.equal((await counts(f)).jobs, 1);
 });
+
+const development = (f: Fixture, requestId: string, caller = f.owner) =>
+  new RequestReworkAction({ actionCode: 'issues.requestDevelopment', data: { issueId: f.issueId, requestId } }, caller, undefined, 'issues.requestDevelopment').run();
+const developmentStatus = (f: Fixture) =>
+  new RequestReworkAction({ actionCode: 'issues.developmentStatus', data: { issueId: f.issueId } }, f.owner, undefined, 'issues.developmentStatus').run();
+async function initialFailure(f: Fixture) {
+  await db.collection('issues').doc(f.issueId).update({ review: null, git: null, gitRefs: [], status: 'in_progress', agent: { state: 'blocked', blockedReason: 'Old preflight failure' } });
+  await db.collection('agents').doc(f.agentId).update({ autonomousMode: false });
+}
+
+test('manual initial preflight recovery needs neither status cycling nor autonomous mode', async () => {
+  const f = await fixture(); await initialFailure(f);
+  assert.equal((await developmentStatus(f)).data!.available, true);
+  const result = await development(f, 'initial-manual'); assert.equal(result.success, true, JSON.stringify(result));
+  assert.equal(result.data!.mode, 'task');
+  const after = (await db.collection('issues').doc(f.issueId).get()).data()!;
+  assert.equal(after.status, 'in_progress'); assert.equal(after.assigneeId, f.owner); assert.deepEqual(after.execution, f.execution);
+  assert.equal(after.agent.blockedReason, undefined);
+  assert.equal((await db.collection('agents').doc(f.agentId).get()).data()!.autonomousMode, false);
+  assert.equal((await developmentStatus(f)).data!.state, 'queued');
+});
+
+test('TES-294 residual claim and rework mark recover both PR branches and preserve each retry receipt', async () => {
+  const f = await fixture();
+  const refs = [...f.gitRefs, { repoFullName: 'owner/app', branch: 'pul/existing-app', prNumber: 2, prState: 'draft', headSha: 'b'.repeat(40) }];
+  await db.collection('issues').doc(f.issueId).update({ gitRefs: refs, status: 'in_progress', 'agent.state': 'claimed', 'agent.claimedBy': f.agentId, 'agent.claimedAt': new Date().toISOString(), 'review.reworkDispatchedForAttempt': 1 });
+  await db.collection('agents').doc(f.agentId).update({ autonomousMode: false });
+  const result = await development(f, 'recover-rework-1'); assert.equal(result.success, true, JSON.stringify(result));
+  const job = (await db.collection('runner_jobs').doc(result.data!.jobId).get()).data()!;
+  assert.equal(job.mode, 'rework'); assert.deepEqual(job.contextRepos, ['owner/app', 'owner/backend']);
+  assert.deepEqual(job.publicationTargets.map((t: any) => t.branch).sort(), refs.map(r => r.branch).sort());
+  const issue = (await db.collection('issues').doc(f.issueId).get()).data()!;
+  assert.equal(issue.agent.claimedBy, undefined); assert.equal(issue.assigneeId, f.owner);
+  assert.deepEqual(issue.gitRefs, refs); assert.deepEqual(issue.review.findings, f.review.findings); assert.deepEqual(issue.review.history, []);
+  await db.collection('runner_jobs').doc(job.id).update({ status: 'failed' });
+  assert.equal((await developmentStatus(f)).data!.state, 'failed');
+  const retried = await development(f, 'recover-rework-2'); assert.equal(retried.success, true, JSON.stringify(retried));
+  assert.notEqual(retried.data!.jobId, job.id); assert.equal((await counts(f)).jobs, 2);
+  assert.equal((await db.collection('development_requests').where('issueId', '==', f.issueId).get()).size, 2);
+});
+
+test('request IDs deduplicate concurrency, network retries, reload and terminal completion', async () => {
+  const f = await fixture(); await initialFailure(f);
+  const results = await Promise.all(Array.from({ length: 5 }, () => development(f, 'same-network-request')));
+  assert.ok(results.every(r => r.success), JSON.stringify(results));
+  assert.equal(new Set(results.map(r => r.data!.jobId)).size, 1);
+  assert.equal((await counts(f)).jobs, 1); assert.equal((await counts(f)).budget, 1);
+  const id = results[0].data!.jobId;
+  await db.collection('runner_jobs').doc(id).update({ status: 'expired', expiresAt: '2000-01-01T00:00:00Z' });
+  assert.equal((await development(f, 'same-network-request')).data!.jobId, id);
+  await db.collection('issues').doc(f.issueId).update({ status: 'done' });
+  assert.equal((await development(f, 'same-network-request')).data!.jobId, id);
+  assert.equal((await development(f, 'new-request-closed')).success, false); assert.equal((await counts(f)).jobs, 1);
+});
+
+for (const kind of ['pending', 'delivered', 'lease', 'run-lease'] as const) test(`live ${kind} blocks recovery regardless of stale claim date`, async () => {
+  const f = await fixture(); await initialFailure(f);
+  await db.collection('issues').doc(f.issueId).update({ 'agent.state': 'claimed', 'agent.claimedAt': '2000-01-01T00:00:00Z' });
+  const future = new Date(Date.now() + 60_000).toISOString();
+  if (kind === 'lease') await db.collection('issues').doc(f.issueId).update({ agentActivity: { host: { role: 'dev', expiresAt: future } } });
+  else if (kind === 'run-lease') await db.collection('agent_runs').doc(`live-${f.issueId}`).set({ issueId: f.issueId, workspaceId: f.workspaceId, role: 'dev', activityExpiresAt: future });
+  else await db.collection('runner_jobs').doc(`live-${f.issueId}`).set({ id: `live-${f.issueId}`, issueId: f.issueId, agentId: f.agentId, runnerId: 'a-different-runner', mode: 'task', status: kind, issuedAt: new Date().toISOString(), expiresAt: future });
+  const before = (await db.collection('issues').doc(f.issueId).get()).data();
+  const status = await developmentStatus(f); assert.equal(status.data!.active, true); assert.equal(status.data!.available, false);
+  assert.equal(status.data!.state, ['lease', 'run-lease'].includes(kind) ? 'running' : 'queued');
+  assert.equal((await development(f, 'must-not-dispatch')).success, false);
+  assert.deepEqual((await db.collection('issues').doc(f.issueId).get()).data(), before); assert.equal((await counts(f)).budget, 0);
+});
+
+test('expired jobs/leases reconcile transactionally; distinct concurrent requests reserve one replacement', async () => {
+  const f = await fixture(); await initialFailure(f);
+  const old = db.collection('runner_jobs').doc(`old-${f.issueId}`);
+  await old.set({ issueId: f.issueId, agentId: f.agentId, runnerId: f.runnerId, mode: 'task', status: 'delivered', expiresAt: '2000-01-01T00:00:00Z' });
+  await db.collection('issues').doc(f.issueId).update({ 'agent.state': 'claimed', agentActivity: { old: { role: 'dev', expiresAt: '2000-01-01T00:00:00Z' } } });
+  const results = await Promise.all([development(f, 'replacement-one'), development(f, 'replacement-two')]);
+  assert.equal(results.filter(r => r.success).length, 1); assert.equal((await counts(f)).budget, 1);
+  assert.equal((await old.get()).data()!.status, 'expired');
+});
+
+for (const [name, collection, patch] of [
+  ['Runner offline', 'runners', { status: 'offline' }], ['capacity', 'runners', { maxConcurrentJobs: 1 }],
+  ['cost budget', 'workspaces', { issueCostCapUsd: 1 }], ['paused workspace', 'workspaces', { agentsPaused: true }],
+] as const) test(`manual recovery reports ${name} without consuming budget`, async () => {
+  const f = await fixture(); await initialFailure(f);
+  await db.collection(collection).doc(collection === 'runners' ? f.runnerId : f.workspaceId).update(patch);
+  if (name === 'capacity') await db.collection('runner_jobs').doc(`other-${f.issueId}`).set({ issueId: 'another-issue', agentId: 'another-agent', runnerId: f.runnerId, status: 'pending', expiresAt: new Date(Date.now() + 60_000).toISOString() });
+  if (name === 'cost budget') await db.collection('agent_runs').doc(`spent-${f.issueId}`).set({ issueId: f.issueId, workspaceId: f.workspaceId, costUsd: 2 });
+  const status = await developmentStatus(f); assert.equal(status.data!.available, false); assert.ok(status.data!.reason);
+  assert.equal((await development(f, 'blocked-manual')).success, false); assert.equal((await counts(f)).budget, 0);
+});
+
+test('preflight failure can recover with the same explicit request after Runner reconnects', async () => {
+  const f = await fixture(); await initialFailure(f);
+  await db.collection('runners').doc(f.runnerId).update({ status: 'offline' });
+  assert.equal((await development(f, 'preflight-retry')).success, false);
+  await db.collection('runners').doc(f.runnerId).update({ status: 'online', lastHeartbeatAt: new Date().toISOString() });
+  assert.equal((await development(f, 'preflight-retry')).success, true); assert.equal((await counts(f)).jobs, 1);
+});
+
+test('manual development enforces human ownership and requires reopening terminal issues', async () => {
+  for (const caller of ['other', 'agentId', 'qaId'] as const) {
+    const f = await fixture(); await initialFailure(f);
+    assert.equal((await development(f, 'permission-check', f[caller])).success, false); assert.equal((await counts(f)).jobs, 0);
+  }
+  for (const status of ['done', 'canceled']) {
+    const f = await fixture(); await initialFailure(f); await db.collection('issues').doc(f.issueId).update({ status });
+    assert.equal((await development(f, 'closed-issue')).success, false); assert.match((await developmentStatus(f)).data!.reason, /Reabrí/);
+  }
+});
+
+test('enqueue revalidates permission, repository, lease and agent capacity after a ready preview', async () => {
+  for (const change of ['permission', 'repository', 'lease', 'agent-capacity']) {
+    const f = await fixture(); await initialFailure(f);
+    assert.equal((await developmentStatus(f)).data!.available, true);
+    if (change === 'permission') await db.collection('members').doc(`${f.workspaceId}_${f.owner}`).delete();
+    if (change === 'repository') await db.collection('projects').doc(f.projectId).update({ repoFullNames: ['owner/app'] });
+    if (change === 'lease') await db.collection('agent_runs').doc(`late-${f.issueId}`).set({ issueId: f.issueId, agentId: f.agentId, workspaceId: f.workspaceId, activityExpiresAt: new Date(Date.now() + 60_000).toISOString() });
+    if (change === 'agent-capacity') await db.collection('agent_runs').doc(`other-live-${f.issueId}`).set({ issueId: 'another-issue', agentId: f.agentId, workspaceId: f.workspaceId, activityExpiresAt: new Date(Date.now() + 60_000).toISOString() });
+    await assert.rejects(enqueueRunnerJob(db, {
+      workspaceId: f.workspaceId, projectId: f.projectId, issueId: f.issueId, agentId: f.agentId, runnerId: f.runnerId,
+      repoFullName: 'owner/backend', contextRepos: ['owner/backend', 'owner/app'], mode: 'task',
+    }, privateKey, 'runner-job-v1', { mode: 'task', requestedBy: f.owner, requestId: `race-${change}` }));
+    assert.equal((await counts(f)).jobs, 0); assert.equal((await counts(f)).budget, 0);
+  }
+});

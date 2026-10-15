@@ -42,7 +42,8 @@ export type WorkspaceBudgetDecision =
 export async function checkWorkspaceDispatchBudget(
   tx: Transaction,
   db: Firestore,
-  workspaceId: string
+  workspaceId: string,
+  reserve = true,
 ): Promise<WorkspaceBudgetDecision> {
   const wsSnap = await tx.get(db.collection('workspaces').doc(workspaceId));
   const workspace = wsSnap.exists ? wsSnap.data()! : {};
@@ -63,6 +64,6 @@ export async function checkWorkspaceDispatchBudget(
     if (spentUsd >= dailyCostCapUsd) return { allowed: false, reason: 'daily-cost-cap', capUsd: dailyCostCapUsd };
   }
 
-  tx.set(counterRef, { workspaceId, date: todayKey(), count: FieldValue.increment(1) }, { merge: true });
+  if (reserve) tx.set(counterRef, { workspaceId, date: todayKey(), count: FieldValue.increment(1) }, { merge: true });
   return { allowed: true };
 }
