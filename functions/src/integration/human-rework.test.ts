@@ -1,3 +1,4 @@
+import { ReturnToAgentAction } from '../actions/reviews/return-to-agent';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, randomBytes } from 'crypto';
@@ -286,4 +287,93 @@ test('enqueue revalidates permission, repository, lease and agent capacity after
     }, privateKey, 'runner-job-v1', { mode: 'task', requestedBy: f.owner, requestId: `race-${change}` }));
     assert.equal((await counts(f)).jobs, 0); assert.equal((await counts(f)).budget, 0);
   }
+});
+
+async function returnedFixture() {
+  const f = await fixture();
+  const previous = { ...f.review, state: 'needs_human', attempt: 2 };
+  await db.collection('issues').doc(f.issueId).update({ status: 'in_progress',
+    review: { state: 'pending', attempt: 0, history: [previous] },
+    runBudgetResetAt: new Date().toISOString(), runBudgetResetBy: f.owner });
+  return { ...f, previous };
+}
+const returnedRequest = (f: Fixture, op: 'issues.requestDevelopment' | 'issues.developmentStatus', requestId = 'returned-request') =>
+  new RequestReworkAction({ actionCode: op, data: { issueId: f.issueId, requestId } }, f.owner, undefined, op).run();
+
+test('TES-294: legacy human return is available and resumes archived findings in the same PRs', async () => {
+  const f = await returnedFixture();
+  const preview = await returnedRequest(f, 'issues.developmentStatus');
+  assert.equal(preview.success, true); assert.equal(preview.data?.available, true, JSON.stringify(preview));
+  assert.equal(preview.data?.mode, 'rework');
+  assert.equal((await db.collection('issues').doc(f.issueId).get()).data()!.review.state, 'pending', 'preview must not mutate');
+  const result = await returnedRequest(f, 'issues.requestDevelopment');
+  assert.equal(result.success, true, JSON.stringify(result));
+  const job = (await db.collection('runner_jobs').doc(result.data!.jobId).get()).data()!;
+  assert.equal(job.mode, 'rework'); assert.equal(job.publicationTargets[0].branch, f.git.branch);
+  const issue = (await db.collection('issues').doc(f.issueId).get()).data()!;
+  assert.equal(issue.review.state, 'changes_requested'); assert.equal(issue.review.attempt, 0);
+  assert.deepEqual(issue.review.findings, f.previous.findings); assert.equal(issue.review.reviewerId, f.qaId);
+  assert.deepEqual(issue.review.history, [f.previous]);
+  assert.deepEqual(issue.gitRefs, f.gitRefs); assert.deepEqual(issue.execution, f.execution);
+  const replay = await returnedRequest(f, 'issues.requestDevelopment');
+  assert.equal(replay.data?.jobId, job.id); assert.equal((await counts(f)).jobs, 1);
+});
+
+test('TES-294: Devolver al agente queues a continuation without requiring an autonomous agent', async () => {
+  const f = await fixture();
+  await db.collection('agents').doc(f.agentId).update({ autonomousMode: false });
+  await db.collection('issues').doc(f.issueId).update({ 'review.state': 'needs_human', 'review.attempt': 2 });
+  const result = await new ReturnToAgentAction({ actionCode: 'reviews.returnToAgent', data: {
+    issueId: f.issueId, comment: 'Corregir el finding pendiente en los mismos PRs.',
+  } }, f.owner).run();
+  assert.equal(result.success, true, JSON.stringify(result));
+  assert.equal(result.data?.development.success, true, JSON.stringify(result));
+  const job = (await db.collection('runner_jobs').doc(result.data!.development.data.jobId).get()).data()!;
+  assert.equal(job.mode, 'rework'); assert.equal(job.publicationTargets[0].branch, f.git.branch);
+  assert.equal((await counts(f)).jobs, 1);
+});
+
+test('returned pending review stays recoverable after offline failure without losing archived findings', async () => {
+  const f = await returnedFixture();
+  await db.collection('runners').doc(f.runnerId).update({ status: 'offline' });
+  const before = (await db.collection('issues').doc(f.issueId).get()).data()!;
+  assert.equal((await returnedRequest(f, 'issues.requestDevelopment')).success, false);
+  assert.deepEqual((await db.collection('issues').doc(f.issueId).get()).data(), before);
+  await db.collection('runners').doc(f.runnerId).update({ status: 'online' });
+  assert.equal((await returnedRequest(f, 'issues.requestDevelopment')).success, true);
+});
+
+test('ordinary pending QA or a zero attempt without a recorded human return cannot start rework', async () => {
+  for (const reset of [false, true]) {
+    const f = await returnedFixture();
+    await db.collection('issues').doc(f.issueId).update(reset ? { 'review.history': [] } : { runBudgetResetBy: '' });
+    assert.equal((await returnedRequest(f, 'issues.requestDevelopment')).success, false);
+    assert.equal((await counts(f)).jobs, 0);
+  }
+});
+
+test('returned review is revalidated against concurrent review changes at enqueue', async () => {
+  const f = await returnedFixture();
+  await db.collection('issues').doc(f.issueId).update({ 'review.state': 'needs_human' });
+  await assert.rejects(enqueueRunnerJob(db, { workspaceId: f.workspaceId, projectId: f.projectId,
+    issueId: f.issueId, agentId: f.agentId, runnerId: f.runnerId, repoFullName: 'owner/backend',
+    contextRepos: ['owner/backend'], mode: 'rework' }, privateKey, 'runner-job-v1',
+    { mode: 'rework', attempt: 0, requestedBy: f.owner, requestId: 'returned-stale' }));
+  assert.equal((await counts(f)).jobs, 0);
+});
+
+test('returned attempt-zero rework can retry a failed job without renewing the human budget grant', async () => {
+  const f = await returnedFixture();
+  assert.equal((await request(f, f.other)).success, false, 'return metadata must not grant another member permission');
+  const reset = (await db.collection('issues').doc(f.issueId).get()).data()!.runBudgetResetAt;
+  const first = await returnedRequest(f, 'issues.requestDevelopment', 'returned-first');
+  assert.equal(first.success, true, JSON.stringify(first));
+  assert.equal((await returnedRequest(f, 'issues.developmentStatus')).data?.available, false, 'live job blocks another request');
+  await db.collection('runner_jobs').doc(first.data!.jobId).update({ status: 'failed' });
+  const second = await returnedRequest(f, 'issues.requestDevelopment', 'returned-second');
+  assert.equal(second.success, true, JSON.stringify(second));
+  assert.notEqual(first.data?.jobId, second.data?.jobId);
+  const issue = (await db.collection('issues').doc(f.issueId).get()).data()!;
+  assert.equal(issue.runBudgetResetAt, reset); assert.equal(issue.review.attempt, 0);
+  assert.deepEqual(issue.review.findings, f.previous.findings);
 });

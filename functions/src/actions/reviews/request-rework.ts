@@ -7,7 +7,7 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { getWorkspaceMember } from '../../common/utils/agent-authorization';
-import { assertHumanReworkRequester, reworkRepositories } from '../../common/utils/human-rework';
+import { assertHumanReworkRequester, reworkRepositories, returnedDevelopmentReview } from '../../common/utils/human-rework';
 import { checkIssueRunBudget } from '../../common/utils/issue-run-budget';
 import { runnerProjectRepoAccess } from '../../common/utils/project-repos';
 import { resolveIssueRepo } from '../../common/utils/repo-resolution';
@@ -42,7 +42,9 @@ export class RequestReworkAction extends PlatformActionHandler {
       throw new Error('Escribí un comentario para el agente (máximo 4000 caracteres).');
     }
     const issue = (await db.collection('issues').doc(issueId).get()).data()!;
-    const mode = issue.review?.state === 'changes_requested' ? 'rework' : 'task';
+    const returnedReview = returnedDevelopmentReview(issue);
+    const review = returnedReview || issue.review;
+    const mode = review?.state === 'changes_requested' ? 'rework' : 'task';
     const [jobs, runs] = await Promise.all([
       db.collection('runner_jobs').where('issueId', '==', issueId).get(),
       db.collection('agent_runs').where('issueId', '==', issueId).get(),
@@ -67,10 +69,10 @@ export class RequestReworkAction extends PlatformActionHandler {
       if ((issue.pendingRepoWork || []).some((entry: any) => !entry.dispatchedAt)) throw new Error('El issue tiene un traspaso pendiente; esperá a que termine.');
       if (mode === 'task' && (issue.review?.state || issue.status === 'in_review' || (issue.gitRefs || [issue.git]).some((ref: any) => ref?.prNumber))) throw new Error('Resolvé la revisión o el PR existente antes de iniciar desarrollo. Para una revisión escalada, usá Devolver al agente.');
       if (this.actionCode === 'reviews.requestRework' && mode !== 'rework') throw new Error('Solo se puede solicitar una corrección cuando QA pidió cambios.');
-      const qaId = issue.review?.reviewerId || issue.review?.dispatchedTo;
+      const qaId = review?.reviewerId || review?.dispatchedTo;
       const qa = qaId ? (await db.collection('agents').doc(qaId).get()).data() : undefined;
-      const attempt = issue.review?.attempt;
-      if (mode === 'rework' && (!Number.isInteger(attempt) || attempt < 1 || attempt >= (qa?.maxReviewAttempts ?? 2))) {
+      const attempt = review?.attempt;
+      if (mode === 'rework' && (!Number.isInteger(attempt) || (attempt < 1 && !returnedReview) || attempt >= (qa?.maxReviewAttempts ?? 2))) {
         throw new Error('No quedan intentos de revisión disponibles; usá la recuperación de una revisión escalada.');
       }
       const budget = await checkIssueRunBudget(db, issue.workspaceId, issueId);
@@ -80,7 +82,7 @@ export class RequestReworkAction extends PlatformActionHandler {
       const access = await runnerProjectRepoAccess(db, issue, authorized);
       if (!access) throw new Error('Configurá los repositorios autorizados del proyecto antes de solicitar una corrección.');
       const { repoFullName } = await resolveIssueRepo(db, { ...issue, id: issueId }, { agentId });
-      const flaggedRepo = issue.review?.findings?.find((finding: any) => finding.status === 'open' && ['major', 'blocker'].includes(finding.severity) && finding.repoFullName)?.repoFullName;
+      const flaggedRepo = review?.findings?.find((finding: any) => finding.status === 'open' && ['major', 'blocker'].includes(finding.severity) && finding.repoFullName)?.repoFullName;
       const target = flaggedRepo || repoFullName;
       if (!target) throw new Error('No se pudo resolver el repositorio a corregir.');
       const contextRepos = mode === 'rework' ? reworkRepositories(issue, access.repos, target) : access.repos;
