@@ -27,7 +27,7 @@ async function fixture(mode?: 'draft' | 'ready', capable = false) {
   ]);
   const input={workspaceId,projectId,issueId,agentId,runnerId,repoFullName:repos[0],contextRepos:repos,mode:'task' as const};
   const job=await enqueueRunnerJob(db,input,key);
-  await db.collection('runner_jobs').doc(job.id).update({status:'delivered'});
+  await db.collection('runner_jobs').doc(job.id).update({status:'delivered',deliveredAt:new Date().toISOString()});
   const report={execution:'completed',repositories:job.publicationTargets!.map(t=>({repo:t.repo,branch:t.branch,sha:'a'.repeat(40),stage:'pending'}))};
   return {input,job,report,credential:`${runnerId}.${secret}`,readiness};
 }
@@ -99,6 +99,16 @@ test('service App also stops persisting installation tokens and clears its legac
 test('publication policy comes from agent settings and is frozen for recovery', async()=>{
   const f=await fixture('ready',true);
   assert.equal(f.job.prPublicationMode,'ready');
+  assert.equal((await call(pulseRunnerPublication,f.credential,{jobId:f.job.id,publication:f.report})).code,409,'ready promotion requires a current complete self-check');
+  await db.collection('issues').doc(f.input.issueId).update({acceptanceCriteria:[{id:'criterion-1',text:'criterion'}],devSelfCheck:[{criterionId:'criterion-1',result:'not_met',evidence:'src/file.ts'}],devSelfCheckAt:new Date().toISOString(),devSelfCheckJobId:f.job.id});
+  await db.collection('projects').doc(f.input.projectId).update({definitionOfDone:[{id:'dod-1',text:'DoD',severity:'major'}]});
+  assert.equal((await call(pulseRunnerPublication,f.credential,{jobId:f.job.id,publication:f.report})).code,409,'not_met must block ready publication');
+  await db.collection('issues').doc(f.input.issueId).update({devSelfCheck:[{criterionId:'criterion-1',result:'unverifiable',evidence:'src/file.ts'}],devSelfCheckAt:new Date().toISOString(),devSelfCheckJobId:f.job.id});
+  assert.equal((await call(pulseRunnerPublication,f.credential,{jobId:f.job.id,publication:f.report})).code,409,'unverifiable must block ready publication');
+  await db.collection('issues').doc(f.input.issueId).update({devSelfCheck:[{criterionId:'criterion-1',result:'met',evidence:'src/file.ts'}],devSelfCheckAt:'2000-01-01T00:00:00.000Z',devSelfCheckJobId:f.job.id});
+  assert.equal((await call(pulseRunnerPublication,f.credential,{jobId:f.job.id,publication:f.report})).code,409,'stale self-check must block ready publication');
+  await db.collection('issues').doc(f.input.issueId).update({devSelfCheck:[{criterionId:'criterion-1',result:'met',evidence:'src/file.ts'},{criterionId:'dod-1',result:'met',evidence:'npm test'}],devSelfCheckAt:new Date().toISOString(),devSelfCheckJobId:f.job.id});
+  assert.equal((await call(pulseRunnerPublication,f.credential,{jobId:f.job.id,publication:f.report})).code,200);
   await call(pulseRunnerPublication,f.credential,{jobId:f.job.id,publication:f.report});
   await db.collection('runner_jobs').doc(f.job.id).update({status:'failed'});
   await db.collection('agents').doc(f.input.agentId).update({prPublicationMode:'draft'});
