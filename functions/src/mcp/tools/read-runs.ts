@@ -81,6 +81,7 @@ export function registerRunReadTools(server: McpServer, principal: McpPrincipal)
           costUsd: r.costUsd,
           outcome: r.outcome,
           reviewAttempt: r.reviewAttempt,
+          ...(r.executionMetadata ? { executionMetadata: r.executionMetadata } : {}),
         })),
         ...(runs.length > limit ? { note: `Hay más runs de los que trae este límite (${limit}) — subí "limit" para ver más.` } : {}),
       });

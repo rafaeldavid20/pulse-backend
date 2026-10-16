@@ -13,6 +13,7 @@ import { mcpKeyPepper } from '../common/secrets';
 import { DEV_SCOPES, QA_SCOPES } from '../mcp/scopes';
 import { isRunnerAvailable } from '../common/utils/runner-availability';
 import { parseRunnerUsageReport } from '../common/utils/runner-usage';
+import { parseRunnerExecutionMetadata } from '../common/utils/runner-execution';
 import { safeRunnerJobResult, safeRunnerFailure } from '../common/utils/runner-result';
 import { parsePublication } from '../common/utils/runner-publication';
 import { upsertGitRef } from '../common/utils/project-repos';
@@ -261,11 +262,13 @@ export const pulseRunnerComplete = onRequest(
     } catch (error) {
       res.status(400).json({ error: (error as Error).message }); return;
     }
+    const executionMetadata = req.body?.executionMetadata === undefined ? null : parseRunnerExecutionMetadata(req.body.executionMetadata);
+    if (req.body?.executionMetadata !== undefined && !executionMetadata) { res.status(400).json({error: 'Invalid Runner execution metadata'}); return; }
     let publication;
     try { publication = parsePublication(req.body?.publication, job); } catch { res.status(400).json({error: 'Invalid publication report'}); return; }
     const now = new Date().toISOString();
     const completion = await recordRunnerCompletion(
-      db, jobId, runner.id, provider, outcome, report, now, safeRunnerJobResult(req.body?.result), safeRunnerFailure(req.body?.failure, jobId), publication,
+      db, jobId, runner.id, provider, outcome, report, now, safeRunnerJobResult(req.body?.result), safeRunnerFailure(req.body?.failure, jobId), publication, executionMetadata,
     );
     if (completion !== 'written') {
       if (['completed', 'failed', 'canceled'].includes(completion)) { res.json({ jobId, status: completion, alreadyCompleted: true }); return; }
@@ -365,6 +368,7 @@ export const pulseRunnerPublication = onRequest(
     if (!runner) {res.status(401).json({error: 'Invalid runner credential'}); return;}
     const jobId = req.body?.jobId;
     if (typeof jobId !== 'string' || !/^rjob-[A-Za-z0-9_-]+$/.test(jobId)) {res.status(400).json({error:'Invalid job'}); return;}
+    let selfCheckBlocked = false;
     try {
       await getFirestore().runTransaction(async t => {
         const snap = await t.get(getFirestore().collection('runner_jobs').doc(jobId));
@@ -374,9 +378,31 @@ export const pulseRunnerPublication = onRequest(
         const publication = parsePublication(req.body.publication, job);
         if (!publication || publication.execution !== 'completed' || publication.repositories.some((e: any) => e.stage !== 'pending')) throw new Error();
         if (job.publication && JSON.stringify(job.publication) !== JSON.stringify(publication)) throw new Error();
+        // A zero exit code only means the provider process ended normally. A
+        // ready PR also requires a complete, current self-check. The local
+        // Runner records this checkpoint before any GitHub push/PR side effect.
+        if (job.prPublicationMode === 'ready') {
+          const issueRef = getFirestore().collection('issues').doc(job.issueId);
+          const projectRef = getFirestore().collection('projects').doc(job.projectId);
+          const [issueSnap, projectSnap] = await Promise.all([t.get(issueRef), t.get(projectRef)]);
+          const issue = issueSnap.data();
+          const required = [
+            ...(issue?.acceptanceCriteria || []).map((criterion: any) => criterion.id),
+            ...((projectSnap.data()?.definitionOfDone || []).map((criterion: any) => criterion.id)),
+          ];
+          const checks = Array.isArray(issue?.devSelfCheck) ? issue.devSelfCheck : [];
+          const byId = new Map(checks.map((check: any) => [check.criterionId, check]));
+          const checkedAt = Date.parse(issue?.devSelfCheckAt || '');
+          const deliveredAt = Date.parse(job.deliveredAt || '');
+          if (!issueSnap.exists || issue.devSelfCheckJobId !== job.id || !Number.isFinite(checkedAt) || !Number.isFinite(deliveredAt) || checkedAt < deliveredAt
+            || required.some((id: string) => {
+              const check: any = byId.get(id);
+              return !check || check.result !== 'met' || typeof check.evidence !== 'string' || !check.evidence.trim();
+            })) { selfCheckBlocked = true; throw new Error(); }
+        }
         t.update(snap.ref, {publication});
       });
       res.json({recorded: true});
-    } catch {res.status(409).json({error:'Publication checkpoint is not authorized'});}
+    } catch {res.status(409).json({error:selfCheckBlocked ? 'Ready publication requires a current complete self-check. Report every issue and project criterion as met with fresh evidence, then retry.' : 'Publication checkpoint is not authorized'});}
   },
 );

@@ -74,6 +74,8 @@ export class ReportCriteriaAction extends PlatformActionHandler {
       transaction.update(issueRef,
         cleanUndefined({
           devSelfCheck: checks,
+          devSelfCheckAt: new Date().toISOString(),
+          devSelfCheckJobId: this.principal?.jobId || null,
           updatedAt: new Date().toISOString(),
           updatedBy: actorUid,
         })

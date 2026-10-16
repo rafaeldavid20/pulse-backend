@@ -1,10 +1,11 @@
 import { RunnerFailure } from '../common/utils/runner-result';
 import { Firestore } from 'firebase-admin/firestore';
 import { RunnerUsageReport } from '../common/utils/runner-usage';
+import { RunnerExecutionMetadata } from '../common/utils/runner-execution';
 
 export async function recordRunnerCompletion(
   db: Firestore, jobId: string, runnerId: string, provider: string,
-  outcome: 'completed' | 'failed' | 'canceled', report: RunnerUsageReport, now: string, result: string | null = null, failure: RunnerFailure | null = null, publication: ReturnType<typeof import('../common/utils/runner-publication').parsePublication> = null,
+  outcome: 'completed' | 'failed' | 'canceled', report: RunnerUsageReport, now: string, result: string | null = null, failure: RunnerFailure | null = null, publication: ReturnType<typeof import('../common/utils/runner-publication').parsePublication> = null, executionMetadata: RunnerExecutionMetadata | null = null,
 ): Promise<'written' | 'missing' | 'expired' | 'mismatch' | 'completed' | 'failed' | 'canceled'> {
   const jobRef = db.collection('runner_jobs').doc(jobId);
   const runRef = db.collection('agent_runs').doc(jobId);
@@ -19,9 +20,10 @@ export async function recordRunnerCompletion(
     if (publication && publication.repositories.some((e: any) => e.stage === 'linked' && !job.linkedPublications?.some((p: any) => p.repoFullName === e.repo && p.sha === e.sha && p.prNumber === e.prNumber))) throw new Error('Publication link was not recorded.');
     if (publication && outcome === 'completed' && (publication.execution !== 'completed' || publication.repositories.some((e: any) => e.stage !== 'linked'))) throw new Error('Publication is incomplete.');
     const finalOutcome = job.cancelRequestedAt ? 'canceled' : outcome;
-    transaction.update(jobRef, { ...(publication ? {publication} : {}), status: finalOutcome, completedAt: now, result, failure: finalOutcome === 'canceled' ? null : failure });
+    transaction.update(jobRef, { ...(publication ? {publication} : {}), ...(executionMetadata ? {executionMetadata} : {}), status: finalOutcome, completedAt: now, result, failure: finalOutcome === 'canceled' ? null : failure });
     transaction.update(runRef, {
       provider, runnerOutcome: finalOutcome, usage: report.usage,
+      ...(executionMetadata ? {executionMetadata} : {}),
       ...(report.costUsd === undefined ? {} : { costUsd: report.costUsd }),
     });
     return 'written';
