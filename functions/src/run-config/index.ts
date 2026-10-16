@@ -20,6 +20,8 @@ export interface RunConfigContext {
   handoffRepo?: string;
   /** Solo en `rework`/`review`: número de intento de revisión. */
   reviewAttempt?: number;
+  /** Resolved once when the caller requests this run's immutable configuration. */
+  skills?: RunSkill[];
 }
 
 export interface RunConfig {
@@ -30,10 +32,7 @@ export interface RunConfig {
   disallowedTools: string[];
   /** Tope de turnos, cuando el modo lo define. `undefined` deja el default de la acción. */
   maxTurns?: number;
-  /**
-   * Skills que el run tiene que materializar antes de invocar a Claude. Vacío
-   * hasta M3/M4 (TES-230/TES-231): acá se construye el canal, no el contenido.
-   */
+  /** Managed skills selected for this agent/project/workspace, snapshotted for this run. */
   skills: RunSkill[];
 }
 
@@ -42,8 +41,11 @@ export interface RunSkill {
   name: string;
   /** Contenido completo del `SKILL.md`, con su frontmatter. */
   content: string;
+  /** Stable managed-skill id and immutable revision used for run provenance. */
+  id: string;
+  version: number;
   /** De dónde salió: sirve para que el run pueda decir con qué corrió. */
-  source: 'workspace' | 'project';
+  source: 'agent' | 'project' | 'workspace';
 }
 
 /**
@@ -70,7 +72,7 @@ const QA_FORBIDDEN_TOOLS = [...FORBIDDEN_TOOLS, 'Edit', 'Write', 'MultiEdit', 'N
 
 const QA_MAX_TURNS = 40;
 
-export function buildRunConfig(mode: RunMode, context: RunConfigContext, skills: RunSkill[] = []): RunConfig {
+export function buildRunConfig(mode: RunMode, context: RunConfigContext, skills: RunSkill[] = context.skills || []): RunConfig {
   const vars: Record<string, string | number | undefined> = {
     issueId: context.issueId,
     issueIdentifier: context.issueIdentifier,

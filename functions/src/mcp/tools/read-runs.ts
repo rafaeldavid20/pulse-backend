@@ -17,6 +17,43 @@ const WORKSPACE_RUNS_FETCH_CAP = 500;
 export function registerRunReadTools(server: McpServer, principal: McpPrincipal) {
   const db = getFirestore();
 
+  async function resolveManagedSkills(issue: FirebaseFirestore.DocumentData): Promise<ReturnType<typeof buildRunConfig>['skills']> {
+    const agentId = principal.agentId;
+    if (!agentId) return [];
+    const agentSnap = await db.collection('agents').doc(agentId).get();
+    const agent = agentSnap.data();
+    if (!agent || agent.workspaceId !== principal.workspaceId || agent.archivedAt) return [];
+    const projectSnap = issue.projectId ? await db.collection('projects').doc(issue.projectId).get() : null;
+    const project = projectSnap?.data();
+    if (project && project.workspaceId !== principal.workspaceId) return [];
+    const workspaceSnap = await db.collection('workspaces').doc(principal.workspaceId).get();
+    const tiers = [
+      { source: 'agent' as const, ids: agent.managedSkillIds || [] },
+      { source: 'project' as const, ids: project?.managedSkillIds || [] },
+      { source: 'workspace' as const, ids: workspaceSnap.data()?.managedSkillIds || [] },
+    ];
+    const resolved: ReturnType<typeof buildRunConfig>['skills'] = [];
+    const usedNames = new Set<string>();
+    for (const tier of tiers) {
+      const ids = [...new Set<string>(tier.ids.filter((id: unknown): id is string => typeof id === 'string'))];
+      const docs = await Promise.all(ids.map(id => db.collection('managed_skills').doc(id).get()));
+      const candidates = docs.map(snap => ({ id: snap.id, ...snap.data() })).filter((skill: any) =>
+        skill && skill.workspaceId === principal.workspaceId && skill.status === 'active' &&
+        typeof skill.name === 'string' && typeof skill.content === 'string' && Number.isSafeInteger(skill.version)
+      ) as Array<{ id: string; name: string; content: string; version: number; workspaceId: string }>;
+      const byName = new Map<string, typeof candidates>();
+      for (const skill of candidates) byName.set(skill.name, [...(byName.get(skill.name) || []), skill]);
+      for (const [name, matches] of byName) {
+        if (usedNames.has(name)) continue;
+        if (matches.length > 1) throw new Error(`Conflicto de skills gestionados para '${name}' en nivel ${tier.source}; elegí una sola versión.`);
+        const skill = matches[0];
+        resolved.push({ id: skill.id, name, content: skill.content, version: skill.version, source: tier.source });
+        usedNames.add(name);
+      }
+    }
+    return resolved;
+  }
+
   server.tool(
     'pulse_get_run_config',
     'Returns the configuration this run has to start with: the prompt for its mode, the tools it may and may not use, and the skills to materialize before invoking Claude. The Pulse workflow calls this at the beginning of every run — it is not something the model needs to call mid-session. It exists so that changing a prompt, a tool policy or a skill does not require rewriting the workflow in every repo and reconnecting them.',
@@ -32,15 +69,13 @@ export function registerRunReadTools(server: McpServer, principal: McpPrincipal)
       if (!isRunMode(mode)) return textResult({ error: `Invalid run mode '${String(mode)}'.` });
 
       const issue = doc.data()!;
-      // Los skills salen vacíos hasta M3/M4 (TES-230/TES-231): M1 construye el
-      // canal, no el contenido. El workflow ya los materializa, así que cuando
-      // esas historias llenen este array no hace falta tocar ningún repo.
       return textResult(
         buildRunConfig(mode, {
           issueId: doc.id,
           issueIdentifier: issue.identifier,
           handoffRepo,
           reviewAttempt,
+          skills: await resolveManagedSkills(issue),
         })
       );
     }
