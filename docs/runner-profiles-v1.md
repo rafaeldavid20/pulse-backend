@@ -96,6 +96,14 @@ an applied command, its current snapshot may have a different revision from
 the command's original applied revision; the result still identifies the
 original operation.
 
+A human read without a request ID discovers the unresolved request for the
+current workspace/agent/Runner/binding. Discovery also takes precedence over a
+remembered older terminal ID; it never exposes another binding's command.
+The UI adopts that ID and polls its result, even with browser storage disabled.
+A fresh client shows no confirmed values while waiting for the exact ACK;
+intermediate Runner observations do not establish confirmation. Discovery
+returns only ID/status, never another client's patch for resubmission.
+
 The UI retains confirmed values while applying, persists only safe request
 metadata locally, queries uncertain IDs after reconnection and allows an
 explicit retry of the same ID when admission itself was uncertain. It never

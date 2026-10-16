@@ -39,7 +39,14 @@ export async function manageRunnerProfile(db: Firestore, actor: string, raw: unk
     const stored = (await tx.get(refFor(db, c))).data();
     const confirmed = stored?.binding === c.binding ? stored : null;
     const existing = input.requestId ? (await tx.get(requestRef(db, c, input.requestId))).data() : null;
-    if (input.op === 'read') return { ...c, snapshot: confirmed?.snapshot || null, observedAt: confirmed?.observedAt || null, request: existing?.binding === c.binding ? { id: existing.requestId, status: existing.status } : null };
+    if (input.op === 'read') {
+      // Discover uncertainty across clients, including clients without local storage.
+      // Prefer the active command even if the caller remembers an older terminal ID.
+      const queued = await tx.get(db.collection('runner_profile_requests').where('runnerId', '==', c.runnerId));
+      const unresolved = queued.docs.map(d => d.data()).find(r => r.workspaceId === c.workspaceId && r.agentId === c.agentId && r.binding === c.binding && r.status === 'applying');
+      const request = unresolved || (existing?.binding === c.binding ? existing : null);
+      return { ...c, snapshot: confirmed?.snapshot || null, observedAt: confirmed?.observedAt || null, request: request ? { id: request.requestId, status: request.status } : null };
+    }
     if (!input.requestId || !input.expectedRevision || !input.patch) throw new Error('Falta ID, revisión o patch.');
     if (existing) {
       if (existing.binding !== c.binding || existing.actor !== actor || JSON.stringify(existing.patch) !== JSON.stringify(input.patch) || existing.expectedRevision !== input.expectedRevision) throw new Error('ID de solicitud ya utilizado.');

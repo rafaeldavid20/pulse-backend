@@ -59,7 +59,26 @@ test('backend + real Runner module: confirmed apply, lost acknowledgement, idemp
   await assert.rejects(f.remote.syncRemoteProfiles(f.config, dropped, f.deps), /lost/);
   assert.equal((await f.read(requestId)).request.status, 'applying');
   assert.equal((await f.local.readProfiles())[`${f.workspaceId}:${f.agentId}`].model, 'model-one');
-  await f.remote.syncRemoteProfiles(f.config, f.exchange, f.deps);
+  // The next exchange publishes the committed snapshot before replaying the ACK.
+  // A fresh browser (including a different authorized admin) has no request ID.
+  let discoveredBeforeReplay = false;
+  const beforeReplay = async (c: any, path: string, body: any) => {
+    const response = await f.exchange(c, path, body);
+    if (body.profiles?.[0] && !body.profiles[0].result) {
+      discoveredBeforeReplay = true;
+      for (const actor of [f.owner, f.admin]) {
+        const discovered = await f.read(undefined, actor);
+        assert.equal(discovered.snapshot.model, 'model-one'); // Still only an observation.
+        assert.deepEqual(discovered.request, { id: requestId, status: 'applying' });
+      }
+      assert.deepEqual((await f.read(randomUUID())).request, { id: requestId, status: 'applying' });
+      await assert.rejects(f.read(undefined, f.other), /dueño/);
+    }
+    return response;
+  };
+  await f.remote.syncRemoteProfiles(f.config, beforeReplay, f.deps);
+  assert.equal(discoveredBeforeReplay, true);
+  assert.equal((await f.read()).request, null); // Discovery returns unresolved requests only.
   const confirmed = await f.read(requestId); assert.equal(confirmed.request.status, 'applied'); assert.equal(confirmed.snapshot.model, 'model-one');
   assert.equal((await manageRunnerProfile(db, f.owner, input)).status, 'applied');
   await assert.rejects(manageRunnerProfile(db, f.owner, { ...input, patch: { model: null } }), /ID/);
@@ -126,6 +145,9 @@ test('two agents on one Runner retain independent profiles and serialize concurr
   const make = () => ({ agentId: f.agentId, runnerId: f.runnerId, op: 'request', requestId: randomUUID(), expectedRevision: initial.snapshot.revision, patch: { model: 'model-one' } });
   const results = await Promise.allSettled([manageRunnerProfile(db, f.owner, make()), manageRunnerProfile(db, f.owner, make())]);
   assert.equal(results.filter(r => r.status === 'fulfilled').length, 1);
+  assert.equal((await f.read()).request.status, 'applying');
+  const independent = await manageRunnerProfile(db, f.owner, { agentId: secondId, runnerId: f.runnerId, op: 'read' });
+  assert.ok('request' in independent); assert.equal(independent.request, null);
   await f.remote.syncRemoteProfiles(config, f.exchange, f.deps);
   assert.equal((await f.read()).snapshot.model, 'model-one');
   const second = await manageRunnerProfile(db, f.owner, { agentId: secondId, runnerId: f.runnerId, op: 'read' });
