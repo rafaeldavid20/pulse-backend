@@ -149,6 +149,15 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Local profile metadata is exposed only by the permission-checked action.
+    // Workspace membership and public-agent visibility do not grant access.
+    match /runner_profiles/{profileId} {
+      allow read, write: if false;
+    }
+    match /runner_profile_requests/{requestId} {
+      allow read, write: if false;
+    }
+
     // Daily per-workspace counter for the Fase 6 autonomous-dispatch circuit
     // breaker. Admin SDK only — agentDispatchTrigger is the only writer.
     match /agent_dispatch_counters/{counterId} {

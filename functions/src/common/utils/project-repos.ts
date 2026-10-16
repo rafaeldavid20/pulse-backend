@@ -39,9 +39,11 @@ export async function runnerProjectRepoAccess(
   db: Firestore,
   issue: FirebaseFirestore.DocumentData,
   installationRepos: string[],
+  transaction?: Transaction,
 ): Promise<{ projectId: string; repos: string[] } | null> {
   if (!issue.projectId) return null;
-  const snap = await db.collection('projects').doc(issue.projectId).get();
+  const ref = db.collection('projects').doc(issue.projectId);
+  const snap = await (transaction ? transaction.get(ref) : ref.get());
   if (!snap.exists) return null;
   const project = snap.data()!;
   if (project.workspaceId !== issue.workspaceId) return null;

@@ -1,5 +1,6 @@
 import { RequestReworkAction } from '../actions/reviews/request-rework';
 import { PreflightAgentAction } from '../actions/runners/preflight-agent';
+import { RunnerProfileAction } from '../actions/runners/profile';
 import { PlatformActionRequest, PlatformActionResponse } from '../common/platform-actions/interfaces';
 import { CreateIssueAction } from '../actions/issues/create-issue';
 import { UpdateIssueAction } from '../actions/issues/update-issue';
@@ -141,6 +142,8 @@ export async function dispatchPlatformAction(
       return new GetQaCalibrationAction(request, callerUid, callerEmail).run();
     case 'runners.preflight':
       return new PreflightAgentAction(request, callerUid, callerEmail).run();
+    case 'runners.profile':
+      return new RunnerProfileAction(request, callerUid, callerEmail).run();
     case 'runners.register':
       return new RegisterRunnerAction(request, callerUid, callerEmail).run();
     case 'runners.issueJob':
