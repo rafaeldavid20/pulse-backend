@@ -1,3 +1,5 @@
+import { createHash } from 'crypto';
+import { RequestReworkAction } from './request-rework';
 import { getFirestore } from 'firebase-admin/firestore';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
@@ -85,6 +87,12 @@ export class ReturnToAgentAction extends PlatformActionHandler {
     const body = `**Devuelto al agente**: reasignado para retrabajo tras needs_human, intentos de revisión y tanda de runs del issue reiniciados; historial y costo acumulado conservados.\n\n${String(data.comment).trim()}`;
     await new CreateCommentAction({ actionCode: 'comments.create', data: { issueId: data.issueId, body, source: 'web' } }, actorUid).run();
 
-    return { issueId: data.issueId, assigneeId, status: 'in_progress' };
+    // The human return must actually request a signed continuation. If readiness
+    // fails, pending+history remains recoverable through requestDevelopment.
+    const requestId = `return-${createHash('sha256').update(`${data.issueId}:${actorUid}:${now}`).digest('hex')}`;
+    const development = await new RequestReworkAction({ actionCode: 'issues.requestDevelopment', data: {
+      issueId: data.issueId, requestId, comment: String(data.comment).trim(),
+    } }, actorUid, undefined, 'issues.requestDevelopment').run();
+    return { issueId: data.issueId, assigneeId, status: 'in_progress', development };
   }
 }

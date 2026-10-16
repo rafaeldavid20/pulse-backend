@@ -1,3 +1,4 @@
+import { cleanUndefined } from './clean';
 import { FieldValue, Firestore } from 'firebase-admin/firestore';
 import { sign, createHash } from 'crypto';
 import { activityLease } from './run-activity';
@@ -8,7 +9,7 @@ import { isTransientRunnerPreflight, runnerPreflight } from './runner-preflight'
 import { currentRunnerProjectAccess } from './project-repos';
 import { DISPATCH_COOLDOWN_MS, RunnerDispatchError } from './dispatch-failure';
 import { checkWorkspaceDispatchBudget, todayKey } from './dispatch-counter';
-import { assertHumanReworkRequester, reworkRepositories } from './human-rework';
+import { assertHumanReworkRequester, reworkRepositories, returnedDevelopmentReview } from './human-rework';
 import { checkIssueRunBudget } from './issue-run-budget';
 import { assertReviewRequest } from './review-request';
 import { RunnerJob } from '../domain.generated';
@@ -63,6 +64,8 @@ export async function enqueueRunnerJob(
     const issueRef = db.collection('issues').doc(job.issueId);
     const issue = reservation ? (await transaction.get(issueRef)).data() : undefined;
     const humanRequest = reservation && reservation !== true && (reservation.mode === 'rework' || reservation.mode === 'task') && reservation.requestedBy ? reservation : undefined;
+    const returnedReview = humanRequest?.mode === 'rework' ? returnedDevelopmentReview(issue) : undefined;
+    const developmentReview = returnedReview || issue?.review;
     const requester = humanRequest?.requestedBy;
     const requestRef = humanRequest && 'requestId' in humanRequest && humanRequest.requestId
       ? db.collection('development_requests').doc(createHash('sha256').update(`${job.issueId}:${requester}:${humanRequest.requestId}`).digest('hex')) : undefined;
@@ -106,7 +109,7 @@ export async function enqueueRunnerJob(
         }
       } else if (reservation.mode === 'task') {
         if (job.mode !== 'task' || !['todo', 'in_progress'].includes(issue.status) || issue.review?.state || (issue.gitRefs || [issue.git]).some((ref: any) => ref?.prNumber)) throw new Error('El issue requiere resolver su revisión o PR existente antes de iniciar desarrollo.');
-      } else if (job.mode !== 'rework' || issue.review?.state !== 'changes_requested' || issue.review.attempt !== reservation.attempt || (!humanRequest && issue.review.reworkDispatchedForAttempt === reservation.attempt)) {
+      } else if (job.mode !== 'rework' || developmentReview?.state !== 'changes_requested' || developmentReview.attempt !== reservation.attempt || (!humanRequest && issue.review.reworkDispatchedForAttempt === reservation.attempt)) {
         throw new RunnerDispatchError('enqueue', ['El intento de retrabajo ya fue enviado o cambió.'], true);
       }
     }
@@ -114,7 +117,7 @@ export async function enqueueRunnerJob(
       if (!['in_review', 'in_progress', 'todo'].includes(issue!.status)) throw new Error('Reabrí el issue antes de ejecutar desarrollo.');
       if ((issue!.pendingRepoWork || []).some((entry: any) => !entry.dispatchedAt)) throw new Error('El issue tiene un traspaso pendiente.');
       if (humanRequest.mode === 'rework') {
-        const qaId = issue!.review.reviewerId || issue!.review.dispatchedTo;
+        const qaId = developmentReview.reviewerId || developmentReview.dispatchedTo;
         const qa = qaId ? await transaction.get(db.collection('agents').doc(qaId)) : undefined;
         if (humanRequest.attempt >= (qa?.data()?.maxReviewAttempts ?? 2)) throw new Error('No quedan intentos de revisión disponibles. Usá la recuperación de revisión escalada.');
       }
@@ -223,7 +226,9 @@ export async function enqueueRunnerJob(
       } else if (reservation !== true && reservation.mode === 'handoff') {
         modeMarks = { pendingRepoWork: issue!.pendingRepoWork.map((e: any) => e.repoFullName === job.repoFullName ? { ...e, dispatchedAt: issuedAt } : e) };
       } else if (reservation !== true && reservation.mode === 'rework') {
-        modeMarks = { 'review.reworkDispatchedAt': issuedAt, 'review.reworkDispatchedForAttempt': reservation.attempt };
+        modeMarks = returnedReview
+          ? { review: cleanUndefined({ ...returnedReview, reworkDispatchedAt: issuedAt, reworkDispatchedForAttempt: reservation.attempt }) }
+          : { 'review.reworkDispatchedAt': issuedAt, 'review.reworkDispatchedForAttempt': reservation.attempt };
       }
       transaction.update(issueRef, {
         ...modeMarks,

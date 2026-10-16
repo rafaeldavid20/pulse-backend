@@ -21,3 +21,18 @@ export function reworkRepositories(issue: any, authorized: string[], target: str
   }
   return [...new Set<string>(active.map((ref: any) => ref.repoFullName))].sort();
 }
+
+/** Only a recorded human return may resume the archived findings at attempt zero.
+ * Older returnToAgent calls left this pending state without enqueuing a job.
+ */
+export function returnedDevelopmentReview(issue: any): any | undefined {
+  const review = issue?.review;
+  const archived = review?.history?.[review.history.length - 1];
+  if (!['pending', 'changes_requested'].includes(review?.state) || review.attempt !== 0 || archived?.state !== 'needs_human' ||
+      typeof issue.runBudgetResetBy !== 'string' || !issue.runBudgetResetBy ||
+      !Number.isFinite(Date.parse(issue.runBudgetResetAt))) return undefined;
+  if (review.state === 'changes_requested') return review;
+  return { state: 'changes_requested', attempt: 0, history: review.history,
+    reviewerId: archived.reviewerId || archived.dispatchedTo, findings: archived.findings,
+    verdict: archived.verdict, criteriaResults: archived.criteriaResults, prs: archived.prs };
+}

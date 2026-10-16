@@ -83,3 +83,17 @@ is automated and local; it does not modify TES-294 or execute its findings.
   that QA test and 216 tests total, then stalled in the unrelated workspace
   rename snapshot listener and was stopped. The final focused run above passed
   cleanly. This is not a claim that the entire integration suite passed.
+
+## Escalated review returns (TES-356)
+
+`reviews.returnToAgent` now requests a signed human rework job after archiving
+and renewing the issue batch. It does not require autonomous mode. If preparation
+fails, the return remains recorded and the Development control can retry safely.
+Existing `pending`/attempt-zero reviews left by previous returns are recognized
+only with the server's human-return metadata and a final `needs_human` history
+entry. A read-only availability preview does not mutate the review. Enqueue
+revalidates that state, restores the archived findings/reviewer/context, keeps
+attempt zero for the new QA batch and preserves the complete history and PR
+branches. No additional budget reset occurs during recovery. Ordinary pending QA
+is still rejected. A restored attempt-zero rework remains retryable after a failed
+job, subject to the same live-job, permission and budget checks.
