@@ -1,3 +1,4 @@
+import { runnerProcessReport } from '../common/utils/runner-version';
 import { RUN_ACTIVITY_TTL_MS } from '../common/utils/run-activity';
 import { exchangeRunnerProfiles } from './profiles';
 import { findPendingRunnerJob } from '../common/utils/pending-runner-job';
@@ -130,6 +131,7 @@ export const pulseRunnerHeartbeat = onRequest(
       });
     }
     await getFirestore().collection('runners').doc(runner.id).update({ status, lastHeartbeatAt: now, updatedAt: now,
+      ...runnerProcessReport(req.body, now),
       ...(readiness ? { readiness, readinessCheckedAt: now, profileVersion: readiness.profileProtocolVersion || 0 } : {}),
     });
     res.json({ runnerId: runner.id, status, lastHeartbeatAt: now, cancelRequested });

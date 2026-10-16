@@ -1,3 +1,5 @@
+import { getRunnerRelease } from '../../runners/release';
+import { runnerUpdateStatus, runnerReleaseChangesUrl } from '../../common/utils/runner-version';
 import { randomBytes } from 'crypto';
 import { getFirestore } from 'firebase-admin/firestore';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
@@ -44,10 +46,11 @@ export class ListRunnersAction extends RunnerWorkspaceAction {
     const db = getFirestore();
     const caller = await getWorkspaceMember(db, this.workspaceId!, this.caller.uid!);
     const snap = await db.collection('runners').where('workspaceId', '==', this.workspaceId).get();
+    const release = await getRunnerRelease();
     const runners = snap.docs
       .map((doc) => doc.data())
       .filter((runner) => isWorkspaceAdmin(caller) || runner.ownerMemberId === this.caller.uid)
-      .map(({ deviceSecretHash: _secret, ...runner }) => runner);
+      .map(({ deviceSecretHash: _secret, ...runner }) => ({ ...runner, release, changesUrl: runnerReleaseChangesUrl(runner.processVersion, release), updateStatus: runnerUpdateStatus(runner.processVersion, release) }));
     return { runners };
   }
 }
