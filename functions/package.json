@@ -33,11 +33,13 @@
     "firebase-functions": "^5.0.0",
     "libsodium-wrappers": "^0.8.4",
     "nanoid": "^3.3.7",
+    "semver": "^7.8.5",
     "zod": "^4.5.4"
   },
   "devDependencies": {
     "@firebase/rules-unit-testing": "5.0.0",
     "@types/node": "^20.11.0",
+    "@types/semver": "^7.8.0",
     "firebase": "12.17.1",
     "typescript": "^5.3.3"
   },
