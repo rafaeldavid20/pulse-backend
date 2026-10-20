@@ -389,12 +389,12 @@ export const pulseRunnerPublication = onRequest(
           const required = [
             ...(issue?.acceptanceCriteria || []).map((criterion: any) => criterion.id),
             ...((projectSnap.data()?.definitionOfDone || []).map((criterion: any) => criterion.id)),
-          ];
+          ].filter((id: unknown): id is string => typeof id === 'string' && id.length > 0);
           const checks = Array.isArray(issue?.devSelfCheck) ? issue.devSelfCheck : [];
           const byId = new Map(checks.map((check: any) => [check.criterionId, check]));
           const checkedAt = Date.parse(issue?.devSelfCheckAt || '');
           const deliveredAt = Date.parse(job.deliveredAt || '');
-          if (!issueSnap.exists || issue.devSelfCheckJobId !== job.id || !Number.isFinite(checkedAt) || !Number.isFinite(deliveredAt) || checkedAt < deliveredAt
+          if (!issueSnap.exists || !projectSnap.exists || required.length === 0 || issue.devSelfCheckJobId !== job.id || !Number.isFinite(checkedAt) || !Number.isFinite(deliveredAt) || checkedAt < deliveredAt
             || required.some((id: string) => {
               const check: any = byId.get(id);
               return !check || check.result !== 'met' || typeof check.evidence !== 'string' || !check.evidence.trim();

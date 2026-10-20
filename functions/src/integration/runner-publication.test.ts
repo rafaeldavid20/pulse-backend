@@ -100,6 +100,8 @@ test('publication policy comes from agent settings and is frozen for recovery', 
   const f=await fixture('ready',true);
   assert.equal(f.job.prPublicationMode,'ready');
   assert.equal((await call(pulseRunnerPublication,f.credential,{jobId:f.job.id,publication:f.report})).code,409,'ready promotion requires a current complete self-check');
+  await db.collection('issues').doc(f.input.issueId).update({devSelfCheck:[],devSelfCheckAt:new Date().toISOString(),devSelfCheckJobId:f.job.id});
+  assert.equal((await call(pulseRunnerPublication,f.credential,{jobId:f.job.id,publication:f.report})).code,409,'an empty rubric cannot authorize ready publication');
   await db.collection('issues').doc(f.input.issueId).update({acceptanceCriteria:[{id:'criterion-1',text:'criterion'}],devSelfCheck:[{criterionId:'criterion-1',result:'not_met',evidence:'src/file.ts'}],devSelfCheckAt:new Date().toISOString(),devSelfCheckJobId:f.job.id});
   await db.collection('projects').doc(f.input.projectId).update({definitionOfDone:[{id:'dod-1',text:'DoD',severity:'major'}]});
   assert.equal((await call(pulseRunnerPublication,f.credential,{jobId:f.job.id,publication:f.report})).code,409,'not_met must block ready publication');
@@ -118,6 +120,10 @@ test('publication policy comes from agent settings and is frozen for recovery', 
   await db.collection('runner_jobs').doc(retry.id).update({status:'completed'});
   const next=await enqueueRunnerJob(db,{...f.input,prPublicationMode:'ready'},key);
   assert.equal(next.prPublicationMode,'draft','caller cannot override current agent setting');
+});
+test('draft publication remains available when self-check is incomplete',async()=>{
+  const f=await fixture('draft',true);
+  assert.equal((await call(pulseRunnerPublication,f.credential,{jobId:f.job.id,publication:f.report})).code,200);
 });
 test('old Runners retain default draft jobs and refuse ready publication', async()=>{
   const f=await fixture();assert.equal(f.job.prPublicationMode,undefined);
