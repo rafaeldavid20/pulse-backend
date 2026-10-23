@@ -96,7 +96,7 @@ test('service App also stops persisting installation tokens and clears its legac
 });
 
 
-test('publication policy comes from agent settings and is frozen for recovery', async()=>{
+test('publication policy comes from agent settings and ready recovery is draft-only', async()=>{
   const f=await fixture('ready',true);
   assert.equal(f.job.prPublicationMode,'ready');
   assert.equal((await call(pulseRunnerPublication,f.credential,{jobId:f.job.id,publication:f.report})).code,409,'ready promotion requires a current complete self-check');
@@ -116,7 +116,7 @@ test('publication policy comes from agent settings and is frozen for recovery', 
   await db.collection('agents').doc(f.input.agentId).update({prPublicationMode:'draft'});
   const targets=f.job.publicationTargets!.map(t=>({...t,sha:'a'.repeat(40)}));
   const retry=await enqueueRunnerJob(db,{...f.input,prPublicationMode:'draft',recoveryOf:f.job.id,publicationTargets:targets},key);
-  assert.equal(retry.prPublicationMode,'ready');
+  assert.equal(retry.prPublicationMode,'draft','recovery cannot promote work through the automatic path');
   await db.collection('runner_jobs').doc(retry.id).update({status:'completed'});
   const next=await enqueueRunnerJob(db,{...f.input,prPublicationMode:'ready'},key);
   assert.equal(next.prPublicationMode,'draft','caller cannot override current agent setting');

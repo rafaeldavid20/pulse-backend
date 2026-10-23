@@ -4,6 +4,7 @@ import { exchangeRunnerProfiles } from './profiles';
 import { findPendingRunnerJob } from '../common/utils/pending-runner-job';
 import { configureRunnerRepos } from './configure-repos';
 import { currentRunnerProjectAccess } from '../common/utils/project-repos';
+import { hasCompleteDevSelfCheck } from '../common/utils/dev-self-check';
 import { parseRunnerReadiness, runnerPreflight } from '../common/utils/runner-preflight';
 import { timingSafeEqual } from 'crypto';
 import { FieldValue, getFirestore } from 'firebase-admin/firestore';
@@ -386,19 +387,7 @@ export const pulseRunnerPublication = onRequest(
           const projectRef = getFirestore().collection('projects').doc(job.projectId);
           const [issueSnap, projectSnap] = await Promise.all([t.get(issueRef), t.get(projectRef)]);
           const issue = issueSnap.data();
-          const required = [
-            ...(issue?.acceptanceCriteria || []).map((criterion: any) => criterion.id),
-            ...((projectSnap.data()?.definitionOfDone || []).map((criterion: any) => criterion.id)),
-          ].filter((id: unknown): id is string => typeof id === 'string' && id.length > 0);
-          const checks = Array.isArray(issue?.devSelfCheck) ? issue.devSelfCheck : [];
-          const byId = new Map(checks.map((check: any) => [check.criterionId, check]));
-          const checkedAt = Date.parse(issue?.devSelfCheckAt || '');
-          const deliveredAt = Date.parse(job.deliveredAt || '');
-          if (!issueSnap.exists || !projectSnap.exists || required.length === 0 || issue.devSelfCheckJobId !== job.id || !Number.isFinite(checkedAt) || !Number.isFinite(deliveredAt) || checkedAt < deliveredAt
-            || required.some((id: string) => {
-              const check: any = byId.get(id);
-              return !check || check.result !== 'met' || typeof check.evidence !== 'string' || !check.evidence.trim();
-            })) { selfCheckBlocked = true; throw new Error(); }
+          if (!issueSnap.exists || !projectSnap.exists || !hasCompleteDevSelfCheck(issue, projectSnap.data(), job.id, job.deliveredAt)) { selfCheckBlocked = true; throw new Error(); }
         }
         t.update(snap.ref, {publication});
       });

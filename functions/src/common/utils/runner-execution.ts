@@ -29,8 +29,8 @@ export function parseRunnerExecutionMetadata(value: unknown): RunnerExecutionMet
     || !Number.isSafeInteger(v.runConfigVersion) || !['task', 'rework', 'review'].includes(String(v.runConfigMode))
     || v.runConfigOrigin !== 'pulse') return null;
   if (v.requestedModel === null && v.requestedModelSource !== 'provider_default') return null;
-  if (v.effectiveModel === null && v.effectiveModelSource !== 'unknown') return null;
-  if (v.reasoningLevel === null && v.reasoningLevelSource !== 'unknown') return null;
+  if ((v.effectiveModel === null) !== (v.effectiveModelSource === 'unknown')) return null;
+  if ((v.reasoningLevel === null) !== (v.reasoningLevelSource === 'unknown')) return null;
   return {
     provider: v.provider as RunnerExecutionMetadata['provider'], cliVersion: v.cliVersion as string,
     requestedModel: v.requestedModel as string | null, requestedModelSource: v.requestedModelSource as RunnerExecutionMetadata['requestedModelSource'],

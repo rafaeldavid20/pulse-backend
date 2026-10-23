@@ -12,6 +12,7 @@ import { isRunnerAvailable } from '../../common/utils/runner-availability';
 import { runnerJobSigningPrivateKey } from '../../common/secrets';
 import { qaAssignmentError } from '../../common/utils/qa-assignment';
 import { findProjectQaRunner } from '../../common/utils/qa-runner';
+import { hasCompleteDevSelfCheck } from '../../common/utils/dev-self-check';
 
 /** Explicit human QA request: one transactional job, with no reset of automatic limits. */
 export class ReviewsRerunAction extends PlatformActionHandler {
@@ -51,7 +52,7 @@ export class ReviewsRerunAction extends PlatformActionHandler {
     if (!['in_review', 'in_progress', 'todo'].includes(issue.status)) throw new Error('Solo se puede solicitar QA en una issue activa con PRs elegibles.');
     const review = issue.review as IssueReview | undefined;
     if (review?.state === 'running') throw new Error('QA sigue activo. Esperá a que termine antes de solicitar otra revisión.');
-    const refs = reviewRequestRefs(issue);
+    const refs = reviewRequestRefs(issue, true);
     const prs: Array<{repoFullName: string; prNumber: number; branch?: string}> = issue.gitRefs?.length ? issue.gitRefs : [issue.git];
 
     const { repoFullName } = await resolveIssueRepo(db, { ...issue, id: data.issueId }, { agentId: issue.execution?.agentId || issue.assigneeId });
@@ -141,13 +142,18 @@ export class ReviewsRerunAction extends PlatformActionHandler {
       throw new Error('No se pudieron verificar los PRs en GitHub. Revisá la conexión del workspace y reintentá.');
     }
     if (prs.some((pr, i) => origins[i].headRepoFullName !== pr.repoFullName || (pr.branch && origins[i].headRef !== pr.branch))) throw new Error('Los PRs deben provenir de las ramas registradas en sus repositorios. Revisá los PRs vinculados.');
+    const headScope = prs.map((pr, i) => ({repoFullName: pr.repoFullName, prNumber: pr.prNumber, headSha: origins[i].headSha})).sort((a, b) => a.repoFullName.localeCompare(b.repoFullName) || a.prNumber - b.prNumber);
+    const project = (await db.collection('projects').doc(issue.projectId).get()).data();
+    const checkJob = issue?.devSelfCheckJobId ? (await db.collection('runner_jobs').doc(issue.devSelfCheckJobId).get()).data() : null;
+    const partial = !checkJob || checkJob.status !== 'completed' || checkJob.issueId !== data.issueId || !hasCompleteDevSelfCheck(issue, project, checkJob.id, checkJob.deliveredAt);
+    if ((partial || origins.some(origin => origin.draft)) && data.acknowledgePartial !== true) throw new Error('La entrega está incompleta o tiene PRs draft. Confirmá acknowledgePartial para solicitar una revisión manual de este contenido.');
     const job = await enqueueRunnerJob(db, {
       workspaceId: issue.workspaceId, issueId: data.issueId, agentId: qaAgentId,
       runnerId, repoFullName,
       contextRepos: (await db.collection('projects').doc(issue.projectId).get()).data()?.repoFullNames || [],
       mode: 'review',
     }, runnerJobSigningPrivateKey.value(), 'runner-job-v1', {
-      mode: 'review', attempt: review?.attempt || 0, refs, requestedBy: this.caller.uid!,
+      mode: 'review', attempt: review?.attempt || 0, refs, requestedBy: this.caller.uid!, headScope, partial,
     });
     return { issueId: data.issueId, jobId: job.id, repoFullName, qaAgentId, attempt: nextAttempt, requestSource: 'manual' };
   }

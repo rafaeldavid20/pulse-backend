@@ -19,7 +19,8 @@ if (!getApps().length) initializeApp({ projectId: 'pulse-integration' });
 const db = getFirestore();
 const privateKey = generateKeyPairSync('ed25519').privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
 runnerJobSigningPrivateKey.value = () => privateKey;
-mock.method(github, 'getPullRequestOrigin', async (_: string, repo: string, number: number) => ({ headSha: String(number).repeat(40), headRef: 'pul/corrected', headRepoFullName: repo, baseRepoFullName: repo }));
+let headOverride: string | undefined;
+mock.method(github, 'getPullRequestOrigin', async (_: string, repo: string, number: number) => ({ headSha: headOverride || String(number).repeat(40), headRef: 'pul/corrected', headRepoFullName: repo, baseRepoFullName: repo }));
 mock.method(github, 'getPullRequestHeadSha', async (_: string, __: string, number: number) => String(number).repeat(40));
 mock.method(github, 'createPullRequestReview', async () => undefined);
 
@@ -45,7 +46,7 @@ async function fixture(mode = 'shadow') {
   return { ws, id, project, qa, runner, human, issue };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
-const request = (f: Fixture, caller = f.human) => new ReviewsRerunAction({ actionCode: 'reviews.rerun', data: { issueId: f.id } }, caller).run();
+const request = (f: Fixture, caller = f.human) => new ReviewsRerunAction({ actionCode: 'reviews.rerun', data: { issueId: f.id, acknowledgePartial: true } }, caller).run();
 const start = (f: Fixture) => new ReviewsStartAction({ actionCode: 'reviews.start', data: { workspaceId: f.ws, issueId: f.id } }, f.qa).run();
 const current = async (f: Fixture) => (await db.collection('issues').doc(f.id).get()).data()!;
 const jobs = async (f: Fixture) => (await db.collection('runner_jobs').where('issueId', '==', f.id).get()).docs;
@@ -66,6 +67,8 @@ for (const mode of ['shadow', 'enforce']) test(`exhausted attempts allow repeate
   const result = await request(f); assert.equal(result.success, true, JSON.stringify(result));
   const run = (await db.collection('agent_runs').doc(result.data!.jobId).get()).data()!;
   assert.equal(run.requestedBy, f.human); assert.equal(run.requestSource, 'manual'); assert.equal(run.reviewAttempt, 3);
+  assert.equal((await current(f)).review.manualRequest.partial, true);
+  assert.deepEqual((await current(f)).review.manualRequest.headScope.map((h: any) => h.headSha), ['1'.repeat(40), '2'.repeat(40)]);
   assert.deepEqual((await jobs(f))[0].data().contextRepos, ['owner/app', 'owner/backend']);
   assert.deepEqual((await current(f)).review.findings, f.issue.review.findings);
   assert.equal((await current(f)).review.attempt, 2);
@@ -88,6 +91,26 @@ for (const mode of ['shadow', 'enforce']) test(`exhausted attempts allow repeate
   assert.equal((await jobs(f)).length, 2); assert.equal(await spent(f), 2);
   assert.equal((await db.collection('agents').doc(f.qa).get()).data()?.maxReviewAttempts, 2);
   assert.equal((await db.collection('agents').doc(f.qa).get()).data()?.qaMode, mode);
+});
+test('manual partial review requires acknowledgement and rejects a changed request-time HEAD', async () => {
+  const f = await fixture();
+  const denied = await new ReviewsRerunAction({ actionCode: 'reviews.rerun', data: { issueId: f.id } }, f.human).run();
+  assert.equal(denied.success, false);
+  assert.equal((await jobs(f)).length, 0);
+  const accepted = await request(f); assert.equal(accepted.success, true, JSON.stringify(accepted));
+  headOverride = 'f'.repeat(40);
+  try { assert.equal((await start(f)).success, false, 'claim must reject a HEAD that changed after the request'); }
+  finally { headOverride = undefined; }
+  assert.equal((await current(f)).review.manualRequest.headScope[0].headSha, '1'.repeat(40));
+});
+test('manual partial review can inspect draft PRs without promoting them', async () => {
+  const f = await fixture();
+  const refs = [...f.issue.gitRefs]; refs[0] = {...refs[0], prState:'draft'};
+  await db.collection('issues').doc(f.id).update({gitRefs:refs, git:{...refs[0]}});
+  const result = await request(f); assert.equal(result.success, true, JSON.stringify(result));
+  assert.equal((await current(f)).review.manualRequest.partial, true);
+  assert.equal((await start(f)).success, true);
+  assert.equal((await current(f)).status, 'in_progress');
 });
 test('concurrent manual and automatic dispatches emit one job and one budget reservation', async () => {
   const f = await fixture(); await db.collection('issues').doc(f.id).update({ status: 'in_review', 'review.attempt': 1, 'review.state': 'changes_requested' });
