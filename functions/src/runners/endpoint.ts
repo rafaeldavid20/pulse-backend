@@ -387,7 +387,8 @@ export const pulseRunnerPublication = onRequest(
           const projectRef = getFirestore().collection('projects').doc(job.projectId);
           const [issueSnap, projectSnap] = await Promise.all([t.get(issueRef), t.get(projectRef)]);
           const issue = issueSnap.data();
-          if (!issueSnap.exists || !projectSnap.exists || !hasCompleteDevSelfCheck(issue, projectSnap.data(), job.id, job.deliveredAt)) { selfCheckBlocked = true; throw new Error(); }
+          const publicationHeads = publication.repositories.map((entry: any) => ({repo: entry.repo, headSha: entry.sha}));
+          if (!issueSnap.exists || !projectSnap.exists || !hasCompleteDevSelfCheck(issue, projectSnap.data(), job.id, job.deliveredAt, publicationHeads)) { selfCheckBlocked = true; throw new Error(); }
         }
         t.update(snap.ref, {publication});
       });

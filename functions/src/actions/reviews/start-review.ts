@@ -4,6 +4,7 @@ import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { cleanUndefined } from '../../common/utils/clean';
 import { IssueReview } from '../../common/domain.generated';
+import { hasCompleteDevSelfCheck } from '../../common/utils/dev-self-check';
 
 const CLOSED_STATES = new Set(['approved', 'changes_requested', 'stale']);
 
@@ -89,6 +90,11 @@ export class ReviewsStartAction extends PlatformActionHandler {
       if (pendingRequest?.headScope?.length) {
         const scopedSources = pendingRequest.headScope.map((head: any) => ({...head})).filter((head: any) => sources.some((source: any) => source.repo === head.repoFullName && source.prNumber === head.prNumber && source.sha === head.headSha));
         assertQaReviewedHeads(pendingRequest.headScope, refs, scopedSources);
+      } else if (issue.review?.requestSource !== 'manual') {
+        const checkJob = issue.devSelfCheckJobId ? (await tx.get(db.collection('runner_jobs').doc(issue.devSelfCheckJobId))).data() : null;
+        const expectedHeads = sources.filter((source: any) => source.prNumber).map((source: any) => ({repo: source.repo, headSha: source.sha}));
+        if (!checkJob || checkJob.status !== 'completed' || checkJob.issueId !== ref.id
+          || !hasCompleteDevSelfCheck(issue, project, checkJob.id, checkJob.deliveredAt, expectedHeads)) throw new Error('QA automático bloqueado: la autoverificación no corresponde a los HEADs del snapshot de QA.');
       }
       const snapshotPrs = sources.filter((entry) => entry.prNumber).map((entry) => ({ repoFullName: entry.repo, prNumber: entry.prNumber!, headSha: entry.sha }));
       const review = (issue.review as IssueReview | undefined) || undefined;

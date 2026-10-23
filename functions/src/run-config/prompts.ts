@@ -43,6 +43,14 @@ resultado con pulse_report_criteria (criterionId, result: "met" / "not_met" /
 "unverifiable", evidence: el archivo, comando corrido o salida que lo respalda — no
 alcanza con "lo revisé").
 
+Para un job firmado de publicación de Runner, primero terminá y commiteá todos
+los cambios de todos los repositorios. Luego obtené el HEAD local de cada repo
+con git rev-parse HEAD y envialo en headScope al llamar a
+pulse_report_criteria (un objeto con repo y headSha por repositorio). No edites ni
+commitees después del reporte; si necesitás cambiar código, repetí la
+autoverificación para los nuevos HEADs. Runner y Pulse comparan esos SHA con
+los commits publicados antes de permitir un PR listo y el QA automático.
+
 Si declarás algún criterio "not_met", mirá por qué antes de decidir qué hacer:
 - Si es algo que te falta hacer a vos, NO abras el PR: comentá con
   pulse_comment_issue qué falta y liberá el issue con pulse_release_issue.

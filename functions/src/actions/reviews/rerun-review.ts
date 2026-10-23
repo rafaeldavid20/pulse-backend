@@ -145,7 +145,7 @@ export class ReviewsRerunAction extends PlatformActionHandler {
     const headScope = prs.map((pr, i) => ({repoFullName: pr.repoFullName, prNumber: pr.prNumber, headSha: origins[i].headSha})).sort((a, b) => a.repoFullName.localeCompare(b.repoFullName) || a.prNumber - b.prNumber);
     const project = (await db.collection('projects').doc(issue.projectId).get()).data();
     const checkJob = issue?.devSelfCheckJobId ? (await db.collection('runner_jobs').doc(issue.devSelfCheckJobId).get()).data() : null;
-    const partial = !checkJob || checkJob.status !== 'completed' || checkJob.issueId !== data.issueId || !hasCompleteDevSelfCheck(issue, project, checkJob.id, checkJob.deliveredAt);
+    const partial = !checkJob || checkJob.status !== 'completed' || checkJob.issueId !== data.issueId || !hasCompleteDevSelfCheck(issue, project, checkJob.id, checkJob.deliveredAt, headScope.map(h => ({repo: h.repoFullName, headSha: h.headSha})));
     if ((partial || origins.some(origin => origin.draft)) && data.acknowledgePartial !== true) throw new Error('La entrega está incompleta o tiene PRs draft. Confirmá acknowledgePartial para solicitar una revisión manual de este contenido.');
     const job = await enqueueRunnerJob(db, {
       workspaceId: issue.workspaceId, issueId: data.issueId, agentId: qaAgentId,

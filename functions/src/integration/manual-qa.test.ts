@@ -19,8 +19,7 @@ if (!getApps().length) initializeApp({ projectId: 'pulse-integration' });
 const db = getFirestore();
 const privateKey = generateKeyPairSync('ed25519').privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
 runnerJobSigningPrivateKey.value = () => privateKey;
-let headOverride: string | undefined;
-mock.method(github, 'getPullRequestOrigin', async (_: string, repo: string, number: number) => ({ headSha: headOverride || String(number).repeat(40), headRef: 'pul/corrected', headRepoFullName: repo, baseRepoFullName: repo }));
+mock.method(github, 'getPullRequestOrigin', async (_: string, repo: string, number: number) => ({ headSha: String(number).repeat(40), headRef: 'pul/corrected', headRepoFullName: repo, baseRepoFullName: repo }));
 mock.method(github, 'getPullRequestHeadSha', async (_: string, __: string, number: number) => String(number).repeat(40));
 mock.method(github, 'createPullRequestReview', async () => undefined);
 
@@ -98,9 +97,11 @@ test('manual partial review requires acknowledgement and rejects a changed reque
   assert.equal(denied.success, false);
   assert.equal((await jobs(f)).length, 0);
   const accepted = await request(f); assert.equal(accepted.success, true, JSON.stringify(accepted));
-  headOverride = 'f'.repeat(40);
-  try { assert.equal((await start(f)).success, false, 'claim must reject a HEAD that changed after the request'); }
-  finally { headOverride = undefined; }
+  const proofRef = db.collection('qa_source_preflights').doc(`${f.id}_${f.qa}`);
+  const proof = (await proofRef.get()).data()!;
+  const repositories = proof.repositories.map((entry: any) => entry.repo === 'owner/app' ? {...entry, sha:'f'.repeat(40)} : entry);
+  await proofRef.update({repositories, downloaded: {...proof.downloaded, 'owner/app':'f'.repeat(40)}});
+  assert.equal((await start(f)).success, false, 'claim must reject a HEAD that changed after the request');
   assert.equal((await current(f)).review.manualRequest.headScope[0].headSha, '1'.repeat(40));
 });
 test('manual partial review can inspect draft PRs without promoting them', async () => {
@@ -111,6 +112,23 @@ test('manual partial review can inspect draft PRs without promoting them', async
   assert.equal((await current(f)).review.manualRequest.partial, true);
   assert.equal((await start(f)).success, true);
   assert.equal((await current(f)).status, 'in_progress');
+});
+test('automatic QA claim requires the self-check to match the prepared PR snapshot HEADs', async () => {
+  for (const matches of [true, false]) {
+    const f = await fixture();
+    const checkedAt = new Date().toISOString();
+    const headScope = ['owner/app', 'owner/backend'].map((repo, i) => ({repo, headSha: matches ? String(i + 1).repeat(40) : 'f'.repeat(40)}));
+    await db.collection('runner_jobs').doc(`${f.id}-dev`).set({ id: `${f.id}-dev`, issueId: f.id, status: 'completed', deliveredAt: checkedAt });
+    await db.collection('issues').doc(f.id).update({
+      status: 'in_review',
+      devSelfCheckJobId: `${f.id}-dev`, devSelfCheckAt: checkedAt,
+      devSelfCheckHeadScope: headScope,
+      devSelfCheck: [{criterionId: 'criterion', result: 'met', evidence: 'functions/src/example.ts'}],
+      review: {state: 'pending', attempt: 1, dispatchedTo: f.qa, dispatchedAt: checkedAt},
+    });
+    const result = await start(f);
+    assert.equal(result.success, matches, matches ? 'matching final HEADs are eligible' : 'changed final HEADs must be rejected');
+  }
 });
 test('concurrent manual and automatic dispatches emit one job and one budget reservation', async () => {
   const f = await fixture(); await db.collection('issues').doc(f.id).update({ status: 'in_review', 'review.attempt': 1, 'review.state': 'changes_requested' });

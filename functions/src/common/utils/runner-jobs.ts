@@ -143,7 +143,7 @@ export async function enqueueRunnerJob(
       if (!reviewRequest.requestedBy) {
         const project = issue?.projectId ? (await transaction.get(db.collection('projects').doc(issue.projectId))).data() : null;
         const checkJob = issue?.devSelfCheckJobId ? (await transaction.get(db.collection('runner_jobs').doc(issue.devSelfCheckJobId))).data() : null;
-        if (!checkJob || checkJob.status !== 'completed' || checkJob.issueId !== job.issueId || !hasCompleteDevSelfCheck(issue, project, checkJob.id, checkJob.deliveredAt)) throw new RunnerDispatchError('enqueue', ['QA automático bloqueado: la autoverificación falta, está incompleta o desactualizada.']);
+        if (!checkJob || checkJob.status !== 'completed' || checkJob.issueId !== job.issueId || !hasCompleteDevSelfCheck(issue, project, checkJob.id, checkJob.deliveredAt, reviewRequest.headScope?.map(h => ({repo: h.repoFullName, headSha: h.headSha})))) throw new RunnerDispatchError('enqueue', ['QA automático bloqueado: la autoverificación falta, está incompleta o no corresponde a los HEADs actuales.']);
       }
       if (reviewRequest.requestedBy && (!reviewRequest.headScope?.length || reviewRequest.headScope.some(h => !/^[a-f0-9]{40}$/.test(h.headSha)))) throw new Error('La solicitud manual debe quedar vinculada a los HEADs verificados. Volvé a solicitar QA.');
       if (reviewRequest.requestedBy) {
