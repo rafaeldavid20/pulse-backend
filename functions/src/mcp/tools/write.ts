@@ -472,7 +472,7 @@ export function registerWriteTools(server: McpServer, principal: McpPrincipal) {
 
   server.tool(
     'pulse_report_criteria',
-    'For dev agents, before opening a PR. Declares, criterion by criterion, whether the acceptance criteria were met ("met"/"not_met"/"unverifiable") with a line of evidence each — also cover every item in the project\'s Definition of Done (D14, from pulse_get_review_context), using its id as criterionId the same way. Full replacement of the checklist — the QA sees this in pulse_get_review_context as a claim to cross-check, not as ground truth. If any criterion is not_met, do not open the PR: comment and release, or flag ambiguity instead.',
+    'For dev agents, before opening a PR. Declares, criterion by criterion, whether the acceptance criteria were met ("met"/"not_met"/"unverifiable") with a line of evidence each — also cover every item in the project\'s Definition of Done (D14, from pulse_get_review_context), using its id as criterionId the same way. For signed publication jobs, commit all changes first and include headScope with the current local HEAD SHA for every signed repository; do not change or commit files after reporting. If a later change is needed, report criteria again for the new HEAD. Full replacement of the checklist — the QA sees this in pulse_get_review_context as a claim to cross-check, not as ground truth. If any criterion is not_met, do not open the PR: comment and release, or flag ambiguity instead.',
     {
       identifier: z.string(),
       checks: z.array(z.object({
@@ -480,11 +480,12 @@ export function registerWriteTools(server: McpServer, principal: McpPrincipal) {
         result: z.enum(['met', 'not_met', 'unverifiable']),
         evidence: z.string().describe('File, command run, or output — concrete evidence, not a restatement of the criterion.'),
       })),
+      headScope: z.array(z.object({repo: z.string(), headSha: z.string()})).optional(),
     },
-    async ({ identifier, checks }) => {
+    async ({ identifier, checks, headScope }) => {
       const doc = await findIssue(principal.workspaceId, identifier);
       if (!doc) return textResult({ error: `No issue found for '${identifier}'.` });
-      const res = await new ReportCriteriaAction({ actionCode: 'reviews.reportCriteria', data: { issueId: doc.id, checks } }, actorUid, undefined, principal).run();
+      const res = await new ReportCriteriaAction({ actionCode: 'reviews.reportCriteria', data: { issueId: doc.id, checks, headScope } }, actorUid, undefined, principal).run();
       return textResult(res.success ? res.data : { error: res.error });
     }
   );

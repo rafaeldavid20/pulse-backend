@@ -12,6 +12,7 @@ import { checkWorkspaceDispatchBudget, todayKey } from './dispatch-counter';
 import { assertHumanReworkRequester, reworkRepositories, returnedDevelopmentReview } from './human-rework';
 import { checkIssueRunBudget } from './issue-run-budget';
 import { assertReviewRequest } from './review-request';
+import { hasCompleteDevSelfCheck } from './dev-self-check';
 import { RunnerJob } from '../domain.generated';
 
 // Un adaptador local puede necesitar instalar dependencias, ejecutar tests y
@@ -35,7 +36,7 @@ export function signRunnerJob(job: Omit<RunnerJob, 'signature'>, privateKey: str
   return base64url(sign(null, Buffer.from(runnerJobPayload(job)), privateKey));
 }
 
-export type DispatchReservation = { mode: 'review'; attempt: number; refs: string; context?: string; requestedBy?: string } | boolean | { mode: 'handoff'; requestedAt: string } | { mode: 'rework'; attempt: number; requestedBy?: string; comment?: string; requestId?: string } | { mode: 'task'; requestedBy: string; requestId: string };
+export type DispatchReservation = { mode: 'review'; attempt: number; refs: string; context?: string; requestedBy?: string; headScope?: Array<{repoFullName:string;prNumber:number;headSha:string}>; partial?: boolean } | boolean | { mode: 'handoff'; requestedAt: string } | { mode: 'rework'; attempt: number; requestedBy?: string; comment?: string; requestId?: string } | { mode: 'task'; requestedBy: string; requestId: string };
 
 /** Crea un trabajo de vida corta. El documento no contiene ninguna credencial de proveedor. */
 export async function enqueueRunnerJob(
@@ -139,6 +140,12 @@ export async function enqueueRunnerJob(
       if (job.mode !== 'review' || agent.data()!.role !== 'qa' || !agent.data()!.enabled) throw new Error('El agente QA ya no está habilitado.');
       if (!reviewRequest.requestedBy && reviewRequest.context && issue?.review?.dispatchedContext === reviewRequest.context) throw new RunnerDispatchError('enqueue', ['Este contexto QA ya fue despachado.'], true);
       assertReviewRequest(issue, reviewRequest.attempt, reviewRequest.refs, !!reviewRequest.requestedBy, agent.data()!.maxReviewAttempts ?? 2);
+      if (!reviewRequest.requestedBy) {
+        const project = issue?.projectId ? (await transaction.get(db.collection('projects').doc(issue.projectId))).data() : null;
+        const checkJob = issue?.devSelfCheckJobId ? (await transaction.get(db.collection('runner_jobs').doc(issue.devSelfCheckJobId))).data() : null;
+        if (!checkJob || checkJob.status !== 'completed' || checkJob.issueId !== job.issueId || !hasCompleteDevSelfCheck(issue, project, checkJob.id, checkJob.deliveredAt, reviewRequest.headScope?.map(h => ({repo: h.repoFullName, headSha: h.headSha})))) throw new RunnerDispatchError('enqueue', ['QA automático bloqueado: la autoverificación falta, está incompleta o no corresponde a los HEADs actuales.']);
+      }
+      if (reviewRequest.requestedBy && (!reviewRequest.headScope?.length || reviewRequest.headScope.some(h => !/^[a-f0-9]{40}$/.test(h.headSha)))) throw new Error('La solicitud manual debe quedar vinculada a los HEADs verificados. Volvé a solicitar QA.');
       if (reviewRequest.requestedBy) {
         const member = await transaction.get(db.collection('members').doc(`${job.workspaceId}_${reviewRequest.requestedBy}`));
         const callerAgent = await transaction.get(db.collection('agents').doc(reviewRequest.requestedBy));
@@ -187,7 +194,9 @@ export async function enqueueRunnerJob(
     if (input.recoveryOf) {
       const original = await transaction.get(db.collection('runner_jobs').doc(input.recoveryOf));
       const data = original.data();
-      prPublicationMode = data?.prPublicationMode ?? 'draft';
+      // A publication retry is not a human-authorized partial review. Keep all
+      // recovered work draft so it cannot silently start automatic QA.
+      prPublicationMode = data?.prPublicationMode === 'ready' ? 'draft' : (data?.prPublicationMode ?? 'draft');
       if (!data || data.runnerId !== job.runnerId || data.workspaceId !== job.workspaceId || data.issueId !== job.issueId || data.projectId !== access.projectId || data.agentId !== job.agentId || data.retriedByJobId || data.publication?.execution !== 'completed' || !['failed', 'canceled', 'expired'].includes(data.status) || !publicationTargets?.length) throw new Error('La publicación original ya fue reintentada o no es recuperable.');
       if (publicationTargets.length !== data.publication.repositories.length || new Set(publicationTargets.map(t => t.repo)).size !== publicationTargets.length || contextRepos.join(',') !== [...new Set<string>(data.contextRepos || [data.repoFullName])].sort().join(',')) throw new Error('El reintento debe conservar todo el alcance original.');
       for (const target of publicationTargets) {
@@ -221,6 +230,7 @@ export async function enqueueRunnerJob(
           ...(reviewRequest.requestedBy ? { 'review.manualRequest': {
             jobId: job.id, requestedBy: reviewRequest.requestedBy,
             requestedAt: issuedAt, expiresAt, attempt: reviewRequest.attempt + 1,
+            headScope: reviewRequest.headScope, partial: !!reviewRequest.partial,
           } } : {}),
         };
       } else if (reservation !== true && reservation.mode === 'handoff') {

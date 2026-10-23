@@ -1,9 +1,10 @@
-import { assertQaPrepared } from '../../qa/source';
+import { assertQaPrepared, assertQaReviewedHeads } from '../../qa/source';
 import { getFirestore, Transaction } from 'firebase-admin/firestore';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { cleanUndefined } from '../../common/utils/clean';
 import { IssueReview } from '../../common/domain.generated';
+import { hasCompleteDevSelfCheck } from '../../common/utils/dev-self-check';
 
 const CLOSED_STATES = new Set(['approved', 'changes_requested', 'stale']);
 
@@ -83,8 +84,18 @@ export class ReviewsStartAction extends PlatformActionHandler {
       const proof = (await tx.get(db.collection('qa_source_preflights').doc(`${ref.id}_${actorUid}`))).data();
       const project = issue.projectId ? (await tx.get(db.collection('projects').doc(issue.projectId))).data() : null;
       const refs = (issue.gitRefs?.length ? issue.gitRefs : [issue.git]).filter((entry: any) => entry?.prNumber);
+      if (pendingRequest && (!pendingRequest.headScope?.length || pendingRequest.headScope.length !== refs.length)) throw new Error('La solicitud manual perdió el alcance de HEADs autorizado. Volvé a solicitar QA.');
       if (proof?.projectId !== issue.projectId) throw new Error('QA infraestructura: cambió el proyecto; repetí el preflight.');
       const sources = assertQaPrepared(proof, project, issue.workspaceId, refs);
+      if (pendingRequest?.headScope?.length) {
+        const scopedSources = pendingRequest.headScope.map((head: any) => ({...head})).filter((head: any) => sources.some((source: any) => source.repo === head.repoFullName && source.prNumber === head.prNumber && source.sha === head.headSha));
+        assertQaReviewedHeads(pendingRequest.headScope, refs, scopedSources);
+      } else if (issue.review?.requestSource !== 'manual') {
+        const checkJob = issue.devSelfCheckJobId ? (await tx.get(db.collection('runner_jobs').doc(issue.devSelfCheckJobId))).data() : null;
+        const expectedHeads = sources.filter((source: any) => source.prNumber).map((source: any) => ({repo: source.repo, headSha: source.sha}));
+        if (!checkJob || checkJob.status !== 'completed' || checkJob.issueId !== ref.id
+          || !hasCompleteDevSelfCheck(issue, project, checkJob.id, checkJob.deliveredAt, expectedHeads)) throw new Error('QA automático bloqueado: la autoverificación no corresponde a los HEADs del snapshot de QA.');
+      }
       const snapshotPrs = sources.filter((entry) => entry.prNumber).map((entry) => ({ repoFullName: entry.repo, prNumber: entry.prNumber!, headSha: entry.sha }));
       const review = (issue.review as IssueReview | undefined) || undefined;
       const now = new Date().toISOString();

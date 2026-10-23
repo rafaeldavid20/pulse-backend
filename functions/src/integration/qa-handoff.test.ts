@@ -25,12 +25,12 @@ async function fixture(identifier = 'TES-341', qaMode = 'shadow') {
   const now = new Date().toISOString();
   await Promise.all([
     db.collection('workspaces').doc(ws).set({ dailyDispatchLimit: 20, maxRunsPerIssue: 20 }),
-    db.collection('issues').doc(id).set({ identifier, workspaceId: ws, projectId: project, status: 'in_review', execution: { agentId: 'dev' }, git: { repoFullName: 'owner/repo', prNumber: 1, prState: 'open', branch: 'pul/test' } }),
+    db.collection('issues').doc(id).set({ identifier, workspaceId: ws, projectId: project, status: 'in_review', execution: { agentId: 'dev' }, acceptanceCriteria:[{id:'criterion',text:'Works'}], devSelfCheckJobId:devJob, devSelfCheckAt:now, devSelfCheck:[{criterionId:'criterion',result:'met',evidence:'npm test'}], git: { repoFullName: 'owner/repo', prNumber: 1, prState: 'open', branch: 'pul/test' } }),
     db.collection('projects').doc(project).set({ workspaceId: ws, repoFullNames: ['owner/repo'] }),
     db.collection('github_installations').doc(ws).set({ workspaceId: ws, installationId: ws, repositoryFullNames: ['owner/repo'] }),
     db.collection('agents').doc(qa).set({ workspaceId: ws, role: 'qa', kind: 'codex', enabled: true, autonomousMode: true, maxReviewAttempts: 2, runnerId: runner, qaMode }),
     db.collection('runners').doc(runner).set({ workspaceId: ws, status: 'online', maxConcurrentJobs: 1, lastHeartbeatAt: now, readinessCheckedAt: now, readiness: { workspaceId: ws, jobProtocolVersion: 2, qaSourceProtocolVersion: 1, identities: [{ agentId: 'dev', kind: 'codex', role: 'dev' }, { agentId: qa, kind: 'codex', role: 'qa' }], providers: { codex: { cli: true, session: true } } } }),
-    db.collection('runner_jobs').doc(devJob).set({ workspaceId: ws, runnerId: runner, issueId: id, agentId: 'dev', mode: 'task', status: 'delivered', expiresAt: new Date(Date.now() + 60_000).toISOString() }),
+    db.collection('runner_jobs').doc(devJob).set({ id:devJob, workspaceId: ws, runnerId: runner, issueId: id, agentId: 'dev', mode: 'task', status: 'delivered', deliveredAt:now, expiresAt: new Date(Date.now() + 60_000).toISOString() }),
   ]);
   return { ws, id, qa, runner, devJob };
 }
@@ -69,6 +69,19 @@ for (const [identifier, mode] of [['TES-340', 'shadow'], ['TES-341', 'enforce']]
     assert.equal((await qaJobs(f)).length, 1); assert.equal(await spent(f), 1);
   });
 }
+test('TES-231 partial commit with three not_met checks and a normal process exit cannot start automatic QA', async () => {
+  const f = await fixture();
+  const checkedAt = new Date().toISOString();
+  await db.collection('issues').doc(f.id).update({
+    acceptanceCriteria:[{id:'a',text:'A'},{id:'b',text:'B'},{id:'c',text:'C'}],
+    devSelfCheck:[{criterionId:'a',result:'not_met',evidence:'src/a.ts'},{criterionId:'b',result:'not_met',evidence:'src/b.ts'},{criterionId:'c',result:'not_met',evidence:'src/c.ts'}],
+    devSelfCheckAt:checkedAt,
+  });
+  await db.collection('runner_jobs').doc(f.devJob).update({status:'completed'});
+  await dispatchPendingQa(f.id);
+  assert.equal((await qaJobs(f)).length, 0);
+  assert.match((await current(f)).review.dispatchError, /autoverificación/);
+});
 for (const mutation of ['cancel', 'close', 'permissions', 'budget', 'attempts', 'disabled', 'autonomous', 'preflight']) {
   test(`pending QA revalidates ${mutation} on capacity release`, async () => {
     const f = await fixture(); await dispatchPendingQa(f.id);

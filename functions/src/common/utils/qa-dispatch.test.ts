@@ -126,10 +126,10 @@ test('no autonomous QA stays unassigned and a later dispatch clears the error', 
 
 test('explicit rerun also keeps automatic QA separate from manual selection', async () => {
   reset(); agents = [qa('first'), qa('second')];
-  await new ReviewsRerunAction({ data: { issueId: 'issue' } }).handleAction();
+  await new ReviewsRerunAction({ data: { issueId: 'issue', acknowledgePartial: true } }).handleAction();
   assert.equal(issue.qaAssigneeId, undefined);
   agents[0].enabled = false;
-  await new ReviewsRerunAction({ data: { issueId: 'issue' } }).handleAction();
+  await new ReviewsRerunAction({ data: { issueId: 'issue', acknowledgePartial: true } }).handleAction();
   assert.deepEqual(dispatches, ['first', 'second']);
   assert.equal(issue.review.dispatchedTo, 'second');
   assert.equal(issue.assigneeId, 'human');
@@ -185,7 +185,7 @@ test('manual QA rerun accepts the assigned project Codex Runner without reviewRe
   issue.qaAssigneeId = 'qa-codex';
   runners['runner-codex'] = { id: 'runner-codex', workspaceId: 'ws', status: 'online', lastHeartbeatAt: new Date().toISOString(), readinessCheckedAt: new Date().toISOString(), connectedRepos: [], readiness: { jobProtocolVersion: 2, qaSourceProtocolVersion: 1, workspaceId: 'ws', identities: [{ agentId: 'qa-codex', kind: 'codex', role: 'qa' }], providers: { codex: { cli: true, session: true } }, repositories: [] } };
 
-  await new ReviewsRerunAction({ data: { issueId: 'issue' } }).handleAction();
+  await new ReviewsRerunAction({ data: { issueId: 'issue', acknowledgePartial: true } }).handleAction();
 
   assert.deepEqual(dispatches, ['qa-codex']);
   assert.deepEqual(runnerJobs[0].contextRepos, ['owner/repo', 'owner/backend', 'owner/runner']);
@@ -198,7 +198,7 @@ test('manual QA rerun resolves and repairs a stale Runner binding from a same-ow
   runners['runner-old'] = { id: 'runner-old', ownerMemberId: 'owner', workspaceId: 'ws', status: 'offline' };
   runners['runner-dev'] = { id: 'runner-dev', ownerMemberId: 'owner', workspaceId: 'ws', status: 'online', lastHeartbeatAt: new Date().toISOString(), readinessCheckedAt: new Date().toISOString(), connectedRepos: [], readiness: { jobProtocolVersion: 2, qaSourceProtocolVersion: 1, workspaceId: 'ws', identities: [{ agentId: 'qa-codex', kind: 'codex', role: 'qa' }], providers: { codex: { cli: true, session: true } }, repositories: [] } };
 
-  await new ReviewsRerunAction({ data: { issueId: 'issue' } }).handleAction();
+  await new ReviewsRerunAction({ data: { issueId: 'issue', acknowledgePartial: true } }).handleAction();
 
   assert.deepEqual(dispatches, ['qa-codex']);
   assert.equal(runnerJobs[0].runnerId, 'runner-dev');

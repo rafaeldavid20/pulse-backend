@@ -5,6 +5,7 @@ import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
 import { cleanUndefined } from '../../common/utils/clean';
 import { DevCriterionCheck } from '../../common/domain.generated';
+import { DevSelfCheckHead } from '../../common/utils/dev-self-check';
 
 const RESULTS: DevCriterionCheck['result'][] = ['met', 'not_met', 'unverifiable'];
 
@@ -70,10 +71,27 @@ export class ReportCriteriaAction extends PlatformActionHandler {
       await assertIssueDev(db, transaction, data.issueId, issue, actorUid, this.principal);
 
       const checks = normalizeChecks(data.checks);
+      let headScope: DevSelfCheckHead[] | undefined;
+      if (this.principal?.jobId) {
+        const jobSnap = await transaction.get(db.collection('runner_jobs').doc(this.principal.jobId));
+        const job = jobSnap.data();
+        if (!job || job.issueId !== data.issueId || job.status !== 'delivered') throw new Error('La autoverificación requiere un job de desarrollo activo.');
+        if (job.publicationTargets?.length) {
+          const rawHeads = data.headScope;
+          if (!Array.isArray(rawHeads) || rawHeads.length !== job.publicationTargets.length) throw new Error('Informá el HEAD local de cada repositorio antes de cerrar la autoverificación.');
+          headScope = rawHeads.map((head: any) => ({repo: head?.repo, headSha: head?.headSha}));
+          if (headScope!.some(head => typeof head.repo !== 'string' || !/^[a-f0-9]{40}$/.test(head.headSha))
+            || new Set(headScope!.map(head => head.repo)).size !== headScope!.length
+            || job.publicationTargets.some((target: any) => !headScope!.some(head => head.repo === target.repo))) throw new Error('El alcance de HEADs no coincide con los repositorios firmados del job.');
+        }
+      }
 
       transaction.update(issueRef,
         cleanUndefined({
           devSelfCheck: checks,
+          devSelfCheckAt: new Date().toISOString(),
+          devSelfCheckJobId: this.principal?.jobId || null,
+          devSelfCheckHeadScope: headScope,
           updatedAt: new Date().toISOString(),
           updatedBy: actorUid,
         })

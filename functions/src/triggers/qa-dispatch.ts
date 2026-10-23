@@ -325,7 +325,7 @@ export async function dispatchPendingQa(issueId: string) {
           repoFullName,
           contextRepos: (await db.collection('projects').doc(after.projectId).get()).data()?.repoFullNames || [],
           mode: 'review',
-        }, runnerJobSigningPrivateKey.value(), 'runner-job-v1', { mode: 'review', attempt, refs: reviewRequestRefs(after), context: JSON.stringify([attempt, reviewRequestRefs(after), prOrigins.map((origin, i) => [prs[i].repoFullName, prs[i].prNumber, origin.headSha]).sort()]) });
+        }, runnerJobSigningPrivateKey.value(), 'runner-job-v1', { mode: 'review', attempt, refs: reviewRequestRefs(after), headScope: prOrigins.map((origin, i) => ({repoFullName: prs[i].repoFullName, prNumber: prs[i].prNumber, headSha: origin.headSha})), context: JSON.stringify([attempt, reviewRequestRefs(after), prOrigins.map((origin, i) => [prs[i].repoFullName, prs[i].prNumber, origin.headSha]).sort()]) });
         console.log(`[QaDispatch] queued signed Runner review job '${job.id}' for issue '${after.identifier}' to QA '${qaAgentId}'.`);
       } catch (error) {
         if (error instanceof RunnerDispatchError && error.silent) return;
