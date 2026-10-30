@@ -23,7 +23,7 @@
     "test:rules": "npm run build && firebase emulators:exec --project demo-pulse-tes333 --only firestore \"node --test lib/rules/*.test.js\""
   },
   "engines": {
-    "node": "20"
+    "node": "22"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
