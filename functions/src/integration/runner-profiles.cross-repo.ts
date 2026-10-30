@@ -155,3 +155,13 @@ test('two agents on one Runner retain independent profiles and serialize concurr
   assert.equal(second.snapshot.model, null); assert.equal(second.snapshot.directories[0].candidates.length, 0);
   await assert.rejects(manageRunnerProfile(db, f.owner, { agentId: secondId, runnerId: f.runnerId, op: 'request', requestId: randomUUID(), expectedRevision: second.snapshot.revision, patch: { directories: [{ repo: 'owner/repo', candidateId: f.id }] } }), /Candidato/);
 }));
+
+test('repeated profile exchanges do not rewrite the Runner capability document', () => fixture(async f => {
+  const body = { version: 1, agentIds: [f.agentId], profiles: [] };
+  await exchangeRunnerProfiles(db, f.runnerId, body);
+  const before = await db.collection('runners').doc(f.runnerId).get();
+  assert.equal(before.data()!.profileVersion, 1);
+  await exchangeRunnerProfiles(db, f.runnerId, body);
+  const after = await db.collection('runners').doc(f.runnerId).get();
+  assert.ok(before.updateTime!.isEqual(after.updateTime!));
+}));
