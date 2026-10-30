@@ -107,6 +107,13 @@ export async function exchangeRunnerProfiles(db: Firestore, runnerId: string, bo
       contexts.push(value);
     } catch { /* Removed/rebound identities receive no profile or commands. */ }
   }
-  await db.collection('runners').doc(runnerId).update({ profileVersion: 1 });
+  // Repeated exchanges must not rewrite the Runner document or contend with heartbeats.
+  await db.runTransaction(async tx => {
+    const ref = db.collection('runners').doc(runnerId);
+    const runner = await tx.get(ref);
+    if (runner.exists && !runner.data()!.revokedAt && runner.data()!.profileVersion !== 1) {
+      tx.update(ref, { profileVersion: 1 });
+    }
+  });
   return { version: 1, contexts };
 }
