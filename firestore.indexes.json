@@ -40,6 +40,14 @@
       "collectionGroup": "issues",
       "queryScope": "COLLECTION",
       "fields": [
+        { "fieldPath": "teamId", "order": "ASCENDING" },
+        { "fieldPath": "updatedAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "issues",
+      "queryScope": "COLLECTION",
+      "fields": [
         {
           "fieldPath": "workspaceId",
           "order": "ASCENDING"

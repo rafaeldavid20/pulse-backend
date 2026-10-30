@@ -5,7 +5,7 @@
 // dominio de Pulse. Para cambiar algo de acá, editá ese archivo y corré
 // `npm run sync:types` desde `pulse-app`.
 //
-// SOURCE_HASH: 111a7c4e746e2db7
+// SOURCE_HASH: b64bb81106c69321
 // ============================================================
 
 /**
@@ -1061,7 +1061,15 @@ export interface IssueReviewAttempt {
  */
 export interface IssueReview extends IssueReviewAttempt {
   /** Pending manual authorization, consumed by reviews.start for this attempt only. */
-  manualRequest?: { jobId: string; requestedBy: string; requestedAt: string; expiresAt: string; attempt: number; headScope?: Array<{repoFullName:string;prNumber:number;headSha:string}>; partial?: boolean };
+  manualRequest?: {
+    jobId: string;
+    requestedBy: string;
+    requestedAt: string;
+    expiresAt: string;
+    attempt: number;
+    headScope?: Array<{ repoFullName: string; prNumber: number; headSha: string }>;
+    partial?: boolean;
+  };
   queuedJobId?: string;
   /**
    * Lock de la revisión, separado de `IssueAgentState` a propósito: mientras
