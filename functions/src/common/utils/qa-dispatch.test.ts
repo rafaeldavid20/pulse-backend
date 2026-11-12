@@ -27,16 +27,16 @@ const update = (patch: Record<string, any>) => {
 const issueRef = { get: async () => snapshot(issue), update: async (patch: any) => update(patch) };
 const db = {
   collection: (name: string) => {
-    const filters: Array<[string, any]> = [];
+    const makeQuery = (filters: Array<[string, any]> = []) => {
     const query: any = {
-      where: (field: string, _op: string, value: any) => { filters.push([field, value]); return query; },
+      where: (field: string, _op: string, value: any) => makeQuery([...filters, [field, value]]),
       limit: () => query,
       get: async () => {
         const rows = name === 'agents'
           ? agents.filter((agent) => filters.every(([field, value]) => agent[field] === value))
           : name === 'runners' ? Object.values(runners).filter((runner: any) => filters.every(([field, value]) => runner[field] === value))
           : name === 'runner_jobs' ? activeJobs.filter(job => filters.every(([field, value]) => job[field] === value))
-          : name === 'issues' ? [issue].filter(row => filters.every(([field, value]) => row[field] === value))
+          : name === 'issues' ? [issue].filter(row => filters.every(([field, value]) => field.split('.').reduce((value, key) => value?.[key], row) === value))
           : name === 'github_installations' ? [{ installationId: 1, repositoryFullNames: ['owner/repo', 'owner/backend', 'owner/runner'] }] : [];
         return { empty: rows.length === 0, docs: rows.map((row) => snapshot(row, row.id)) };
       },
@@ -50,6 +50,8 @@ const db = {
         : { get: async () => snapshot(undefined, id), set: async () => {} },
     };
     return query;
+    };
+    return makeQuery();
   },
   runTransaction: async (fn: any) => fn({ get: async () => snapshot(issue), update: (_ref: any, patch: any) => update(patch) }),
 };

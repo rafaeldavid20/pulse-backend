@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { generateKeyPairSync, randomBytes } from 'crypto';
 import { initializeApp, getApps } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
-import { dispatchPendingQa, qaCapacityTrigger, retryPendingQa } from '../triggers/qa-dispatch';
+import { dispatchPendingQa, qaCapacityTrigger, qaRunnerAvailableTrigger, retryPendingQa } from '../triggers/qa-dispatch';
 import { runnerJobSigningPrivateKey } from '../common/secrets';
 import { todayKey } from '../common/utils/dispatch-counter';
 import * as github from '../github/client';
@@ -25,7 +25,7 @@ async function fixture(identifier = 'TES-341', qaMode = 'shadow') {
   const now = new Date().toISOString();
   await Promise.all([
     db.collection('workspaces').doc(ws).set({ dailyDispatchLimit: 20, maxRunsPerIssue: 20 }),
-    db.collection('issues').doc(id).set({ identifier, workspaceId: ws, projectId: project, status: 'in_review', execution: { agentId: 'dev' }, acceptanceCriteria:[{id:'criterion',text:'Works'}], devSelfCheckJobId:devJob, devSelfCheckAt:now, devSelfCheck:[{criterionId:'criterion',result:'met',evidence:'npm test'}], git: { repoFullName: 'owner/repo', prNumber: 1, prState: 'open', branch: 'pul/test' } }),
+    db.collection('issues').doc(id).set({ identifier, workspaceId: ws, projectId: project, status: 'in_review', execution: { agentId: 'dev' }, acceptanceCriteria:[{id:'criterion',text:'Works'}], devSelfCheckJobId:devJob, devSelfCheckAt:now, devSelfCheckHeadScope:[{repo:'owner/repo',headSha}], devSelfCheck:[{criterionId:'criterion',result:'met',evidence:'npm test'}], git: { repoFullName: 'owner/repo', prNumber: 1, prState: 'open', branch: 'pul/test' } }),
     db.collection('projects').doc(project).set({ workspaceId: ws, repoFullNames: ['owner/repo'] }),
     db.collection('github_installations').doc(ws).set({ workspaceId: ws, installationId: ws, repositoryFullNames: ['owner/repo'] }),
     db.collection('agents').doc(qa).set({ workspaceId: ws, role: 'qa', kind: 'codex', enabled: true, autonomousMode: true, maxReviewAttempts: 2, runnerId: runner, qaMode }),
@@ -38,6 +38,8 @@ const current = async (f: any) => (await db.collection('issues').doc(f.id).get()
 const qaJobs = async (f: any) => (await db.collection('runner_jobs').where('issueId', '==', f.id).get()).docs.filter(d => d.data().mode === 'review');
 const spent = async (f: any) => (await db.collection('agent_dispatch_counters').doc(`${f.ws}_${todayKey()}`).get()).data()?.count || 0;
 async function complete(f: any) {
+  // Simulate the final dev report for the current published HEAD, as required by TES-366.
+  await db.collection('issues').doc(f.id).update({devSelfCheckHeadScope:[{repo:'owner/repo',headSha}], devSelfCheckAt:new Date().toISOString()});
   const before = (await db.collection('runner_jobs').doc(f.devJob).get()).data()!;
   await db.collection('runner_jobs').doc(f.devJob).update({ status: 'completed' });
   const event = { data: { before: { data: () => before }, after: { data: () => ({ ...before, status: 'completed' }) } } } as any;
@@ -171,4 +173,25 @@ test('disconnect after PR lookup remains pending at transactional enqueue prefli
   await db.collection('runners').doc(f.runner).update({ status: 'online' });
   await Promise.all([retryPendingQa(f.ws), retryPendingQa(f.ws)]);
   assert.equal((await qaJobs(f)).length, 1); assert.equal(await spent(f), 1);
+});
+
+test('changed HEAD without a new dev self-check cannot start QA on capacity release',async()=>{
+  const f=await fixture();await dispatchPendingQa(f.id);
+  headSha='d'.repeat(40);
+  await db.collection('runner_jobs').doc(f.devJob).update({status:'completed'});
+  await retryPendingQa(f.ws);
+  assert.equal((await qaJobs(f)).length,0);
+  assert.equal(await spent(f),0);
+  assert.match((await current(f)).review.dispatchError,/autoverificación/);
+});
+
+test('Runner availability signals recover pending QA once without waiting for the backup schedule',async()=>{
+  const f=await fixture();await dispatchPendingQa(f.id);
+  await db.collection('runners').doc(f.runner).update({status:'offline'});
+  await complete(f);
+  const now=new Date().toISOString();
+  await db.collection('runners').doc(f.runner).update({status:'online',lastHeartbeatAt:now,readinessCheckedAt:now});
+  const event={params:{runnerId:f.runner},data:{after:{data:()=>({workspaceId:f.ws,revision:1})}}} as any;
+  await Promise.all([qaRunnerAvailableTrigger.run(event),qaRunnerAvailableTrigger.run(event)]);
+  assert.equal((await qaJobs(f)).length,1);assert.equal(await spent(f),1);
 });

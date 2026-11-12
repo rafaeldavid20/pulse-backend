@@ -359,7 +359,15 @@ export const qaDispatchTrigger = onDocumentWritten(
 );
 
 export async function retryPendingQa(workspaceId?: string, runnerId?: string) {
-  const issues = await getFirestore().collection('issues').where('status', '==', 'in_review').get();
+  const db = getFirestore();
+  let query = db.collection('issues').where('status', '==', 'in_review');
+  if (workspaceId) query = query.where('workspaceId', '==', workspaceId);
+  // Query pending capacity explicitly, plus the exact pre-TES-347 diagnostic.
+  const [pending, legacy] = await Promise.all([
+    query.where('review.dispatchPending.reason', '==', 'capacity').get(),
+    query.where('review.dispatchError', '==', 'El Runner QA alcanzó su límite de jobs activos. Volvé a despachar QA cuando tenga capacidad.').get(),
+  ]);
+  const issues = { docs: [...new Map([...pending.docs, ...legacy.docs].map(d => [d.id, d])).values()] };
   for (const doc of issues.docs) {
     const issue = doc.data();
     if (workspaceId && issue.workspaceId !== workspaceId) continue;
@@ -384,6 +392,14 @@ export const qaCapacityTrigger = onDocumentWritten(
   },
 );
 export const qaPendingScheduled = onSchedule(
-  { region: 'us-east4', schedule: 'every 1 minutes', secrets: dispatchSecrets },
+  { region: 'us-east4', schedule: 'every 15 minutes', secrets: dispatchSecrets },
   async () => { await retryPendingQa(); },
+);
+
+export const qaRunnerAvailableTrigger = onDocumentWritten(
+  { document: 'runner_availability_signals/{runnerId}', region: 'us-east4', secrets: dispatchSecrets, retry: true },
+  async event => {
+    const after = event.data?.after.data();
+    if (after?.workspaceId) await retryPendingQa(after.workspaceId, event.params.runnerId);
+  },
 );

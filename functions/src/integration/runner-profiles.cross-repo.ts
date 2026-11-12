@@ -165,3 +165,16 @@ test('repeated profile exchanges do not rewrite the Runner capability document',
   const after = await db.collection('runners').doc(f.runnerId).get();
   assert.ok(before.updateTime!.isEqual(after.updateTime!));
 }));
+
+test('opening a stale profile explicitly wakes the device once; ordinary signal reads never loop',()=>fixture(async f=>{
+  await f.remote.syncRemoteProfiles(f.config,f.exchange,f.deps);
+  // Binding stays the same; only observation age is changed.
+  const stored=await db.collection('runner_profiles').get();
+  const own=stored.docs.find(d=>d.data().agentId===f.agentId)!;
+  await own.ref.update({observedAt:new Date(Date.now()-60_000).toISOString()});
+  const input={agentId:f.agentId,runnerId:f.runnerId,op:'read',refresh:true};
+  await manageRunnerProfile(db,f.owner,input);
+  await manageRunnerProfile(db,f.owner,input);
+  await f.read();
+  assert.equal((await db.collection('runner_signals').doc(f.runnerId).get()).data()!.profiles,1);
+}));
