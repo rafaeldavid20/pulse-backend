@@ -1,7 +1,6 @@
 import { runnerAvailabilityRestored } from '../common/utils/runner-signal-transition';
 import { getAuth } from 'firebase-admin/auth';
 import { getApp } from 'firebase-admin/app';
-import { defineString } from 'firebase-functions/params';
 import { runnerSubscriptionSession } from './signals';
 import { runnerProcessReport } from '../common/utils/runner-version';
 import { RUN_ACTIVITY_TTL_MS } from '../common/utils/run-activity';
@@ -410,7 +409,7 @@ export const pulseRunnerPublication = onRequest(
 );
 
 // Public Firebase web key; configurable for other projects.
-const signalApiKey = defineString('RUNNER_SIGNAL_API_KEY', { default: 'AIzaSyAINMPrTeemW6gsIOnHzsHicY9JedL7BVc' });
+const signalApiKey = process.env.RUNNER_SIGNAL_API_KEY || 'AIzaSyAINMPrTeemW6gsIOnHzsHicY9JedL7BVc';
 export const pulseRunnerSubscribe = onRequest({ region: 'us-east4', secrets: [mcpKeyPepper] }, async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   if (req.method !== 'POST') { res.status(405).json({ error: 'Method Not Allowed' }); return; }
@@ -420,6 +419,6 @@ export const pulseRunnerSubscribe = onRequest({ region: 'us-east4', secrets: [mc
     const claims = await runnerSubscriptionSession(getFirestore(), runner.id, runner.data.deviceSecretHash);
     const customToken = await getAuth().createCustomToken(`runner-device:${runner.id}`, claims);
     const projectId = getApp().options.projectId || process.env.GCLOUD_PROJECT;
-    res.json({ version: 1, customToken, firebase: { projectId, apiKey: signalApiKey.value() }, runnerId: runner.id, workspaceId: claims.workspaceId });
+    res.json({ version: 1, customToken, firebase: { projectId, apiKey: signalApiKey }, runnerId: runner.id, workspaceId: claims.workspaceId });
   } catch { res.status(503).json({ error: 'Runner subscription unavailable' }); }
 });

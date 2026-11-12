@@ -56,8 +56,9 @@ sequenceDiagram
 assigns a session generation tied to its current credential hash, and mints a
 Firebase custom token for reserved UID `runner-device:<runnerId>`. The response
 is no-store and contains public Firebase client configuration. The
-`RUNNER_SIGNAL_API_KEY` parameter defaults to the same public project key as
-the web client; configure it for other projects.
+`RUNNER_SIGNAL_API_KEY` optional environment override defaults to the same
+public project key as the web client; configure it for other projects. It is
+not a required Firebase deploy parameter.
 
 Device principals can only `get` their own `runner_signals/<runnerId>` document.
 Rules validate current workspace, session generation, credential equality and
