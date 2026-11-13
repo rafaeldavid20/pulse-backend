@@ -44,6 +44,7 @@ export async function checkWorkspaceDispatchBudget(
   db: Firestore,
   workspaceId: string,
   reserve = true,
+  exceptions: WorkspaceBudgetReason[] = [],
 ): Promise<WorkspaceBudgetDecision> {
   const wsSnap = await tx.get(db.collection('workspaces').doc(workspaceId));
   const workspace = wsSnap.exists ? wsSnap.data()! : {};
@@ -53,7 +54,7 @@ export async function checkWorkspaceDispatchBudget(
   const counterRef = db.collection('agent_dispatch_counters').doc(counterDocId(workspaceId));
   const counterSnap = await tx.get(counterRef);
   const count = counterSnap.exists ? counterSnap.data()!.count || 0 : 0;
-  if (count >= limit) return { allowed: false, reason: 'daily-dispatch-limit', limit };
+  if (count >= limit && !exceptions.includes('daily-dispatch-limit')) return { allowed: false, reason: 'daily-dispatch-limit', limit };
 
   const dailyCostCapUsd: number | undefined = workspace.dailyCostCapUsd;
   if (dailyCostCapUsd) {
@@ -61,7 +62,7 @@ export async function checkWorkspaceDispatchBudget(
       db.collection('agent_runs').where('workspaceId', '==', workspaceId).where('date', '==', todayKey())
     );
     const spentUsd = runsSnap.docs.reduce((sum, doc) => sum + (doc.data().costUsd || 0), 0);
-    if (spentUsd >= dailyCostCapUsd) return { allowed: false, reason: 'daily-cost-cap', capUsd: dailyCostCapUsd };
+    if (spentUsd >= dailyCostCapUsd && !exceptions.includes('daily-cost-cap')) return { allowed: false, reason: 'daily-cost-cap', capUsd: dailyCostCapUsd };
   }
 
   if (reserve) tx.set(counterRef, { workspaceId, date: todayKey(), count: FieldValue.increment(1) }, { merge: true });

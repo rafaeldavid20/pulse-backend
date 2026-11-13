@@ -5,7 +5,7 @@
 // dominio de Pulse. Para cambiar algo de acá, editá ese archivo y corré
 // `npm run sync:types` desde `pulse-app`.
 //
-// SOURCE_HASH: 111a7c4e746e2db7
+// SOURCE_HASH: 99675edc220fcce1
 // ============================================================
 
 /**
@@ -659,6 +659,8 @@ export interface AgentRun {
   activityStoppedAt?: string;
   turns?: number;
   costUsd?: number;
+  /** Explicit human authorization for the limits exceeded by this run. */
+  budgetOverride?: { requestedBy: string; reasons: Array<'issue-run-limit' | 'issue-cost-cap' | 'daily-dispatch-limit' | 'daily-cost-cap'>; authorizedAt: string };
   outcome?: AgentRunOutcome;
   /** Solo para `role: 'qa'` — a qué intento de `IssueReview` corresponde este run. */
   reviewAttempt?: number;
@@ -864,6 +866,8 @@ export interface Issue {
    */
   defaultAssigneeId?: string;
   agent?: IssueAgentState;
+  /** Prevents automatic follow-up after an exceptional manual execution. */
+  manualBudgetHold?: boolean;
   /**
    * La rama "principal": la del repo donde corre el job del agente. Se mantiene
    * por compatibilidad con los issues anteriores a `gitRefs` y porque el ruteo
