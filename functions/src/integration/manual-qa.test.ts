@@ -45,6 +45,30 @@ async function fixture(mode = 'shadow') {
   return { ws, id, project, qa, runner, human, issue };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
+test('explicit budget exceptions authorize one QA job while preserving limits and blocking automatic follow-up', async () => {
+  const f = await fixture('enforce');
+  await db.collection('workspaces').doc(f.ws).update({maxRunsPerIssue: 0, dailyDispatchLimit: 0, issueCostCapUsd: 1, dailyCostCapUsd: 1});
+  await db.collection('agent_runs').doc(`${f.id}-old`).set({workspaceId:f.ws, issueId:f.id, date:todayKey(), costUsd:2});
+  const exceptions = ['issue-run-limit', 'issue-cost-cap', 'daily-dispatch-limit', 'daily-cost-cap'];
+  const call = (who: string, reasons: string[]) => new ReviewsRerunAction({actionCode:'reviews.rerun', data:{issueId:f.id, acknowledgePartial:true, budgetExceptions:reasons}}, who).run();
+  assert.equal((await call(f.human, [])).success, false);
+  assert.equal((await call(f.qa, exceptions)).success, false);
+  await db.collection('workspaces').doc(f.ws).update({agentsPaused:true});
+  assert.equal((await call(f.human, exceptions)).success, false, 'an exception never overrides the pause');
+  assert.equal((await jobs(f)).length, 0); assert.equal(await spent(f), 0);
+  await db.collection('workspaces').doc(f.ws).update({agentsPaused:false});
+  const results = await Promise.all([call(f.human, exceptions), call(f.human, exceptions)]);
+  assert.equal(results.filter(r => r.success).length, 1);
+  const successful = results.find(r => r.success)!;
+  const run = (await db.collection('agent_runs').doc(successful.data!.jobId).get()).data()!;
+  assert.deepEqual(run.budgetOverride.reasons, exceptions);
+  assert.equal(run.budgetOverride.requestedBy, f.human);
+  assert.equal((await current(f)).manualBudgetHold, true);
+  assert.equal(await spent(f), 1);
+  assert.equal((await db.collection('workspaces').doc(f.ws).get()).data()!.maxRunsPerIssue, 0);
+  await start(f); await submit(f, true); await auto(f);
+  assert.equal((await jobs(f)).length, 1);
+});
 const request = (f: Fixture, caller = f.human) => new ReviewsRerunAction({ actionCode: 'reviews.rerun', data: { issueId: f.id, acknowledgePartial: true } }, caller).run();
 const start = (f: Fixture) => new ReviewsStartAction({ actionCode: 'reviews.start', data: { workspaceId: f.ws, issueId: f.id } }, f.qa).run();
 const current = async (f: Fixture) => (await db.collection('issues').doc(f.id).get()).data()!;

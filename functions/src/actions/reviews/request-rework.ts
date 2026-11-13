@@ -13,6 +13,7 @@ import { runnerProjectRepoAccess } from '../../common/utils/project-repos';
 import { resolveIssueRepo } from '../../common/utils/repo-resolution';
 import { enqueueRunnerJob } from '../../common/utils/runner-jobs';
 import { runnerJobSigningPrivateKey } from '../../common/secrets';
+import { budgetBlocked, manualBudgetExceptions } from '../../common/utils/manual-budget';
 
 /** Human development and rework share the signed queue; automatic mode and QA policy are preserved. */
 export class RequestReworkAction extends PlatformActionHandler {
@@ -36,6 +37,7 @@ export class RequestReworkAction extends PlatformActionHandler {
     const db = getFirestore();
     const { issueId, requestId } = this.action.data;
     const statusOnly = this.actionCode === 'issues.developmentStatus';
+    const exceptions = statusOnly ? [] : manualBudgetExceptions(this.action.data.budgetExceptions);
     if (!statusOnly && (requestId !== undefined || this.actionCode === 'issues.requestDevelopment') && (typeof requestId !== 'string' || !/^[A-Za-z0-9_-]{8,100}$/.test(requestId))) throw new Error('La solicitud necesita un identificador válido para poder reintentar sin duplicar el trabajo.');
     const comment = this.action.data.comment ?? (this.actionCode === 'reviews.requestRework' ? '' : 'Corregí los findings abiertos del intento vigente de QA y continuá los mismos PRs.');
     if (typeof comment !== 'string' || !comment.trim() || comment.length > 4000) {
@@ -75,8 +77,8 @@ export class RequestReworkAction extends PlatformActionHandler {
       if (mode === 'rework' && (!Number.isInteger(attempt) || (attempt < 1 && !returnedReview) || attempt >= (qa?.maxReviewAttempts ?? 2))) {
         throw new Error('No quedan intentos de revisión disponibles; usá la recuperación de una revisión escalada.');
       }
-      const budget = await checkIssueRunBudget(db, issue.workspaceId, issueId);
-      if (!budget.withinBudget) throw new Error('El issue alcanzó su límite de ejecuciones o costo; la solicitud no reinicia esos límites.');
+      const budget = await checkIssueRunBudget(db, issue.workspaceId, issueId, undefined, exceptions.filter((e): e is 'issue-run-limit' | 'issue-cost-cap' => e.startsWith('issue-')));
+      if (!budget.withinBudget) throw budgetBlocked(budget.reason, budget.limit ?? budget.capUsd);
       const installations = await db.collection('github_installations').where('workspaceId', '==', issue.workspaceId).get();
       const authorized: string[] = installations.docs.flatMap((doc) => doc.data().suspendedAt ? [] : doc.data().repositoryFullNames || []);
       const access = await runnerProjectRepoAccess(db, issue, authorized);
@@ -93,7 +95,7 @@ export class RequestReworkAction extends PlatformActionHandler {
       if (!preflight.ready) throw new Error(preflight.problems.map(p => `${p.message} ${p.action}`).join(' '));
       if (statusOnly) {
         const preview = await db.runTransaction(tx => checkWorkspaceDispatchBudget(tx, db, issue.workspaceId, false));
-        if (!preview.allowed) throw new Error(preview.reason === 'paused' ? 'Los agentes están pausados. Reanudalos en Ajustes de agentes.' : 'Se alcanzó el límite diario de ejecuciones o costo. Revisá los límites con un administrador en Ajustes de agentes.');
+        if (!preview.allowed) throw preview.reason === 'paused' ? new Error('Los agentes están pausados. Reanudalos en Ajustes de agentes.') : budgetBlocked(preview.reason, preview.limit ?? preview.capUsd);
         const agentJobs = await db.collection('runner_jobs').where('agentId', '==', agentId).get();
         const others = new Set(agentJobs.docs.filter(s => s.data().issueId !== issueId && activeDevelopmentJob(s.data())).map(s => s.data().issueId));
         const agentRuns = await db.collection('agent_runs').where('agentId', '==', agentId).get();
@@ -108,7 +110,7 @@ export class RequestReworkAction extends PlatformActionHandler {
       const job = await enqueueRunnerJob(db, {
         workspaceId: issue.workspaceId, projectId: access.projectId, issueId, agentId,
         runnerId: agent.runnerId, repoFullName: target, contextRepos, mode,
-      }, runnerJobSigningPrivateKey.value(), 'runner-job-v1', mode === 'rework' ? { mode, attempt, requestedBy: callerUid, comment: comment.trim(), ...(requestId ? { requestId } : {}) } : { mode, requestedBy: callerUid, requestId });
+      }, runnerJobSigningPrivateKey.value(), 'runner-job-v1', mode === 'rework' ? { mode, attempt, requestedBy: callerUid, comment: comment.trim(), budgetExceptions: exceptions, ...(requestId ? { requestId } : {}) } : { mode, requestedBy: callerUid, requestId, budgetExceptions: exceptions });
       return { issueId, jobId: job.id, mode };
     } catch (error) {
       if (!statusOnly) throw error;

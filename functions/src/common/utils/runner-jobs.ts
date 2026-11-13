@@ -14,6 +14,7 @@ import { checkIssueRunBudget } from './issue-run-budget';
 import { assertReviewRequest } from './review-request';
 import { hasCompleteDevSelfCheck } from './dev-self-check';
 import { RunnerJob } from '../domain.generated';
+import { budgetBlocked, manualBudgetExceptions, ManualBudgetException } from './manual-budget';
 
 // Un adaptador local puede necesitar instalar dependencias, ejecutar tests y
 // abrir/actualizar un PR. Cinco minutos alcanzan para entregar el envelope,
@@ -36,7 +37,7 @@ export function signRunnerJob(job: Omit<RunnerJob, 'signature'>, privateKey: str
   return base64url(sign(null, Buffer.from(runnerJobPayload(job)), privateKey));
 }
 
-export type DispatchReservation = { mode: 'review'; attempt: number; refs: string; context?: string; requestedBy?: string; headScope?: Array<{repoFullName:string;prNumber:number;headSha:string}>; partial?: boolean } | boolean | { mode: 'handoff'; requestedAt: string } | { mode: 'rework'; attempt: number; requestedBy?: string; comment?: string; requestId?: string } | { mode: 'task'; requestedBy: string; requestId: string };
+export type DispatchReservation = { mode: 'review'; attempt: number; refs: string; context?: string; requestedBy?: string; headScope?: Array<{repoFullName:string;prNumber:number;headSha:string}>; partial?: boolean; budgetExceptions?: ManualBudgetException[] } | boolean | { mode: 'handoff'; requestedAt: string } | { mode: 'rework'; attempt: number; requestedBy?: string; comment?: string; requestId?: string; budgetExceptions?: ManualBudgetException[] } | { mode: 'task'; requestedBy: string; requestId: string; budgetExceptions?: ManualBudgetException[] };
 
 /** Crea un trabajo de vida corta. El documento no contiene ninguna credencial de proveedor. */
 export async function enqueueRunnerJob(
@@ -65,6 +66,20 @@ export async function enqueueRunnerJob(
     const issueRef = db.collection('issues').doc(job.issueId);
     const issue = reservation ? (await transaction.get(issueRef)).data() : undefined;
     const humanRequest = reservation && reservation !== true && (reservation.mode === 'rework' || reservation.mode === 'task') && reservation.requestedBy ? reservation : undefined;
+    const manualReview = reservation && reservation !== true && reservation.mode === 'review' && reservation.requestedBy ? reservation : undefined;
+    const exceptions = manualBudgetExceptions(humanRequest?.budgetExceptions ?? manualReview?.budgetExceptions);
+    if (issue?.manualBudgetHold && !humanRequest && !manualReview) throw new RunnerDispatchError('budget', ['Una ejecución excepcional requiere una nueva solicitud manual.']);
+    const overridden: ManualBudgetException[] = [];
+    const checkIssueLimits = async () => {
+      const accepted: ('issue-run-limit' | 'issue-cost-cap')[] = [];
+      for (;;) {
+        const decision = await checkIssueRunBudget(db, job.workspaceId, job.issueId, transaction, accepted);
+        if (decision.withinBudget) break;
+        if (!exceptions.includes(decision.reason)) throw budgetBlocked(decision.reason, decision.limit ?? decision.capUsd);
+        accepted.push(decision.reason);
+        overridden.push(decision.reason);
+      }
+    };
     const returnedReview = humanRequest?.mode === 'rework' ? returnedDevelopmentReview(issue) : undefined;
     const developmentReview = returnedReview || issue?.review;
     const requester = humanRequest?.requestedBy;
@@ -122,8 +137,7 @@ export async function enqueueRunnerJob(
         const qa = qaId ? await transaction.get(db.collection('agents').doc(qaId)) : undefined;
         if (humanRequest.attempt >= (qa?.data()?.maxReviewAttempts ?? 2)) throw new Error('No quedan intentos de revisión disponibles. Usá la recuperación de revisión escalada.');
       }
-      const issueBudget = await checkIssueRunBudget(db, job.workspaceId, job.issueId, transaction);
-      if (!issueBudget.withinBudget) throw new Error('El issue alcanzó su límite de ejecuciones o costo. Revisá los límites con un administrador.');
+      await checkIssueLimits();
       const agentJobs = await transaction.get(db.collection('runner_jobs').where('agentId', '==', job.agentId));
       const occupied = new Set(agentJobs.docs.filter(s => activeDevelopmentJob(s.data()) && s.data().issueId !== job.issueId).map(s => s.data().issueId));
       const agentRuns = await transaction.get(db.collection('agent_runs').where('agentId', '==', job.agentId));
@@ -154,8 +168,7 @@ export async function enqueueRunnerJob(
       if (!reviewRequest.requestedBy && !issue!.qaAssigneeId && !agent.data()!.autonomousMode) throw new RunnerDispatchError('preflight', ['El QA ya no tiene habilitado el modo autónomo.']);
       if ((issue!.execution?.agentId || issue!.assigneeId) === job.agentId || (issue!.qaAssigneeId && issue!.qaAssigneeId !== job.agentId)) throw new Error('Cambió el agente QA asignado. Revisá la asignación y volvé a solicitar QA.');
       if (!reviewRequest.requestedBy && issue!.review?.dispatchedTo === job.agentId && Date.now() - Date.parse(issue!.review.dispatchedAt || '') < DISPATCH_COOLDOWN_MS) throw new RunnerDispatchError('enqueue', ['La issue ya tiene un dispatch QA reciente.'], true);
-      const issueBudget = await checkIssueRunBudget(db, job.workspaceId, job.issueId, transaction);
-      if (!issueBudget.withinBudget) throw new Error('La issue alcanzó su límite de ejecuciones o costo. Revisá el presupuesto antes de solicitar QA.');
+      await checkIssueLimits();
       const issueJobs = await transaction.get(db.collection('runner_jobs').where('issueId', '==', job.issueId));
       if (issueJobs.docs.some(snap => ['pending', 'delivered'].includes(snap.data().status) && (!Number.isFinite(Date.parse(snap.data().expiresAt)) || Date.parse(snap.data().expiresAt) > Date.now()))) throw new RunnerDispatchError('enqueue', ['La issue espera a que termine el job activo.'], false, true);
     }
@@ -217,10 +230,16 @@ export async function enqueueRunnerJob(
     if (reservation) {
       // Budget writes are last: Firestore requires every read before writes.
       // Aborting any validation/signing/commit leaves no cooldown or spend.
-      const budget = await checkWorkspaceDispatchBudget(transaction, db, job.workspaceId);
-      if (!budget.allowed) throw new RunnerDispatchError('budget', [budget.reason === 'paused'
-        ? 'Los agentes están pausados. Reanudalos en Ajustes para reintentar.'
-        : 'Se alcanzó el límite diario de dispatches o costo del workspace. Revisá el presupuesto en Ajustes o reintentá al día siguiente.']);
+      const accepted: ('daily-dispatch-limit' | 'daily-cost-cap')[] = [];
+      for (;;) {
+        const budget = await checkWorkspaceDispatchBudget(transaction, db, job.workspaceId, false, accepted);
+        if (budget.allowed) break;
+        if (budget.reason === 'paused') throw new RunnerDispatchError('budget', ['Los agentes están pausados. Reanudalos en Ajustes para reintentar.']);
+        if (!exceptions.includes(budget.reason)) throw budgetBlocked(budget.reason, budget.limit ?? budget.capUsd);
+        accepted.push(budget.reason);
+        overridden.push(budget.reason);
+      }
+      await checkWorkspaceDispatchBudget(transaction, db, job.workspaceId, true, accepted);
       let modeMarks: Record<string, any> = {};
       if (reviewRequest) {
         modeMarks = {
@@ -242,6 +261,7 @@ export async function enqueueRunnerJob(
       }
       transaction.update(issueRef, {
         ...modeMarks,
+        ...((humanRequest || manualReview) ? { manualBudgetHold: overridden.length > 0 } : {}),
         ...(humanRequest ? { 'agent.claimedAt': FieldValue.delete(), 'agent.claimedBy': FieldValue.delete(), status: 'in_progress', 'git.lastSyncedStatus': 'in_progress', updatedAt: issuedAt, updatedBy: humanRequest.requestedBy } : {}),
         ...(reviewRequest ? { updatedAt: issuedAt } : { 'agent.dispatchedAt': issuedAt, 'agent.dispatchedTo': job.agentId,
         'agent.dispatchFailure': FieldValue.delete(), 'agent.blockedReason': FieldValue.delete(), 'agent.state': 'idle' }),
@@ -255,6 +275,7 @@ export async function enqueueRunnerJob(
           ...(reviewRequest.requestedBy ? { requestedBy: reviewRequest.requestedBy } : {}),
         } : {}),
         ...(humanRequest ? { requestedBy: humanRequest.requestedBy } : {}),
+        ...(overridden.length ? { budgetOverride: { requestedBy: humanRequest?.requestedBy || manualReview?.requestedBy, reasons: overridden, authorizedAt: issuedAt } } : {}),
         ...(reservation !== true && reservation.mode === 'rework' ? { reviewAttempt: reservation.attempt } : {}),
         repo: job.repoFullName, runnerId: job.runnerId, startedAt: issuedAt, date: todayKey(),
       });

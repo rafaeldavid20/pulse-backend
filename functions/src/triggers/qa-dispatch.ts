@@ -72,7 +72,7 @@ function reviewablePrs(issue: FirebaseFirestore.DocumentData): ReviewablePr[] | 
 export async function dispatchPendingQa(issueId: string) {
   const db = getFirestore();
   const after = (await db.collection('issues').doc(issueId).get()).data();
-  if (!after || after.status !== 'in_review' || after.review?.manualRequest ||
+  if (!after || after.manualBudgetHold || after.status !== 'in_review' || after.review?.manualRequest ||
       ['running', 'needs_human'].includes(after.review?.state)) return;
   const startedAt = new Date().toISOString();
   try {

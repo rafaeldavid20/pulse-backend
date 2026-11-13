@@ -61,6 +61,7 @@ async function dispatchRework(
   }
 
   const review = after.review as Record<string, any> | undefined;
+  if (after.manualBudgetHold) return;
   const attempt = review?.attempt ?? 0;
   if (review?.reworkDispatchedForAttempt === attempt || after.agent?.state === 'claimed' || ['done', 'canceled'].includes(after.status)) return;
   const startedAt = new Date().toISOString();

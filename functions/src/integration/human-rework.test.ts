@@ -62,6 +62,23 @@ async function trigger(f: Fixture) {
   } } as any);
 }
 
+test('a human can authorize exactly one development run above budget with an audit record', async () => {
+  const f = await fixture();
+  await db.collection('workspaces').doc(f.workspaceId).update({maxRunsPerIssue:0, dailyDispatchLimit:0});
+  const invoke = (caller: string, budgetExceptions: string[], requestId: string) => new RequestReworkAction({actionCode:'issues.requestDevelopment', data:{issueId:f.issueId, requestId, budgetExceptions}}, caller, undefined, 'issues.requestDevelopment').run();
+  assert.equal((await invoke(f.owner, [], 'request000')).success, false);
+  assert.equal((await invoke(f.other, ['issue-run-limit','daily-dispatch-limit'], 'request001')).success, false);
+  const results = await Promise.all([invoke(f.owner, ['issue-run-limit','daily-dispatch-limit'], 'request002'), invoke(f.owner, ['issue-run-limit','daily-dispatch-limit'], 'request003')]);
+  assert.equal(results.filter(r => r.success).length, 1);
+  const run = (await db.collection('agent_runs').doc(results.find(r => r.success)!.data!.jobId).get()).data()!;
+  assert.deepEqual(run.budgetOverride.reasons, ['issue-run-limit','daily-dispatch-limit']);
+  assert.equal(run.budgetOverride.requestedBy, f.owner);
+  assert.equal((await counts(f)).budget, 1);
+  assert.equal((await db.collection('issues').doc(f.issueId).get()).data()!.manualBudgetHold, true);
+  await trigger(f);
+  assert.equal((await counts(f)).jobs, 1);
+});
+
 test('human request after shadow rejection signs the existing PR branch and preserves ownership, QA and findings', async () => {
   const f = await fixture();
   await trigger(f);
