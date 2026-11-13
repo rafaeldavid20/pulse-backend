@@ -37,7 +37,7 @@ export function signRunnerJob(job: Omit<RunnerJob, 'signature'>, privateKey: str
   return base64url(sign(null, Buffer.from(runnerJobPayload(job)), privateKey));
 }
 
-export type DispatchReservation = { mode: 'review'; attempt: number; refs: string; context?: string; requestedBy?: string; headScope?: Array<{repoFullName:string;prNumber:number;headSha:string}>; partial?: boolean; budgetExceptions?: ManualBudgetException[] } | boolean | { mode: 'handoff'; requestedAt: string } | { mode: 'rework'; attempt: number; requestedBy?: string; comment?: string; requestId?: string; budgetExceptions?: ManualBudgetException[] } | { mode: 'task'; requestedBy: string; requestId: string; budgetExceptions?: ManualBudgetException[] };
+export type DispatchReservation = { mode: 'review'; attempt: number; refs: string; context?: string; requestedBy?: string; headScope?: Array<{repoFullName:string;prNumber:number;headSha:string}>; partial?: boolean; budgetExceptions?: ManualBudgetException[] } | boolean | { mode: 'handoff'; requestedAt: string; requestedBy?: string; requestId?: string; budgetExceptions?: ManualBudgetException[] } | { mode: 'rework'; attempt: number; requestedBy?: string; comment?: string; requestId?: string; budgetExceptions?: ManualBudgetException[] } | { mode: 'task'; requestedBy: string; requestId: string; budgetExceptions?: ManualBudgetException[] };
 
 /** Crea un trabajo de vida corta. El documento no contiene ninguna credencial de proveedor. */
 export async function enqueueRunnerJob(
@@ -65,7 +65,7 @@ export async function enqueueRunnerJob(
     }
     const issueRef = db.collection('issues').doc(job.issueId);
     const issue = reservation ? (await transaction.get(issueRef)).data() : undefined;
-    const humanRequest = reservation && reservation !== true && (reservation.mode === 'rework' || reservation.mode === 'task') && reservation.requestedBy ? reservation : undefined;
+    const humanRequest = reservation && reservation !== true && (reservation.mode === 'rework' || reservation.mode === 'task' || reservation.mode === 'handoff') && reservation.requestedBy ? reservation : undefined;
     const manualReview = reservation && reservation !== true && reservation.mode === 'review' && reservation.requestedBy ? reservation : undefined;
     const exceptions = manualBudgetExceptions(humanRequest?.budgetExceptions ?? manualReview?.budgetExceptions);
     if (issue?.manualBudgetHold && !humanRequest && !manualReview) throw new RunnerDispatchError('budget', ['Una ejecución excepcional requiere una nueva solicitud manual.']);
@@ -131,7 +131,7 @@ export async function enqueueRunnerJob(
     }
     if (humanRequest) {
       if (!['in_review', 'in_progress', 'todo'].includes(issue!.status)) throw new Error('Reabrí el issue antes de ejecutar desarrollo.');
-      if ((issue!.pendingRepoWork || []).some((entry: any) => !entry.dispatchedAt)) throw new Error('El issue tiene un traspaso pendiente.');
+      if (humanRequest.mode !== 'handoff' && (issue!.pendingRepoWork || []).some((entry: any) => !entry.dispatchedAt)) throw new Error('El issue tiene un traspaso pendiente.');
       if (humanRequest.mode === 'rework') {
         const qaId = developmentReview.reviewerId || developmentReview.dispatchedTo;
         const qa = qaId ? await transaction.get(db.collection('agents').doc(qaId)) : undefined;
@@ -261,7 +261,7 @@ export async function enqueueRunnerJob(
       }
       transaction.update(issueRef, {
         ...modeMarks,
-        ...((humanRequest || manualReview) ? { manualBudgetHold: overridden.length > 0 } : {}),
+        ...((humanRequest || manualReview) ? { manualBudgetHold: !!issue!.manualBudgetHold || overridden.length > 0 } : {}),
         ...(humanRequest ? { 'agent.claimedAt': FieldValue.delete(), 'agent.claimedBy': FieldValue.delete(), status: 'in_progress', 'git.lastSyncedStatus': 'in_progress', updatedAt: issuedAt, updatedBy: humanRequest.requestedBy } : {}),
         ...(reviewRequest ? { updatedAt: issuedAt } : { 'agent.dispatchedAt': issuedAt, 'agent.dispatchedTo': job.agentId,
         'agent.dispatchFailure': FieldValue.delete(), 'agent.blockedReason': FieldValue.delete(), 'agent.state': 'idle' }),
@@ -288,7 +288,7 @@ export async function enqueueRunnerJob(
       const commentId = `cmt-${job.id}`;
       transaction.create(db.collection('comments').doc(commentId), {
         id: commentId, workspaceId: job.workspaceId, issueId: job.issueId, authorId: humanRequest.requestedBy,
-        body: humanRequest.mode === 'rework' ? `**Corrección solicitada al agente**: se retoma el intento ${humanRequest.attempt} en los mismos PRs; se conservan el modo de QA y los límites.\n\n${humanRequest.comment || ''}` : '**Desarrollo solicitado al agente**: se conservan el responsable, ejecutor y los límites.',
+        body: humanRequest.mode === 'rework' ? `**Corrección solicitada al agente**: se retoma el intento ${humanRequest.attempt} en los mismos PRs; se conservan el modo de QA y los límites.\n\n${humanRequest.comment || ''}` : humanRequest.mode === 'handoff' ? `**Traspaso solicitado al agente**: se continúa el trabajo pendiente en ${job.repoFullName}.` : '**Desarrollo solicitado al agente**: se conservan el responsable, ejecutor y los límites.',
         source: 'web', createdAt: issuedAt,
       });
     }

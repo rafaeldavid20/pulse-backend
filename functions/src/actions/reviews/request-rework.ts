@@ -46,7 +46,8 @@ export class RequestReworkAction extends PlatformActionHandler {
     const issue = (await db.collection('issues').doc(issueId).get()).data()!;
     const returnedReview = returnedDevelopmentReview(issue);
     const review = returnedReview || issue.review;
-    const mode = review?.state === 'changes_requested' ? 'rework' : 'task';
+    const pendingHandoff = (issue.pendingRepoWork || []).find((entry: any) => !entry.dispatchedAt);
+    const mode = pendingHandoff ? 'handoff' : review?.state === 'changes_requested' ? 'rework' : 'task';
     const [jobs, runs] = await Promise.all([
       db.collection('runner_jobs').where('issueId', '==', issueId).get(),
       db.collection('agent_runs').where('issueId', '==', issueId).get(),
@@ -68,7 +69,6 @@ export class RequestReworkAction extends PlatformActionHandler {
       }
       if (!['todo', 'in_progress', 'in_review'].includes(issue.status)) throw new Error('Reabrí el issue y pasalo a Por hacer antes de ejecutar desarrollo.');
       if (state.active) throw new Error('Hay un job en cola o una ejecución viva. Esperá a que termine; consultá el diagnóstico del Runner.');
-      if ((issue.pendingRepoWork || []).some((entry: any) => !entry.dispatchedAt)) throw new Error('El issue tiene un traspaso pendiente; esperá a que termine.');
       if (mode === 'task' && (issue.review?.state || issue.status === 'in_review' || (issue.gitRefs || [issue.git]).some((ref: any) => ref?.prNumber))) throw new Error('Resolvé la revisión o el PR existente antes de iniciar desarrollo. Para una revisión escalada, usá Devolver al agente.');
       if (this.actionCode === 'reviews.requestRework' && mode !== 'rework') throw new Error('Solo se puede solicitar una corrección cuando QA pidió cambios.');
       const qaId = review?.reviewerId || review?.dispatchedTo;
@@ -85,7 +85,7 @@ export class RequestReworkAction extends PlatformActionHandler {
       if (!access) throw new Error('Configurá los repositorios autorizados del proyecto antes de solicitar una corrección.');
       const { repoFullName } = await resolveIssueRepo(db, { ...issue, id: issueId }, { agentId });
       const flaggedRepo = review?.findings?.find((finding: any) => finding.status === 'open' && ['major', 'blocker'].includes(finding.severity) && finding.repoFullName)?.repoFullName;
-      const target = flaggedRepo || repoFullName;
+      const target = pendingHandoff?.repoFullName || flaggedRepo || repoFullName;
       if (!target) throw new Error('No se pudo resolver el repositorio a corregir.');
       const contextRepos = mode === 'rework' ? reworkRepositories(issue, access.repos, target) : access.repos;
       if (!access.repos.includes(target)) throw new Error('Elegí un repositorio destino autorizado por el proyecto y GitHub.');
@@ -110,7 +110,7 @@ export class RequestReworkAction extends PlatformActionHandler {
       const job = await enqueueRunnerJob(db, {
         workspaceId: issue.workspaceId, projectId: access.projectId, issueId, agentId,
         runnerId: agent.runnerId, repoFullName: target, contextRepos, mode,
-      }, runnerJobSigningPrivateKey.value(), 'runner-job-v1', mode === 'rework' ? { mode, attempt, requestedBy: callerUid, comment: comment.trim(), budgetExceptions: exceptions, ...(requestId ? { requestId } : {}) } : { mode, requestedBy: callerUid, requestId, budgetExceptions: exceptions });
+      }, runnerJobSigningPrivateKey.value(), 'runner-job-v1', mode === 'rework' ? { mode, attempt, requestedBy: callerUid, comment: comment.trim(), budgetExceptions: exceptions, ...(requestId ? { requestId } : {}) } : mode === 'handoff' ? { mode, requestedAt: pendingHandoff.requestedAt, requestedBy: callerUid, requestId, budgetExceptions: exceptions } : { mode, requestedBy: callerUid, requestId, budgetExceptions: exceptions });
       return { issueId, jobId: job.id, mode };
     } catch (error) {
       if (!statusOnly) throw error;

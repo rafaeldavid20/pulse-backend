@@ -185,6 +185,9 @@ async function dispatchHandoff(
   targetRepo: string
 ): Promise<void> {
   const db = getFirestore();
+  const current = (await db.collection('issues').doc(issueId).get()).data();
+  if (!current || current.manualBudgetHold || !(current.pendingRepoWork || []).some((e: any) => e.repoFullName === targetRepo && !e.dispatchedAt)) return;
+  after = current;
   const agentSnap = await db.collection('agents').doc(agentId).get();
   const agent = agentSnap.exists ? agentSnap.data()! : null;
   if (!agent || agent.archivedAt || !agent.enabled || !agent.autonomousMode) {
@@ -229,19 +232,12 @@ async function dispatchHandoff(
       );
       const escalation = await buildNeedsHumanEscalation(db, after);
       const now = new Date().toISOString();
-      await db
-        .collection('issues')
-        .doc(issueId)
-        .update({
-          ...escalation,
-          // Estampar `dispatchedAt` en la entrada, aunque no se haya
-          // despachado de verdad: si no, cualquier otro write al issue (el
-          // de esta misma escalación incluido) vuelve a encontrar la
-          // entrada sin `dispatchedAt` y reintenta el traspaso en loop.
-          pendingRepoWork: (after.pendingRepoWork || []).map((e: any) =>
-            e.repoFullName === targetRepo ? { ...e, dispatchedAt: now } : e
-          ),
-        });
+      await db.runTransaction(async tx => {
+        const ref = db.collection('issues').doc(issueId);
+        const live = (await tx.get(ref)).data();
+        if (!live || live.manualBudgetHold || !(live.pendingRepoWork || []).some((e: any) => e.repoFullName === targetRepo && e.requestedAt === entry?.requestedAt && !e.dispatchedAt)) return;
+        tx.update(ref, { ...escalation, pendingRepoWork: live.pendingRepoWork.map((e: any) => e.repoFullName === targetRepo ? { ...e, dispatchedAt: now } : e) });
+      });
     } else {
       console.log(
         `[AgentDispatch] handoff for '${issueId}' alcanzó el techo de costo por issue (USD ${runBudget.capUsd}), skipping.`
