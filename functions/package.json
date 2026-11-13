@@ -7,7 +7,7 @@
   "scripts": {
     "build": "tsc",
     "test": "npm run build && node --test lib/common/utils/*.test.js",
-    "test:integration": "npm run build && firebase emulators:exec --project demo-pulse-local --only firestore \"node --test lib/integration/*.test.js\"",
+    "test:integration": "npm run build && firebase emulators:exec --project demo-pulse-local --only firestore \"node --test --test-concurrency=1 lib/integration/*.test.js\"",
     "test:profiles": "npm run build && firebase emulators:exec --project demo-pulse-local --only firestore \"node --test lib/integration/runner-profiles.cross-repo.js\"",
     "build:watch": "tsc --watch",
     "serve": "npm run build && firebase serve --only functions",
@@ -20,10 +20,11 @@
     "migrate:api-key-scopes": "node scripts/migrate-api-key-scopes.mjs",
     "migrate:label-ids": "node scripts/migrate-label-ids.mjs",
     "seed:mvp-dod": "node scripts/seed-mvp-definition-of-done.mjs",
-    "test:rules": "npm run build && firebase emulators:exec --project demo-pulse-tes333 --only firestore \"node --test lib/rules/*.test.js\""
+    "test:rules": "npm run build && firebase emulators:exec --project demo-pulse-tes333 --only firestore \"node --test lib/rules/*.test.js\"",
+    "test:signals": "npm run build && firebase emulators:exec --project demo-pulse-local --only auth,firestore \"node --test lib/integration/runner-signal-stream.cross-repo.js\""
   },
   "engines": {
-    "node": "20"
+    "node": "22"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

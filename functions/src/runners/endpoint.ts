@@ -1,3 +1,7 @@
+import { runnerAvailabilityRestored } from '../common/utils/runner-signal-transition';
+import { getAuth } from 'firebase-admin/auth';
+import { getApp } from 'firebase-admin/app';
+import { runnerSubscriptionSession } from './signals';
 import { runnerProcessReport } from '../common/utils/runner-version';
 import { RUN_ACTIVITY_TTL_MS } from '../common/utils/run-activity';
 import { exchangeRunnerProfiles } from './profiles';
@@ -132,10 +136,17 @@ export const pulseRunnerHeartbeat = onRequest(
           ...(!active ? { activityStoppedAt: now } : {}) });
       });
     }
-    await getFirestore().collection('runners').doc(runner.id).update({ status, lastHeartbeatAt: now, updatedAt: now,
+    const runnerUpdate = { status, lastHeartbeatAt: now, updatedAt: now,
       ...runnerProcessReport(req.body, now),
       ...(readiness ? { readiness, readinessCheckedAt: now, profileVersion: readiness.profileProtocolVersion || 0 } : {}),
-    });
+    };
+    const db = getFirestore(); const batch = db.batch();
+    batch.update(db.collection('runners').doc(runner.id), runnerUpdate);
+    // Emit only an actual recovery/configuration transition, never every heartbeat.
+    if (runnerAvailabilityRestored(runner.data, { ...runner.data, ...runnerUpdate })) {
+      batch.set(db.collection('runner_availability_signals').doc(runner.id), { workspaceId: runner.data.workspaceId, revision: FieldValue.increment(1) }, { merge: true });
+    }
+    await batch.commit();
     res.json({ runnerId: runner.id, status, lastHeartbeatAt: now, cancelRequested });
   },
 );
@@ -396,3 +407,18 @@ export const pulseRunnerPublication = onRequest(
     } catch {res.status(409).json({error:selfCheckBlocked ? 'Ready publication requires a current complete self-check. Report every issue and project criterion as met with fresh evidence, then retry.' : 'Publication checkpoint is not authorized'});}
   },
 );
+
+// Public Firebase web key; configurable for other projects.
+const signalApiKey = process.env.RUNNER_SIGNAL_API_KEY || 'AIzaSyAINMPrTeemW6gsIOnHzsHicY9JedL7BVc';
+export const pulseRunnerSubscribe = onRequest({ region: 'us-east4', secrets: [mcpKeyPepper] }, async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  if (req.method !== 'POST') { res.status(405).json({ error: 'Method Not Allowed' }); return; }
+  const runner = await authenticateRunner(req.headers.authorization);
+  if (!runner) { res.status(401).json({ error: 'Invalid runner credential' }); return; }
+  try {
+    const claims = await runnerSubscriptionSession(getFirestore(), runner.id, runner.data.deviceSecretHash);
+    const customToken = await getAuth().createCustomToken(`runner-device:${runner.id}`, claims);
+    const projectId = getApp().options.projectId || process.env.GCLOUD_PROJECT;
+    res.json({ version: 1, customToken, firebase: { projectId, apiKey: signalApiKey }, runnerId: runner.id, workspaceId: claims.workspaceId });
+  } catch { res.status(503).json({ error: 'Runner subscription unavailable' }); }
+});

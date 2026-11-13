@@ -155,3 +155,26 @@ test('two agents on one Runner retain independent profiles and serialize concurr
   assert.equal(second.snapshot.model, null); assert.equal(second.snapshot.directories[0].candidates.length, 0);
   await assert.rejects(manageRunnerProfile(db, f.owner, { agentId: secondId, runnerId: f.runnerId, op: 'request', requestId: randomUUID(), expectedRevision: second.snapshot.revision, patch: { directories: [{ repo: 'owner/repo', candidateId: f.id }] } }), /Candidato/);
 }));
+
+test('repeated profile exchanges do not rewrite the Runner capability document', () => fixture(async f => {
+  const body = { version: 1, agentIds: [f.agentId], profiles: [] };
+  await exchangeRunnerProfiles(db, f.runnerId, body);
+  const before = await db.collection('runners').doc(f.runnerId).get();
+  assert.equal(before.data()!.profileVersion, 1);
+  await exchangeRunnerProfiles(db, f.runnerId, body);
+  const after = await db.collection('runners').doc(f.runnerId).get();
+  assert.ok(before.updateTime!.isEqual(after.updateTime!));
+}));
+
+test('opening a stale profile explicitly wakes the device once; ordinary signal reads never loop',()=>fixture(async f=>{
+  await f.remote.syncRemoteProfiles(f.config,f.exchange,f.deps);
+  // Binding stays the same; only observation age is changed.
+  const stored=await db.collection('runner_profiles').get();
+  const own=stored.docs.find(d=>d.data().agentId===f.agentId)!;
+  await own.ref.update({observedAt:new Date(Date.now()-60_000).toISOString()});
+  const input={agentId:f.agentId,runnerId:f.runnerId,op:'read',refresh:true};
+  await manageRunnerProfile(db,f.owner,input);
+  await manageRunnerProfile(db,f.owner,input);
+  await f.read();
+  assert.equal((await db.collection('runner_signals').doc(f.runnerId).get()).data()!.profiles,1);
+}));

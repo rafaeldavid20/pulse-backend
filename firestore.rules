@@ -5,7 +5,7 @@ service cloud.firestore {
     
     // Helper functions
     function isAuthenticated() {
-      return request.auth != null;
+      return request.auth != null && !('runnerDevice' in request.auth.token) && !request.auth.uid.matches('runner-device:.*');
     }
     
     function isUser(userId) {
@@ -26,6 +26,40 @@ service cloud.firestore {
       allow read, write: if false;
     }
     
+    // Device principals have no general client access, even on legacy collections.
+    function ownsRunnerSignal(runnerId) {
+      let runner = get(/databases/$(database)/documents/runners/$(runnerId)).data;
+      return request.auth != null && request.auth.token.runnerDevice == true
+        && request.auth.uid == 'runner-device:' + runnerId
+        && request.auth.token.runnerId == runnerId
+        && request.auth.token.workspaceId == runner.workspaceId
+        && request.auth.token.runnerSession == runner.signalSessionId
+        && runner.signalCredentialHash == runner.deviceSecretHash
+        && (!('revokedAt' in runner) || runner.revokedAt == null);
+    }
+    match /runner_signals/{runnerId} {
+      allow get: if ownsRunnerSignal(runnerId);
+      allow list, write: if false;
+    }
+    match /issue_signals/{issueId} {
+      allow get: if isMember(get(/databases/$(database)/documents/issues/$(issueId)).data.workspaceId);
+      allow list, write: if false;
+    }
+    function managesProfile(agentId) {
+      let agent = get(/databases/$(database)/documents/agents/$(agentId)).data;
+      let runner = get(/databases/$(database)/documents/runners/$(agent.runnerId)).data;
+      let member = get(/databases/$(database)/documents/members/$(agent.workspaceId + '_' + request.auth.uid)).data;
+      return isMember(agent.workspaceId) && agent.workspaceId == runner.workspaceId
+        && (!('archivedAt' in agent) || agent.archivedAt == null)
+        && (!('revokedAt' in runner) || runner.revokedAt == null)
+        && ((agent.get('visibility', 'public') != 'public' && agent.get('ownerMemberId', '') == request.auth.uid && runner.get('ownerMemberId', '') == request.auth.uid)
+          || member.role in ['admin', 'owner']);
+    }
+    match /profile_signals/{agentId} {
+      allow get: if isAuthenticated() && managesProfile(agentId);
+      allow list, write: if false;
+    }
+
     // User profile documents
     match /users/{userId} {
       allow read: if isAuthenticated();

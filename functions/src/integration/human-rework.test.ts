@@ -62,6 +62,45 @@ async function trigger(f: Fixture) {
   } } as any);
 }
 
+test('a human can authorize exactly one development run above budget with an audit record', async () => {
+  const f = await fixture();
+  await db.collection('workspaces').doc(f.workspaceId).update({maxRunsPerIssue:0, dailyDispatchLimit:0});
+  const invoke = (caller: string, budgetExceptions: string[], requestId: string) => new RequestReworkAction({actionCode:'issues.requestDevelopment', data:{issueId:f.issueId, requestId, budgetExceptions}}, caller, undefined, 'issues.requestDevelopment').run();
+  assert.equal((await invoke(f.owner, [], 'request000')).success, false);
+  assert.equal((await invoke(f.other, ['issue-run-limit','daily-dispatch-limit'], 'request001')).success, false);
+  const results = await Promise.all([invoke(f.owner, ['issue-run-limit','daily-dispatch-limit'], 'request002'), invoke(f.owner, ['issue-run-limit','daily-dispatch-limit'], 'request003')]);
+  assert.equal(results.filter(r => r.success).length, 1);
+  const run = (await db.collection('agent_runs').doc(results.find(r => r.success)!.data!.jobId).get()).data()!;
+  assert.deepEqual(run.budgetOverride.reasons, ['issue-run-limit','daily-dispatch-limit']);
+  assert.equal(run.budgetOverride.requestedBy, f.owner);
+  assert.equal((await counts(f)).budget, 1);
+  assert.equal((await db.collection('issues').doc(f.issueId).get()).data()!.manualBudgetHold, true);
+  await trigger(f);
+  assert.equal((await counts(f)).jobs, 1);
+});
+
+test('manual continuation resumes one pending repository handoff after an exceptional run', async () => {
+  const f = await fixture();
+  const entry = {repoFullName:'owner/app', requestedAt:new Date().toISOString(), summary:'Completar app'};
+  await db.collection('issues').doc(f.issueId).update({manualBudgetHold:true, pendingRepoWork:[entry]});
+  await db.collection('workspaces').doc(f.workspaceId).update({maxRunsPerIssue:0});
+  await trigger(f);
+  assert.equal((await db.collection('issues').doc(f.issueId).get()).data()!.pendingRepoWork[0].dispatchedAt, undefined, 'automatic dispatch must not consume the pending handoff');
+  const invoke = (who: string, budgetExceptions: string[]) => new RequestReworkAction({actionCode:'issues.requestDevelopment', data:{issueId:f.issueId, requestId:'handoff-request-1', budgetExceptions}}, who, undefined, 'issues.requestDevelopment').run();
+  const preview = await new RequestReworkAction({actionCode:'issues.developmentStatus', data:{issueId:f.issueId}}, f.owner, undefined, 'issues.developmentStatus').run();
+  assert.equal(preview.data?.mode, 'handoff');
+  assert.equal((await invoke(f.other, ['issue-run-limit'])).success, false);
+  assert.equal((await invoke(f.owner, [])).success, false);
+  const result = await invoke(f.owner, ['issue-run-limit']);
+  assert.equal(result.success, true, JSON.stringify(result));
+  const job = (await db.collection('runner_jobs').doc(result.data!.jobId).get()).data()!;
+  assert.equal(job.mode, 'handoff'); assert.equal(job.repoFullName, 'owner/app');
+  const issue = (await db.collection('issues').doc(f.issueId).get()).data()!;
+  assert.ok(issue.pendingRepoWork[0].dispatchedAt); assert.equal(issue.manualBudgetHold, true);
+  assert.equal((await invoke(f.owner, ['issue-run-limit'])).data?.jobId, job.id, 'the receipt is idempotent');
+  assert.equal((await counts(f)).jobs, 1);
+});
+
 test('human request after shadow rejection signs the existing PR branch and preserves ownership, QA and findings', async () => {
   const f = await fixture();
   await trigger(f);

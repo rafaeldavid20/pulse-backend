@@ -31,6 +31,7 @@ export async function checkIssueRunBudget(
   workspaceId: string,
   issueId: string,
   transaction?: Transaction,
+  exceptions: IssueRunBudgetReason[] = [],
 ): Promise<IssueRunBudgetDecision> {
   const workspaceRef = db.collection('workspaces').doc(workspaceId);
   const wsSnap = transaction ? await transaction.get(workspaceRef) : await workspaceRef.get();
@@ -51,12 +52,12 @@ export async function checkIssueRunBudget(
     const startedAt = Date.parse(doc.data().startedAt);
     return !Number.isFinite(startedAt) || startedAt >= resetAt;
   }).length : runsSnap.size;
-  if (countedRuns >= maxRuns) {
+  if (countedRuns >= maxRuns && !exceptions.includes('issue-run-limit')) {
     return { withinBudget: false, reason: 'issue-run-limit', limit: maxRuns };
   }
   if (costCapUsd) {
     const spentUsd = runsSnap.docs.reduce((sum, doc) => sum + (doc.data().costUsd || 0), 0);
-    if (spentUsd >= costCapUsd) return { withinBudget: false, reason: 'issue-cost-cap', capUsd: costCapUsd };
+    if (spentUsd >= costCapUsd && !exceptions.includes('issue-cost-cap')) return { withinBudget: false, reason: 'issue-cost-cap', capUsd: costCapUsd };
   }
 
   return { withinBudget: true };

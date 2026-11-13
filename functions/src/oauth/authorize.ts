@@ -96,6 +96,7 @@ async function handlePost(req: ExpressRequest, res: ExpressResponse) {
   let decoded;
   try {
     decoded = await getAuth().verifyIdToken(idToken);
+    if (decoded.runnerDevice === true || decoded.uid.startsWith('runner-device:')) throw new Error('Device session cannot authorize OAuth');
   } catch {
     res.status(401).json({ error: 'invalid_request', error_description: 'Sesión inválida, volvé a iniciar sesión.' });
     return;

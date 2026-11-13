@@ -13,6 +13,7 @@ import { runnerJobSigningPrivateKey } from '../../common/secrets';
 import { qaAssignmentError } from '../../common/utils/qa-assignment';
 import { findProjectQaRunner } from '../../common/utils/qa-runner';
 import { hasCompleteDevSelfCheck } from '../../common/utils/dev-self-check';
+import { manualBudgetExceptions } from '../../common/utils/manual-budget';
 
 /** Explicit human QA request: one transactional job, with no reset of automatic limits. */
 export class ReviewsRerunAction extends PlatformActionHandler {
@@ -153,7 +154,7 @@ export class ReviewsRerunAction extends PlatformActionHandler {
       contextRepos: (await db.collection('projects').doc(issue.projectId).get()).data()?.repoFullNames || [],
       mode: 'review',
     }, runnerJobSigningPrivateKey.value(), 'runner-job-v1', {
-      mode: 'review', attempt: review?.attempt || 0, refs, requestedBy: this.caller.uid!, headScope, partial,
+      mode: 'review', attempt: review?.attempt || 0, refs, requestedBy: this.caller.uid!, headScope, partial, budgetExceptions: manualBudgetExceptions(data.budgetExceptions),
     });
     return { issueId: data.issueId, jobId: job.id, repoFullName, qaAgentId, attempt: nextAttempt, requestSource: 'manual' };
   }

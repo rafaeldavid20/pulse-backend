@@ -1,4 +1,4 @@
-import { initializeApp } from 'firebase-admin/app';
+import { initializeApp, getApps } from 'firebase-admin/app';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { z } from 'zod';
 import { PlatformActionRequest } from './common/platform-actions/interfaces';
@@ -33,7 +33,7 @@ export { pulseRunnerHeartbeat, pulseRunnerPoll, pulseRunnerConfigure, pulseRunne
 export { runnerJobSweeperScheduled } from './scheduled/runner-job-sweeper';
 
 // Initialize Firebase Admin SDK once
-initializeApp();
+if (!getApps().length) initializeApp();
 
 const clientTelemetryInput = z.object({
   error: z.object({
@@ -52,7 +52,7 @@ const clientTelemetryInput = z.object({
 export const pulseClientTelemetry = onCall(
   { cors: true, region: 'us-east4', secrets: [pulseArgusDsn] },
   async (request) => {
-    if (!request.auth) {
+    if (!request.auth || (request.auth.token?.runnerDevice === true || request.auth.uid.startsWith('runner-device:'))) {
       throw new HttpsError('unauthenticated', 'Iniciá sesión para enviar telemetría.');
     }
     const input = clientTelemetryInput.parse(request.data);
@@ -107,6 +107,7 @@ export const pulsePlatformAction = onCall(
     ],
   },
   async (request) => {
+    if ((request.auth?.token?.runnerDevice === true || request.auth?.uid.startsWith('runner-device:'))) throw new HttpsError('permission-denied', 'Device sessions only receive Runner signals.');
     const callerUid = request.auth?.uid;
     const callerEmail = request.auth?.token?.email as string | undefined;
 
@@ -142,3 +143,8 @@ export const pulsePlatformAction = onCall(
 export { pulseQaSource } from './qa/endpoint';
 
 export { runActivityTrigger, runnerJobActivityTrigger } from './triggers/run-activity';
+
+export { pulseRunnerSubscribe } from './runners/endpoint';
+export { runnerJobSignalsTrigger, runStatusSignalsTrigger, profileRequestSignalsTrigger, profileSnapshotSignalsTrigger, agentConfigSignalsTrigger, projectAccessSignalsTrigger, installationAccessSignalsTrigger } from './triggers/control-signals';
+
+export { qaRunnerAvailableTrigger } from './triggers/qa-dispatch';

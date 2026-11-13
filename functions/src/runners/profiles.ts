@@ -1,6 +1,6 @@
 import { Firestore, Transaction } from 'firebase-admin/firestore';
 import { canManageAgent, isWorkspaceAdmin } from '../common/utils/agent-authorization';
-import { runnerProjectRepoAccess } from '../common/utils/project-repos';
+import { FieldValue } from 'firebase-admin/firestore';
 import { profileInput, profileKey, profileOnline, profileSnapshot, profileResult } from '../common/utils/runner-profile-contract';
 
 // Read the same project/installation intersection used by signed dispatch.
@@ -18,9 +18,9 @@ async function context(db: Firestore, tx: Transaction, runnerId: string, agentId
   const projects = await tx.get(db.collection('projects').where('workspaceId', '==', agent.workspaceId));
   const repos = new Set<string>();
   for (const p of projects.docs) {
-    // Reuse dispatch's strict resolver, within this transaction's read set.
-    const access = await runnerProjectRepoAccess(db, { workspaceId: agent.workspaceId, projectId: p.id }, installed, tx);
-    access?.repos.forEach(repo => repos.add(repo));
+    // These project snapshots are already inside the transaction read set.
+    const declared = p.data().repoFullNames;
+    if (Array.isArray(declared)) declared.filter((r: string) => installed.includes(r)).forEach((r: string) => repos.add(r));
   }
   const sorted = [...repos].sort();
   const binding = profileKey(agent.profileBinding || '', runnerId, agent.kind, agent.role || 'dev', agent.ownerMemberId || '', agent.visibility || 'public', JSON.stringify(sorted));
@@ -45,6 +45,13 @@ export async function manageRunnerProfile(db: Firestore, actor: string, raw: unk
       const queued = await tx.get(db.collection('runner_profile_requests').where('runnerId', '==', c.runnerId));
       const unresolved = queued.docs.map(d => d.data()).find(r => r.workspaceId === c.workspaceId && r.agentId === c.agentId && r.binding === c.binding && r.status === 'applying');
       const request = unresolved || (existing?.binding === c.binding ? existing : null);
+      if (input.refresh && c.online && (!confirmed || Date.now() - Date.parse(confirmed.observedAt) > 30_000)) {
+        const signalRef = db.collection('runner_signals').doc(c.runnerId);
+        const signal = (await tx.get(signalRef)).data();
+        if (Date.now() - (signal?.observationRequestedAt || 0) > 10_000) {
+          tx.set(signalRef, { profiles: FieldValue.increment(1), observationRequestedAt: Date.now() }, { merge: true });
+        }
+      }
       return { ...c, snapshot: confirmed?.snapshot || null, observedAt: confirmed?.observedAt || null, request: request ? { id: request.requestId, status: request.status } : null };
     }
     if (!input.requestId || !input.expectedRevision || !input.patch) throw new Error('Falta ID, revisión o patch.');
@@ -96,7 +103,7 @@ export async function exchangeRunnerProfiles(db: Firestore, runnerId: string, bo
         const request = result && requests.find(r => r.requestId === result.requestId);
         if (result && (!request || !request.permitted || (result.status === 'applied' && (!snapshot || !result.revision)))) throw new Error('Invalid confirmation');
         const now = new Date().toISOString();
-        if (snapshot) tx.set(refFor(db, c), { binding: c.binding, snapshot, observedAt: now });
+        if (snapshot) tx.set(refFor(db, c), { agentId, binding: c.binding, snapshot, observedAt: now });
         for (const request of requests) {
           if (!request.permitted) tx.update(requestRef(db, c, request.requestId), { status: 'forbidden', completedAt: now });
         }
@@ -107,6 +114,13 @@ export async function exchangeRunnerProfiles(db: Firestore, runnerId: string, bo
       contexts.push(value);
     } catch { /* Removed/rebound identities receive no profile or commands. */ }
   }
-  await db.collection('runners').doc(runnerId).update({ profileVersion: 1 });
+  // Repeated exchanges must not rewrite the Runner document or contend with heartbeats.
+  await db.runTransaction(async tx => {
+    const ref = db.collection('runners').doc(runnerId);
+    const runner = await tx.get(ref);
+    if (runner.exists && !runner.data()!.revokedAt && runner.data()!.profileVersion !== 1) {
+      tx.update(ref, { profileVersion: 1 });
+    }
+  });
   return { version: 1, contexts };
 }
