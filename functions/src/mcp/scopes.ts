@@ -66,6 +66,7 @@ export const TOOL_SCOPES: Record<string, McpScope> = {
   pulse_list_projects: 'issues:read',
   pulse_get_project: 'issues:read',
   pulse_list_issues: 'issues:read',
+  pulse_search: 'issues:read',
   pulse_get_epic: 'issues:read',
   pulse_get_issue: 'issues:read',
   pulse_list_labels: 'issues:read',

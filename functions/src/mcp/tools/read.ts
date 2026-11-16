@@ -5,6 +5,7 @@ import { ALL_TOOL_NAMES, TOOL_SCOPES } from '../scopes';
 import { registerIssueReadTools } from './read-issues';
 import { registerWorkspaceReadTools } from './read-workspace';
 import { registerRunReadTools } from './read-runs';
+import { registerSearchTool } from './read-search';
 
 export function textResult(data: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
@@ -92,6 +93,7 @@ export function registerReadTools(server: McpServer, principal: McpPrincipal) {
   );
 
   registerIssueReadTools(server, principal);
+  registerSearchTool(server, principal);
   registerWorkspaceReadTools(server, principal);
   registerRunReadTools(server, principal);
 }
