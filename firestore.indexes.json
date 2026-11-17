@@ -1,6 +1,22 @@
 {
   "indexes": [
     {
+      "collectionGroup": "issues",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "workspaceId", "order": "ASCENDING" },
+        { "fieldPath": "teamId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "issues",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "workspaceId", "order": "ASCENDING" },
+        { "fieldPath": "identifier", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "agent_runs",
       "queryScope": "COLLECTION",
       "fields": [

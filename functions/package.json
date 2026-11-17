@@ -5,7 +5,8 @@
   "main": "lib/index.js",
   "type": "commonjs",
   "scripts": {
-    "build": "tsc",
+    "build": "npm run check:pql && tsc",
+    "check:pql": "node scripts/check-pql.mjs",
     "test": "npm run build && node --test lib/common/utils/*.test.js",
     "test:integration": "npm run build && firebase emulators:exec --project demo-pulse-local --only firestore \"node --test --test-concurrency=1 lib/integration/*.test.js\"",
     "test:profiles": "npm run build && firebase emulators:exec --project demo-pulse-local --only firestore \"node --test lib/integration/runner-profiles.cross-repo.js\"",
