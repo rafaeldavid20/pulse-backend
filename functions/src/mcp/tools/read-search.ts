@@ -38,11 +38,14 @@ function issueReferences(expression?: Expression): string[] {
 }
 
 export function registerSearchTool(server: McpServer, principal: McpPrincipal) {
+  const invalidString = '\u0000PQL_INVALID_ARGUMENT\u0000';
   server.registerTool('pulse_search', {
     description: 'Search authorized workspace issues with PQL v1. Results are ordered before the output limit; at most 5000 candidates are supported.',
-    inputSchema: z.strictObject({ query: z.string(), limit: z.number().optional(), teamKey: z.string().optional() }),
+    inputSchema: z.object({ query: z.string().catch(invalidString), limit: z.number().catch(NaN).optional(), teamKey: z.string().catch(invalidString).optional() }).passthrough(),
   },
-    async ({ query, limit = 25, teamKey }) => {
+    async (input) => {
+      if (input.query === invalidString || input.teamKey === invalidString || Object.keys(input).some(key => !['query', 'limit', 'teamKey'].includes(key))) return errorResult('INVALID_ARGUMENT', 'Se requiere query como texto y sólo se admiten query, limit y teamKey.');
+      const { query, limit = 25, teamKey } = input;
       if (!Number.isInteger(limit) || limit < 1 || limit > 100) return errorResult('INVALID_ARGUMENT', 'limit debe ser un entero entre 1 y 100.');
       if (teamKey !== undefined && !/^[a-z][a-z0-9_-]{0,31}$/i.test(teamKey)) return errorResult('INVALID_ARGUMENT', 'teamKey no es válido.');
       const parsed = parse(query);

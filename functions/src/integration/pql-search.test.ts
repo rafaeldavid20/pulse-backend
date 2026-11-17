@@ -55,7 +55,8 @@ test('MCP search discovery, identity, scope, ordering and errors', async () => {
   const humanPrincipal = await authenticateRequest(`Bearer ${oauth.fullToken}`);
   const personalPrincipal = await authenticateRequest(`Bearer ${personalKey.fullKey}`);
   const list = await call(agentPrincipal, 'tools/list');
-  assert.ok(list.tools.some((tool: any) => tool.name === 'pulse_search'));
+  const discovered = list.tools.find((tool: any) => tool.name === 'pulse_search');
+  assert.ok(discovered); assert.equal(discovered.inputSchema.properties.query.type, 'string'); assert.ok(discovered.inputSchema.required.includes('query'));
   const result = await search(agentPrincipal, { query: 'status = in_review AND assignee = me()', teamKey: 'TES' });
   assert.equal(result.data.total, 1); assert.equal(result.data.issues[0].identifier, 'TES-205');
   assert.equal(result.data.issues[0].description, undefined);
@@ -72,7 +73,9 @@ test('MCP search discovery, identity, scope, ordering and errors', async () => {
   assert.equal((await search(humanPrincipal, { query: 'status =', teamKey: 'TES' })).isError, true);
   assert.equal((await search(humanPrincipal, { query: '', limit: 101 })).data.code, 'INVALID_ARGUMENT');
   assert.equal((await search(humanPrincipal, { query: '', teamKey: 'NOPE' })).data.code, 'SCOPE_UNAVAILABLE');
-  assert.equal((await search(humanPrincipal, { query: '', workspaceId: `foreign-${ws}` })).isError, true);
+  const extra = await search(humanPrincipal, { query: '', workspaceId: `foreign-${ws}` });
+  assert.equal(extra.isError, true); assert.equal(extra.data.code, 'INVALID_ARGUMENT');
+  assert.equal((await search(humanPrincipal, { query: 123 })).data.code, 'INVALID_ARGUMENT');
   assert.equal((await search({ ...humanPrincipal, scopes: [] }, { query: '' })).isError, true);
   assert.equal((await search({ ...agentPrincipal, jobId: 'job', issueId: 'issue-x', runnerId: 'runner' }, { query: '' })).isError, true);
 });
