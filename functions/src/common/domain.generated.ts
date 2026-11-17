@@ -5,7 +5,7 @@
 // dominio de Pulse. Para cambiar algo de acá, editá ese archivo y corré
 // `npm run sync:types` desde `pulse-app`.
 //
-// SOURCE_HASH: 99675edc220fcce1
+// SOURCE_HASH: 1a379f8aa63ea0ce
 // ============================================================
 
 /**
@@ -61,6 +61,25 @@ export type ProjectStatus =
 export type MemberRole = 'owner' | 'admin' | 'member';
 
 export type CycleStatus = 'upcoming' | 'active' | 'completed';
+
+export type SavedViewGrouping = 'none' | 'status' | 'assignee' | 'priority' | 'project' | 'epic' | 'cycle';
+export interface SavedView {
+  id: string;
+  workspaceId: string;
+  teamId?: string;
+  name: string;
+  icon?: string;
+  query: string;
+  queryVersion: 1;
+  grouping?: SavedViewGrouping;
+  ordering?: Array<{ field: string; direction: 'asc' | 'desc' }>;
+  display: 'list' | 'board';
+  ownerId: string;
+  shared: boolean;
+  createdAt: string;
+  updatedAt: string;
+  systemKey?: string;
+}
 
 /** `chatgpt` se conserva para los agentes creados antes de TES-284. */
 export type AgentKind = 'claude' | 'codex' | 'chatgpt';

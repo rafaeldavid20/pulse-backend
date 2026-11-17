@@ -25,6 +25,7 @@ export { autoCreateCyclesScheduled } from './scheduled/auto-create-cycles';
 export { dueSoonRemindersScheduled } from './scheduled/notify-due-soon';
 export { reviewSweeperScheduled } from './scheduled/review-sweeper';
 export { syncMemberClaimsTrigger } from './triggers/sync-member-claims';
+export { seedViewsOnTeamCreated } from './triggers/seed-views-on-team';
 export { oauthProtectedResourceMetadata, oauthAuthorizationServerMetadata } from './oauth/well-known';
 export { oauthRegister } from './oauth/register';
 export { oauthAuthorize } from './oauth/authorize';

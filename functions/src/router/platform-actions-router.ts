@@ -1,4 +1,5 @@
 import { RequestReworkAction } from '../actions/reviews/request-rework';
+import { SavedViewAction } from '../actions/views/views';
 import { PreflightAgentAction } from '../actions/runners/preflight-agent';
 import { RunnerProfileAction } from '../actions/runners/profile';
 import { PlatformActionRequest, PlatformActionResponse } from '../common/platform-actions/interfaces';
@@ -86,6 +87,12 @@ export async function dispatchPlatformAction(
   }
 
   switch (request.actionCode) {
+    case 'views.create':
+      return new SavedViewAction('create', request, callerUid, callerEmail).run();
+    case 'views.update':
+      return new SavedViewAction('update', request, callerUid, callerEmail).run();
+    case 'views.delete':
+      return new SavedViewAction('delete', request, callerUid, callerEmail).run();
     case 'issues.create':
       return new CreateIssueAction(request, callerUid, callerEmail).run();
     case 'issues.update':
