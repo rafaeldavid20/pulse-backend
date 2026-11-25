@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { resolve } from 'node:path';
 import { initializeApp, getApps } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { SavedViewAction } from '../actions/views/views';
@@ -93,4 +95,19 @@ test('seeding is repeatable across teams and never overwrites edits', async () =
   assert.deepEqual(cycle1.ok && cycle1.issues.map(i => i.id), ['a']);
   assert.deepEqual(cycle2.ok && cycle2.issues.map(i => i.id), ['b']);
   assert.equal((await cycleView.ref.get()).get('query'), cycleView.get('query'));
+});
+
+test('backfill script is repeatable and preserves existing edits', async () => {
+  const suffix = randomBytes(5).toString('hex'), ws = `ws-backfill-${suffix}`, owner = `owner-${suffix}`;
+  await db.collection('workspaces').doc(ws).set({ ownerId: owner });
+  await db.collection('members').doc(`${ws}_${owner}`).set({ workspaceId: ws, userId: owner, role: 'owner' });
+  await Promise.all(['A', 'B'].map(name => db.collection('teams').doc(`team-${name}-${suffix}`).set({ workspaceId: ws, name, key: name })));
+  const backfill = () => JSON.parse(execFileSync(process.execPath, [resolve('scripts/backfill-saved-views.cjs'), '--project', 'demo-pulse-views', '--apply'], { encoding: 'utf8' }));
+  assert.equal(backfill().created, 6);
+  const views = await db.collection('saved_views').where('workspaceId', '==', ws).get();
+  const mine = views.docs.find(doc => doc.get('systemKey') === 'my-work')!;
+  await mine.ref.update({ name: 'Personalizada' });
+  assert.equal(backfill().created, 0);
+  assert.equal((await mine.ref.get()).get('name'), 'Personalizada');
+  assert.equal((await db.collection('saved_views').where('workspaceId', '==', ws).get()).size, 6);
 });
