@@ -28,14 +28,14 @@ export async function validateView(data: Record<string, any>, workspaceId: strin
   if (!parsed.ok) throw new Error(`PQL: ${parsed.diagnostic.message}`);
   const db = getFirestore();
   const needsIssues = (node?: Expression): boolean => !node ? false : node.kind === 'and' || node.kind === 'or' ? needsIssues(node.left) || needsIssues(node.right) : node.kind === 'not' ? needsIssues(node.expression) : ['parent', 'epic'].includes(node.field.toLowerCase());
-  const collections = ['teams', 'members', 'projects', 'labels', 'cycles', ...(needsIssues(parsed.query.expression) ? ['issues'] : [])];
+  const collections = ['teams', 'members', 'projects', 'labels', 'cycles', 'agents', ...(needsIssues(parsed.query.expression) ? ['issues'] : [])];
   const snapshots = await Promise.all(collections.map(collection => db.collection(collection).where('workspaceId', '==', workspaceId).limit(5001).get()));
   if (snapshots.some(s => s.size > 5000)) throw new Error('El catálogo excede el límite de validación.');
   const entities = (index: number): Entity[] => snapshots[index].docs.map(d => ({ ...d.data(), id: d.id })) as Entity[];
   const teams = entities(0);
   const teamId = data.teamId == null || data.teamId === '' ? undefined : data.teamId;
   if (teamId !== undefined && (typeof teamId !== 'string' || !teams.some(t => t.id === teamId))) throw new Error('Equipo no disponible.');
-  const context: Context = { workspaceId, actorId, now: new Date().toISOString(), teamId, teams, members: entities(1), projects: entities(2), labels: entities(3), cycles: entities(4), issues: snapshots[5]?.docs.map(d => ({ id: d.id, identifier: d.get('identifier'), name: d.get('title'), type: d.get('type'), teamId: d.get('teamId') })) ?? [] };
+  const context: Context = { workspaceId, actorId, now: new Date().toISOString(), teamId, teams, members: entities(1), projects: entities(2), labels: entities(3), cycles: entities(4), agents: entities(5), issues: snapshots[6]?.docs.map(d => ({ id: d.id, identifier: d.get('identifier'), name: d.get('title'), type: d.get('type'), teamId: d.get('teamId') })) ?? [] };
   const checked = resolve(data.query, parsed.query, context);
   if (!checked.ok) throw new Error(`PQL: ${checked.diagnostic.message}`);
   const canonicalize = (node: Expression): Expression => {

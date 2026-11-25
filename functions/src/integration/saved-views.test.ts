@@ -25,7 +25,7 @@ test('saved view actions enforce ownership, membership and immutable metadata', 
   assert.equal(created.success, true, created.error); const id = created.data!.id;
   const saved = (await db.collection('saved_views').doc(id).get()).data()!;
   assert.equal(saved.name, 'Mi vista'); assert.equal(saved.ownerId, alice);
-  assert.match(saved.query, new RegExp(`label = "label-${suffix}"`)); assert.match(saved.query, /me\(\)/i);
+  assert.match(saved.query, new RegExp(`label\\s*=\\s*"label-${suffix}"`)); assert.match(saved.query, /me\(\)/i);
   assert.equal((await run('update', bob, { id, name: 'Robada' })).success, false);
   assert.equal((await run('delete', admin, { id })).success, false);
   assert.equal((await run('update', alice, { id, ownerId: bob })).success, false);
@@ -37,7 +37,7 @@ test('saved view actions enforce ownership, membership and immutable metadata', 
   assert.equal((await run('create', `outsider-${suffix}`, { workspaceId: ws, name: 'Ajena', query: '', display: 'list', shared: true })).success, false);
   await db.collection('labels').doc(`label-${suffix}`).update({ name: 'Renamed label' });
   assert.equal((await run('update', alice, { id, expectedUpdatedAt: saved.updatedAt, name: 'Renombrada', shared: true })).success, true);
-  assert.match((await db.collection('saved_views').doc(id).get()).get('query'), new RegExp(`label = "label-${suffix}"`));
+  assert.match((await db.collection('saved_views').doc(id).get()).get('query'), new RegExp(`label\\s*=\\s*"label-${suffix}"`));
   const fresh = (await db.collection('saved_views').doc(id).get()).data()!;
   assert.notEqual(fresh.updatedAt, saved.updatedAt);
   const stale = await run('update', alice, { id, expectedUpdatedAt: saved.updatedAt, name: 'Edición obsoleta' });
@@ -79,7 +79,7 @@ test('seeding is repeatable across teams and never overwrites edits', async () =
   assert.equal(repeated.created, 0); assert.equal((await mine.ref.get()).get('name'), 'Personalizada');
   assert.equal(views.docs.filter(d => String(d.get('systemKey')).startsWith('current-cycle:')).length, 2);
   assert.match(mine.get('query'), /me\(\)/i);
-  const context: Context = { workspaceId: ws, actorId: owner, teamId: first, now: '2024-01-01T00:00:00Z', teams: [], members: [], projects: [], labels: [], cycles: [], issues: [] };
+  const context: Context = { workspaceId: ws, actorId: owner, teamId: first, now: '2024-01-01T00:00:00Z', teams: [], members: [{ id: owner, userId: owner }, { id: 'reader', userId: 'reader' }], agents: [], projects: [], labels: [], cycles: [], issues: [] };
   const candidates = [{ id: 'a', assigneeId: owner, status: 'todo', cycleId: 'cycle-1' }, { id: 'b', assigneeId: 'reader', status: 'todo', cycleId: 'cycle-2' }];
   const firstReader = execute(mine.get('query'), candidates, context);
   const secondReader = execute(mine.get('query'), candidates, { ...context, actorId: 'reader' });

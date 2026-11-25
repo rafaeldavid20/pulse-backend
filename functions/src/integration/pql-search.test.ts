@@ -67,7 +67,7 @@ test('MCP search discovery, identity, scope, ordering and errors', async () => {
   const parityQuery = 'assignee = me() OR (status = in_review AND updated < now()) ORDER BY priority ASC, updated DESC';
   const remote = await search(humanPrincipal, { query: parityQuery, teamKey: 'TES', limit: 100 });
   const snapshot = await db.collection('issues').where('workspaceId', '==', ws).where('teamId', '==', team).get();
-  const local = execute(parityQuery, snapshot.docs.map(d => ({ ...d.data(), id: d.id })), { workspaceId: ws, actorId: human, teamId: team, now: remote.data.evaluatedAt, teams: [], members: [], projects: [], labels: [], cycles: [], issues: [] });
+  const local = execute(parityQuery, snapshot.docs.map(d => ({ ...d.data(), id: d.id })), { workspaceId: ws, actorId: human, teamId: team, now: remote.data.evaluatedAt, teams: [], members: [{ id: human, userId: human }], agents: [], projects: [], labels: [], cycles: [], issues: [] });
   assert.equal(local.ok, true);
   if (local.ok) assert.deepEqual(remote.data.issues.map((i: any) => i.id), local.issues.slice(0, 100).map(i => i.id));
   assert.equal((await search(humanPrincipal, { query: 'status =', teamKey: 'TES' })).isError, true);
