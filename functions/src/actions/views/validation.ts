@@ -15,6 +15,7 @@ export async function validateView(data: Record<string, any>, workspaceId: strin
   if (!['list', 'board'].includes(data.display)) throw new Error('Presentación inválida.');
   if (typeof data.shared !== 'boolean') throw new Error('Compartición inválida.');
   if (data.grouping != null && !groupings.includes(data.grouping)) throw new Error('Agrupación inválida.');
+  if (data.display === 'board' && !['status', 'epic'].includes(data.grouping)) throw new Error('El tablero solo admite agrupación por estado o épica.');
   let ordering: Array<{ field: string; direction: 'asc' | 'desc' }> | undefined;
   if (data.ordering != null) {
     if (!Array.isArray(data.ordering) || data.ordering.length > 5) throw new Error('Orden inválido.');

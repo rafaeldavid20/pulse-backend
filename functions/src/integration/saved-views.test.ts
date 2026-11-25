@@ -30,18 +30,32 @@ test('saved view actions enforce ownership, membership and immutable metadata', 
   assert.equal((await run('delete', admin, { id })).success, false);
   assert.equal((await run('update', alice, { id, ownerId: bob })).success, false);
   assert.equal((await run('update', alice, { id, workspaceId: otherWs })).success, false);
-  assert.equal((await run('update', alice, { id, query: 'status =' })).success, false);
-  assert.equal((await run('update', alice, { id, icon: '<svg />' })).success, false);
-  assert.equal((await run('update', alice, { id, teamId: 'foreign-team' })).success, false);
-  assert.equal((await run('update', alice, { id, ordering: [{ field: 'label', direction: 'asc' }] })).success, false);
+  assert.equal((await run('update', alice, { id, expectedUpdatedAt: saved.updatedAt, query: 'status =' })).success, false);
+  assert.equal((await run('update', alice, { id, expectedUpdatedAt: saved.updatedAt, icon: '<svg />' })).success, false);
+  assert.equal((await run('update', alice, { id, expectedUpdatedAt: saved.updatedAt, teamId: 'foreign-team' })).success, false);
+  assert.equal((await run('update', alice, { id, expectedUpdatedAt: saved.updatedAt, ordering: [{ field: 'label', direction: 'asc' }] })).success, false);
   assert.equal((await run('create', `outsider-${suffix}`, { workspaceId: ws, name: 'Ajena', query: '', display: 'list', shared: true })).success, false);
   await db.collection('labels').doc(`label-${suffix}`).update({ name: 'Renamed label' });
-  assert.equal((await run('update', alice, { id, name: 'Renombrada', shared: true })).success, true);
+  assert.equal((await run('update', alice, { id, expectedUpdatedAt: saved.updatedAt, name: 'Renombrada', shared: true })).success, true);
   assert.match((await db.collection('saved_views').doc(id).get()).get('query'), new RegExp(`label = "label-${suffix}"`));
+  const fresh = (await db.collection('saved_views').doc(id).get()).data()!;
+  assert.notEqual(fresh.updatedAt, saved.updatedAt);
+  const stale = await run('update', alice, { id, expectedUpdatedAt: saved.updatedAt, name: 'Edición obsoleta' });
+  assert.equal(stale.success, false); assert.match(stale.error!, /cambió/);
+  assert.equal((await db.collection('saved_views').doc(id).get()).get('name'), 'Renombrada');
+  assert.equal((await run('update', alice, { id, expectedUpdatedAt: fresh.updatedAt, display: 'board', grouping: 'priority' })).success, false);
+  assert.equal((await run('update', alice, { id, expectedUpdatedAt: fresh.updatedAt, display: 'board', grouping: 'epic' })).success, true);
+  const currentVersion = (await db.collection('saved_views').doc(id).get()).get('updatedAt');
+  const concurrent = await Promise.all([
+    run('update', alice, { id, expectedUpdatedAt: currentVersion, name: 'Primera' }),
+    run('update', alice, { id, expectedUpdatedAt: currentVersion, name: 'Segunda' }),
+  ]);
+  assert.equal(concurrent.filter(result => result.success).length, 1);
+  assert.equal(concurrent.filter(result => !result.success).length, 1);
   assert.equal((await run('update', bob, { id, name: 'Cambio ajeno' })).success, false);
   const systemId = `view-system-${suffix}`;
   await db.collection('saved_views').doc(systemId).set({ ...saved, id: systemId, shared: true, systemKey: 'review' });
-  assert.equal((await run('update', admin, { id: systemId, name: 'Sistema' })).success, true);
+  assert.equal((await run('update', admin, { id: systemId, expectedUpdatedAt: saved.updatedAt, name: 'Sistema' })).success, true);
   assert.equal((await run('delete', bob, { id: systemId })).success, false);
   assert.equal((await run('delete', admin, { id: systemId })).success, true);
   await db.collection('members').doc(`${ws}_${alice}`).delete();
