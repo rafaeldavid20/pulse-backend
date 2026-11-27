@@ -44,7 +44,11 @@ export class RequestReworkAction extends PlatformActionHandler {
     const review = returnedReview || issue.review;
     const pendingHandoff = (issue.pendingRepoWork || []).find((entry: any) => !entry.dispatchedAt);
     const mode = pendingHandoff ? 'handoff' : review?.state === 'changes_requested' ? 'rework' : 'task';
-    const comment = this.action.data.comment ?? (this.actionCode === 'reviews.requestRework' ? '' : mode === 'rework' ? 'Corregí todos los hallazgos abiertos del intento vigente de QA y continuá los mismos PRs.' : 'Desarrollá la issue y cumplí todos sus criterios de aceptación.');
+    const instruction = mode === 'rework' ? 'Revisá todos los hallazgos del intento vigente de QA, incluso los marcados como corregidos; verificá que sus cambios estén en los PR publicados, resolvé los que falten y continuá los mismos PRs.' : 'Desarrollá la issue y cumplí todos sus criterios de aceptación.';
+    const supplied = this.action.data.comment;
+    const commentLimit = this.actionCode === 'reviews.requestRework' ? 4000 : 3700;
+    if (supplied !== undefined && (typeof supplied !== 'string' || !supplied.trim() || supplied.length > commentLimit)) throw new Error(`Escribí un comentario para el agente (máximo ${commentLimit} caracteres).`);
+    const comment = this.actionCode === 'reviews.requestRework' ? supplied ?? '' : supplied ? `${instruction}\n\nIndicaciones adicionales: ${supplied.trim()}` : instruction;
     if (typeof comment !== 'string' || !comment.trim() || comment.length > 4000) {
       throw new Error('Escribí un comentario para el agente (máximo 4000 caracteres).');
     }

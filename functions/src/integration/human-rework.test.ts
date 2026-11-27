@@ -240,6 +240,8 @@ for (const status of ['todo', 'in_progress']) {
     assert.equal(result.data!.mode, 'rework');
     const job = (await db.collection('runner_jobs').doc(result.data!.jobId).get()).data()!;
     assert.equal(job.mode, 'rework');
+    const comment = (await db.collection('comments').doc(`cmt-${job.id}`).get()).data()!;
+    assert.match(comment.body, /incluso los marcados como corregidos/);
   });
 }
 
