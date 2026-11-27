@@ -12,6 +12,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Resolve paired frontend revision
+        id: pair
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          frontend=$(node -p "require('./.github/pql-pair.json').frontendPr")
+          backend=$(node -p "require('./.github/pql-pair.json').backendPr")
+          if [ "$backend" = "${{ github.event.pull_request.number }}" ]; then
+            sha=$(node -p "require('./.github/pql-pair.json').frontendSha")
+            current=$(gh api "repos/rafaeldavid20/pulse-app/pulls/$frontend" --jq .head.sha)
+            test "$sha" = "$current" || { echo "Frontend PR HEAD differs from pinned SHA"; exit 1; }
+          else
+            sha=$(gh api repos/rafaeldavid20/pulse-app/commits/main --jq .sha)
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: rafaeldavid20/pulse-app
+          ref: ${{ steps.pair.outputs.sha }}
+          path: .pql-frontend
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -23,6 +46,15 @@ jobs:
           java-version: '21'
       - run: npm ci
         working-directory: functions
+      - run: npm ci
+        working-directory: .pql-frontend
+      - name: Compare PQL source and run the frontend adapter corpus
+        run: |
+          echo "PQL pair frontend=${{ steps.pair.outputs.sha }} backend=${{ github.event.pull_request.head.sha }}" | tee -a verify-output.txt
+          test "$(git -C .pql-frontend rev-parse HEAD)" = "${{ steps.pair.outputs.sha }}"
+          PQL_BACKEND_ROOT="$GITHUB_WORKSPACE" node .pql-frontend/scripts/sync-pql.mjs --check 2>&1 | tee -a verify-output.txt
+          cd .pql-frontend
+          PQL_FRONTEND_RESULTS="$GITHUB_WORKSPACE/pql-frontend-results.json" npm test -- src/hooks/pql-adapter-parity.test.tsx 2>&1 | tee -a ../verify-output.txt
       - run: npm test 2>&1 | tee -a ../verify-output.txt
         working-directory: functions
       - run: npm install --global firebase-tools@13.22.1
@@ -30,6 +62,18 @@ jobs:
         working-directory: functions
       - run: npm run test:integration 2>&1 | tee -a ../verify-output.txt
         working-directory: functions
+        env:
+          PQL_FRONTEND_RESULTS: ${{ github.workspace }}/pql-frontend-results.json
+          PQL_REQUIRE_ADAPTER_PARITY: '1'
+      - name: Recheck paired frontend HEAD
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$(node -p "require('./.github/pql-pair.json').backendPr")" = "${{ github.event.pull_request.number }}" ]; then
+            frontend=$(node -p "require('./.github/pql-pair.json').frontendPr")
+            current=$(gh api "repos/rafaeldavid20/pulse-app/pulls/$frontend" --jq .head.sha)
+            test "$current" = "${{ steps.pair.outputs.sha }}" || { echo "Frontend PR changed during verification"; exit 1; }
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
