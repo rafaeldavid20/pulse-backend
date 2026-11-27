@@ -184,3 +184,22 @@ test('a workspace on a deleted installation can reuse the replacement without ov
   assert.equal((await db.collection('github_installations').doc(replacement).get()).data()!.tokenCache.token,'synthetic-new-token');
   assert.deepEqual((await db.collection('github_installations').where('workspaceId','==',f.a).get()).docs[0].data().repositoryFullNames,[f.repos[0]]);
 });
+
+test('approved multi-repo heads survive partial and final merge despite an older unmet self-check', async () => {
+  const f = await fixture();
+  await db.collection('github_installations').doc(f.id).update({repositoryFullNames:[f.repos[0],f.repos[1]]});
+  const sha1 = 'a'.repeat(40), sha2 = 'b'.repeat(40), branch = 'pul/tes-379-test';
+  const refs = [{repoFullName:f.repos[0],branch,prNumber:1,prState:'open',headSha:sha1}, {repoFullName:f.repos[1],branch,prNumber:2,prState:'open',headSha:sha2}];
+  const id = `issue-merge-${f.id}`;
+  await db.collection('issues').doc(id).set({workspaceId:f.a,teamId:'team-test',identifier:'TES-379',status:'in_review',
+    git:{repoFullName:f.repos[0],branch,lastSyncedStatus:'in_review'},gitRefs:refs,
+    devSelfCheckAt:'2026-01-01T00:00:00Z',devSelfCheck:[{criterionId:'criterion',result:'not_met'}],
+    review:{state:'approved',completedAt:'2026-01-02T00:00:00Z',prs:refs,criteriaResults:[{criterionId:'criterion',result:'pass'}]},
+  });
+  for (let i=0;i<2;i++) {
+    await new Webhook({actionCode:'github.syncFromWebhook',data:{event:'pull_request',prAction:'closed',repoFullName:refs[i].repoFullName,branch,prNumber:refs[i].prNumber,headSha:refs[i].headSha,merged:true}}).execute();
+    const issue = (await db.collection('issues').doc(id).get()).data()!;
+    assert.equal(issue.review.state,'approved');
+    assert.equal(issue.status, i === 0 ? 'in_review' : 'done');
+  }
+});
