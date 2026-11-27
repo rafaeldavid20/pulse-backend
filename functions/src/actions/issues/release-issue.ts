@@ -42,11 +42,13 @@ export class ReleaseIssueAction extends PlatformActionHandler {
     // issue no puede desasignarlo ni devolverlo a `todo`: `agentDispatchTrigger`
     // necesita al agente asignado para despachar el run del repo destino, y el
     // issue sigue en curso. Sin traspaso pendiente, el comportamiento de
-    // siempre.
+    // siempre. Una corrección de QA incompleta también conserva el estado y
+    // la asignación para que el responsable pueda continuarla desde la UI.
     const hasPendingHandoff = (issue.pendingRepoWork || []).some((e: any) => !e.dispatchedAt);
-    const nextStatus = hasPendingHandoff ? issue.status : issue.status === 'in_progress' ? 'todo' : issue.status;
+    const hasOpenReview = issue.review?.state === 'changes_requested';
+    const nextStatus = hasPendingHandoff || hasOpenReview ? issue.status : issue.status === 'in_progress' ? 'todo' : issue.status;
     await issueRef.update({
-      assigneeId: hasPendingHandoff ? issue.assigneeId ?? null : null,
+      assigneeId: hasPendingHandoff || hasOpenReview ? issue.assigneeId ?? null : null,
       status: nextStatus,
       'agent.state': 'idle',
       'agent.claimedBy': FieldValue.delete(),

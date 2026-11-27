@@ -39,15 +39,15 @@ export class RequestReworkAction extends PlatformActionHandler {
     const statusOnly = this.actionCode === 'issues.developmentStatus';
     const exceptions = statusOnly ? [] : manualBudgetExceptions(this.action.data.budgetExceptions);
     if (!statusOnly && (requestId !== undefined || this.actionCode === 'issues.requestDevelopment') && (typeof requestId !== 'string' || !/^[A-Za-z0-9_-]{8,100}$/.test(requestId))) throw new Error('La solicitud necesita un identificador válido para poder reintentar sin duplicar el trabajo.');
-    const comment = this.action.data.comment ?? (this.actionCode === 'reviews.requestRework' ? '' : 'Corregí los findings abiertos del intento vigente de QA y continuá los mismos PRs.');
-    if (typeof comment !== 'string' || !comment.trim() || comment.length > 4000) {
-      throw new Error('Escribí un comentario para el agente (máximo 4000 caracteres).');
-    }
     const issue = (await db.collection('issues').doc(issueId).get()).data()!;
     const returnedReview = returnedDevelopmentReview(issue);
     const review = returnedReview || issue.review;
     const pendingHandoff = (issue.pendingRepoWork || []).find((entry: any) => !entry.dispatchedAt);
     const mode = pendingHandoff ? 'handoff' : review?.state === 'changes_requested' ? 'rework' : 'task';
+    const comment = this.action.data.comment ?? (this.actionCode === 'reviews.requestRework' ? '' : mode === 'rework' ? 'Corregí todos los hallazgos abiertos del intento vigente de QA y continuá los mismos PRs.' : 'Desarrollá la issue y cumplí todos sus criterios de aceptación.');
+    if (typeof comment !== 'string' || !comment.trim() || comment.length > 4000) {
+      throw new Error('Escribí un comentario para el agente (máximo 4000 caracteres).');
+    }
     const [jobs, runs] = await Promise.all([
       db.collection('runner_jobs').where('issueId', '==', issueId).get(),
       db.collection('agent_runs').where('issueId', '==', issueId).get(),

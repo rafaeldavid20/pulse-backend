@@ -13,5 +13,10 @@ export function developmentState(issue: any, jobs: any[], runs: any[], now = Dat
   const latest = live || ordered.find(job => job.mode !== 'review');
   const expired = latest && ['pending', 'delivered'].includes(latest.status) && !activeDevelopmentJob(latest, now);
   const state = hasExecutionLease(issue, runs, now) ? 'running' : live ? 'queued' : latest && (expired || ['failed', 'expired', 'canceled'].includes(latest.status)) ? 'failed' : latest ? 'completed' : issue.agent?.state === 'blocked' ? 'failed' : 'idle';
-  return { state, ...(latest ? { jobId: latest.id, jobStatus: expired ? 'expired' : latest.status } : {}), active: state === 'running' || state === 'queued' };
+  const refs = Array.isArray(issue.gitRefs) ? issue.gitRefs : issue.git ? [issue.git] : [];
+  const unpublishedChanges = Array.isArray(issue.devSelfCheckHeadScope) && issue.devSelfCheckHeadScope.some((head: any) => {
+    const ref = refs.find((entry: any) => entry.repoFullName === head.repo);
+    return typeof head.headSha === 'string' && typeof ref?.headSha === 'string' && head.headSha !== ref.headSha;
+  });
+  return { state, ...(latest ? { jobId: latest.id, jobStatus: expired ? 'expired' : latest.status } : {}), active: state === 'running' || state === 'queued', ...(unpublishedChanges ? { unpublishedChanges: true } : {}) };
 }
