@@ -1,4 +1,5 @@
 import { ReturnToAgentAction } from '../actions/reviews/return-to-agent';
+import { ReleaseIssueAction } from '../actions/issues/release-issue';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, randomBytes } from 'crypto';
@@ -210,6 +211,47 @@ const developmentStatus = (f: Fixture) =>
 async function initialFailure(f: Fixture) {
   await db.collection('issues').doc(f.issueId).update({ review: null, git: null, gitRefs: [], status: 'in_progress', agent: { state: 'blocked', blockedReason: 'Old preflight failure' } });
   await db.collection('agents').doc(f.agentId).update({ autonomousMode: false });
+}
+
+test('releasing incomplete QA corrections keeps the issue in progress and retryable', async () => {
+  const f = await fixture();
+  await db.collection('issues').doc(f.issueId).update({ status: 'in_progress', agent: { state: 'idle' } });
+  const released = await new ReleaseIssueAction({ actionCode: 'issues.release', data: { id: f.issueId, reason: 'Quedan hallazgos por corregir.' } }, f.owner).run();
+  assert.equal(released.success, true, JSON.stringify(released));
+  const issue = (await db.collection('issues').doc(f.issueId).get()).data()!;
+  assert.equal(issue.status, 'in_progress');
+  assert.equal(issue.review.state, 'changes_requested');
+  assert.equal(issue.execution.agentId, f.agentId);
+  const result = await development(f, 'continue-after-release');
+  assert.equal(result.success, true, JSON.stringify(result));
+  assert.equal(result.data!.mode, 'rework');
+});
+
+test('releasing a returned human review also keeps the correction in progress', async () => {
+  const f = await fixture();
+  await db.collection('issues').doc(f.issueId).update({ status: 'in_progress', agent: { state: 'idle' }, runBudgetResetBy: f.owner, runBudgetResetAt: new Date().toISOString(), review: { state: 'pending', attempt: 0, history: [{ ...f.review, state: 'needs_human' }] } });
+  const released = await new ReleaseIssueAction({ actionCode: 'issues.release', data: { id: f.issueId, reason: 'Quedan correcciones.' } }, f.owner).run();
+  assert.equal(released.success, true, JSON.stringify(released));
+  assert.equal((await db.collection('issues').doc(f.issueId).get()).get('status'), 'in_progress');
+  assert.equal((await development(f, 'resume-returned-review')).data!.mode, 'rework');
+});
+
+for (const status of ['todo', 'in_progress']) {
+  test(`manual development selects task or all QA corrections from ${status}`, async () => {
+    const fresh = await fixture();
+    await initialFailure(fresh);
+    await db.collection('issues').doc(fresh.issueId).update({ status });
+    assert.equal((await development(fresh, `start-${status}`)).data!.mode, 'task');
+    const reviewed = await fixture();
+    await db.collection('issues').doc(reviewed.issueId).update({ status });
+    const result = await development(reviewed, `correct-${status}`);
+    assert.equal(result.success, true, JSON.stringify(result));
+    assert.equal(result.data!.mode, 'rework');
+    const job = (await db.collection('runner_jobs').doc(result.data!.jobId).get()).data()!;
+    assert.equal(job.mode, 'rework');
+    const comment = (await db.collection('comments').doc(`cmt-${job.id}`).get()).data()!;
+    assert.match(comment.body, /incluso los marcados como corregidos/);
+  });
 }
 
 test('manual initial preflight recovery needs neither status cycling nor autonomous mode', async () => {

@@ -17,3 +17,9 @@ test('unknown expiry is conservative and a host lease takes precedence over queu
   const state = developmentState({}, [{ id: 'live', status: 'delivered' }], [{ role: 'dev', activityExpiresAt: '2026-10-15T12:01:00Z' }], now);
   assert.equal(state.state, 'running'); assert.equal(state.active, true);
 });
+test('signals when the last self-check references a different commit than the PR', () => {
+  const issue = { gitRefs: [{ repoFullName: 'owner/repo', headSha: 'published' }], devSelfCheckHeadScope: [{ repo: 'owner/repo', headSha: 'local' }] };
+  assert.equal(developmentState(issue, [], [], now).unpublishedChanges, true);
+  issue.gitRefs[0].headSha = 'local';
+  assert.equal(developmentState(issue, [], [], now).unpublishedChanges, undefined);
+});
