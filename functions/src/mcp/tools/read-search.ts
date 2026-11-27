@@ -58,12 +58,13 @@ export function registerSearchTool(server: McpServer, principal: McpPrincipal) {
         if (teamKey && !team) return errorResult('SCOPE_UNAVAILABLE', 'El equipo no está disponible en el ámbito autorizado.');
         const base = db.collection('issues').where('workspaceId', '==', principal.workspaceId);
         const scoped = team ? base.where('teamId', '==', team.id) : base;
-        const [candidateDocs, memberSnap, projectSnap, labelSnap, cycleSnap] = await Promise.all([
+        const [candidateDocs, memberSnap, projectSnap, labelSnap, cycleSnap, agentSnap] = await Promise.all([
           readIssues(scoped),
           db.collection('members').where('workspaceId', '==', principal.workspaceId).get(),
           db.collection('projects').where('workspaceId', '==', principal.workspaceId).get(),
           db.collection('labels').where('workspaceId', '==', principal.workspaceId).get(),
           db.collection('cycles').where('workspaceId', '==', principal.workspaceId).get(),
+          db.collection('agents').where('workspaceId', '==', principal.workspaceId).get(),
         ]);
         if (candidateDocs.length > MAX_CANDIDATES) return errorResult('QUERY_SCOPE_TOO_LARGE', 'El ámbito supera 5000 issues; acotá teamKey.');
         let allIssueDocs = candidateDocs;
@@ -93,7 +94,7 @@ export function registerSearchTool(server: McpServer, principal: McpPrincipal) {
         const now = new Date().toISOString();
         const context: Context = {
           workspaceId: principal.workspaceId, actorId: principal.agentId ?? principal.createdBy, now, teamId: team?.id,
-          teams, members: entities(memberSnap), projects: entities(projectSnap), labels: entities(labelSnap), cycles: entities(cycleSnap),
+          teams, members: entities(memberSnap), projects: entities(projectSnap), labels: entities(labelSnap), cycles: entities(cycleSnap), agents: entities(agentSnap),
           issues: allIssueDocs.map(d => ({ id: d.id, identifier: d.get('identifier'), name: d.get('title'), type: d.get('type'), teamId: d.get('teamId') })),
         };
         const resolved = resolve(query, parsed.query, context);

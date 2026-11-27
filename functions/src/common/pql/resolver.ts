@@ -10,6 +10,7 @@ export interface Context {
   now: string;
   teamId?: string;
   members: Entity[];
+  agents: Entity[];
   teams: Entity[];
   projects: Entity[];
   labels: Entity[];
@@ -47,7 +48,7 @@ export function resolve(source: string, query: Query, context: Context): Resolve
   };
   const lookup = (field: string, v: Value): string => {
     const person = field === 'assignee' || field === 'creator' || field === 'review.reviewer';
-    const items = person ? context.members
+    const items = person ? [...context.members, ...context.agents]
       : field === 'team' ? context.teams : field === 'project' ? context.projects
       : field === 'label' ? context.labels : field === 'cycle' ? context.cycles : field === 'epic' ? context.issues.filter(i => i.type === 'epic') : context.issues;
     const direct = items.filter(item => (person ? item.userId ?? item.id : item.id) === v.value);
@@ -59,7 +60,7 @@ export function resolve(source: string, query: Query, context: Context): Resolve
     if (v.kind === 'function') {
       const fn = v.value.toLowerCase();
       if (fn === 'me' && ['assignee', 'creator', 'review.reviewer'].includes(field)) {
-        if (!context.actorId) return fail('CONTEXT', 'No hay identidad disponible para me().', v);
+        if (!context.actorId || ![...context.members, ...context.agents].some(item => (item.userId ?? item.id) === context.actorId)) return fail('CONTEXT', 'No hay identidad autorizada disponible para me().', v);
         return context.actorId;
       }
       if (fn === 'currentcycle' && field === 'cycle') return activeCycle(v)?.id ?? null;

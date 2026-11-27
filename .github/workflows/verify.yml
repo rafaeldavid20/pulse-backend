@@ -12,6 +12,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: rafaeldavid20/pulse-app
+          ref: ${{ github.head_ref == 'pul/tes-145-pql-mcp' && 'pul/tes-145-pql-sync' || 'main' }}
+          path: .pql-frontend
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -23,6 +29,14 @@ jobs:
           java-version: '21'
       - run: npm ci
         working-directory: functions
+      - run: npm ci
+        working-directory: .pql-frontend
+      - name: Compare PQL source and run the frontend adapter corpus
+        run: |
+          git -C .pql-frontend rev-parse HEAD | tee -a verify-output.txt
+          PQL_BACKEND_ROOT="$GITHUB_WORKSPACE" node .pql-frontend/scripts/sync-pql.mjs --check 2>&1 | tee -a verify-output.txt
+          cd .pql-frontend
+          PQL_FRONTEND_RESULTS="$GITHUB_WORKSPACE/pql-frontend-results.json" npm test -- src/hooks/pql-adapter-parity.test.tsx 2>&1 | tee -a ../verify-output.txt
       - run: npm test 2>&1 | tee -a ../verify-output.txt
         working-directory: functions
       - run: npm install --global firebase-tools@13.22.1
@@ -30,6 +44,9 @@ jobs:
         working-directory: functions
       - run: npm run test:integration 2>&1 | tee -a ../verify-output.txt
         working-directory: functions
+        env:
+          PQL_FRONTEND_RESULTS: ${{ github.workspace }}/pql-frontend-results.json
+          PQL_REQUIRE_ADAPTER_PARITY: '1'
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { initializeApp, getApps } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { buildMcpTransport } from '../mcp/server';
@@ -9,7 +10,7 @@ import { generateApiKey, hashApiKeySecret } from '../common/utils/api-key';
 import { generateOauthToken } from '../common/utils/oauth-token';
 import { mcpKeyPepper } from '../common/secrets';
 import { execute } from '../common/pql';
-import { fixtureCases, fixtureContext, fixtureIssues } from '../common/pql/fixtures';
+import { fixtureCases, fixtureContext, fixtureContexts, fixtureIssues } from '../common/pql/fixtures';
 
 if (!process.env.FIRESTORE_EMULATOR_HOST) throw new Error('Firestore Emulator required.');
 if (!getApps().length) initializeApp({ projectId: 'demo-pulse-pql' });
@@ -75,7 +76,7 @@ test('MCP search discovery, identity, scope, ordering and errors', async () => {
   const parityQuery = 'assignee = me() OR (status = in_review AND updated < now()) ORDER BY priority ASC, updated DESC';
   const remote = await search(humanPrincipal, { query: parityQuery, teamKey: 'TES', limit: 100 });
   const snapshot = await db.collection('issues').where('workspaceId', '==', ws).where('teamId', '==', team).get();
-  const local = execute(parityQuery, snapshot.docs.map(d => ({ ...d.data(), id: d.id })), { workspaceId: ws, actorId: human, teamId: team, now: remote.data.evaluatedAt, teams: [], members: [], projects: [], labels: [], cycles: [], issues: [] });
+  const local = execute(parityQuery, snapshot.docs.map(d => ({ ...d.data(), id: d.id })), { workspaceId: ws, actorId: human, teamId: team, now: remote.data.evaluatedAt, teams: [], members: [{ id: human, userId: human }], agents: [], projects: [], labels: [], cycles: [], issues: [] });
   assert.equal(local.ok, true);
   if (local.ok) assert.deepEqual(remote.data.issues.map((i: any) => i.id), local.issues.slice(0, 100).map(i => i.id));
   assert.equal((await search(humanPrincipal, { query: 'status =', teamKey: 'TES' })).isError, true);
@@ -110,25 +111,35 @@ test('5000 candidates are complete and 5001 fail without partial results', async
 test('portable corpus through authenticated MCP and frontend engine contract', async (t) => {
   const ws = `corpus-${uid()}`;
   const batch = db.batch();
-  const collections = { teams: fixtureContext.teams, members: fixtureContext.members, projects: fixtureContext.projects, labels: fixtureContext.labels, cycles: fixtureContext.cycles };
+  const collections = { teams: fixtureContext.teams, members: fixtureContext.members, projects: fixtureContext.projects, labels: fixtureContext.labels, cycles: fixtureContext.cycles, agents: fixtureContext.agents };
   for (const [collection, entities] of Object.entries(collections)) {
     for (const entity of entities) batch.set(db.collection(collection).doc(entity.id), { ...entity, workspaceId: ws });
   }
   for (const issue of fixtureIssues) batch.set(db.collection('issues').doc(issue.id), { ...issue, workspaceId: ws });
   await batch.commit();
   const principal: McpPrincipal = { workspaceId: ws, agentId: null, createdBy: fixtureContext.actorId!, scopes: ['issues:read'], source: 'api_key' };
+  const frontendResults: Array<any> | undefined = process.env.PQL_FRONTEND_RESULTS ? JSON.parse(readFileSync(process.env.PQL_FRONTEND_RESULTS, 'utf8')) : undefined;
+  if (process.env.PQL_REQUIRE_ADAPTER_PARITY === '1' && !frontendResults) throw new Error('Frontend adapter results are required for cross-repository verification.');
+  if (frontendResults) assert.equal(frontendResults.length, fixtureCases.length);
   t.mock.timers.enable({ apis: ['Date'], now: new Date(fixtureContext.now) });
-  for (const fixture of fixtureCases) {
-    const frontend = execute(fixture.query, fixtureIssues, { ...fixtureContext, workspaceId: ws });
+  for (const [index, fixture] of fixtureCases.entries()) {
+    const context = fixtureContexts['context' in fixture ? fixture.context : 'default'];
+    for (const cycle of context.cycles) await db.collection('cycles').doc(cycle.id).set({ ...cycle, workspaceId: ws });
+    const ambiguousMember = db.collection('members').doc('member-c');
+    if ('context' in fixture && fixture.context === 'ambiguous') await ambiguousMember.set({ ...context.members.find(member => member.id === 'member-c'), workspaceId: ws });
+    else await ambiguousMember.delete();
+    const frontend = execute(fixture.query, fixtureIssues, { ...context, workspaceId: ws });
     const remote = await search(principal, { query: fixture.query, teamKey: 'TES', limit: 100 });
     if (frontend.ok) {
       assert.equal(remote.isError, undefined, fixture.query);
       assert.deepEqual(remote.data.issues.map((issue: any) => issue.id), frontend.issues.map(issue => issue.id), fixture.query);
+      if (frontendResults) assert.deepEqual(frontendResults[index], { ok: true, ids: remote.data.issues.map((issue: any) => issue.id) }, fixture.query);
       if ('ids' in fixture) assert.deepEqual(frontend.issues.map(issue => issue.id), [...fixture.ids], fixture.query);
     } else {
       assert.equal(remote.isError, true, fixture.query);
       const { code, start, end, line, column, expected } = frontend.diagnostic;
       assert.deepEqual({ code: remote.data.code, start: remote.data.start, end: remote.data.end, line: remote.data.line, column: remote.data.column, expected: remote.data.expected }, { code, start, end, line, column, expected }, fixture.query);
+      if (frontendResults) assert.deepEqual(frontendResults[index], JSON.parse(JSON.stringify({ ok: false, diagnostic: { code: remote.data.code, start: remote.data.start, end: remote.data.end, line: remote.data.line, column: remote.data.column, expected: remote.data.expected } })), fixture.query);
     }
   }
 });
