@@ -170,7 +170,7 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
     //    findings pasa a ser trámite;
     //  - un finding `disputed`: el dev ya dejó por escrito por qué no está de
     //    acuerdo, y eso es una conversación entre personas, no un candado.
-    const uncovered = uncoveredNotMetCriteria(issue);
+    const uncovered = uncoveredNotMetCriteria({ ...issue, gitRefs: nextRefs });
     const orphans = orphanPendingWork(issue);
     const openBlockers = openBlockerFindings(issue);
     const blockedFromClosing =

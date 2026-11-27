@@ -195,3 +195,14 @@ test('Runner availability signals recover pending QA once without waiting for th
   await Promise.all([qaRunnerAvailableTrigger.run(event),qaRunnerAvailableTrigger.run(event)]);
   assert.equal((await qaJobs(f)).length,1);assert.equal(await spent(f),1);
 });
+
+test('an already approved review is not escalated when a merge retriggers automatic QA after the attempt limit', async () => {
+  const f = await fixture();
+  await db.collection('issues').doc(f.id).update({
+    review: {state:'approved', attempt:3, prs:[{repoFullName:'owner/repo',prNumber:1,headSha}]},
+    gitRefs: [{repoFullName:'owner/repo',prNumber:1,branch:'pul/test',prState:'open',headSha}],
+  });
+  await dispatchPendingQa(f.id);
+  assert.equal((await current(f)).review.state, 'approved');
+  assert.equal((await qaJobs(f)).length, 0);
+});

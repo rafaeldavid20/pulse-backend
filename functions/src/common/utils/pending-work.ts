@@ -301,8 +301,24 @@ export function uncoveredNotMetCriteria(issue: FirebaseFirestore.DocumentData): 
       .filter((e: PendingWork) => e.followUpIssueId && e.criterionId)
       .map((e: PendingWork) => e.criterionId)
   );
+  // A later independent QA review supersedes an older self-check only for
+  // criteria it passed on the exact, complete set of recorded PR heads.
+  const review = issue.review;
+  const refs = Array.isArray(issue.gitRefs) && issue.gitRefs.length ? issue.gitRefs : issue.git ? [issue.git] : [];
+  const reviewed = Array.isArray(review?.prs) ? review.prs : [];
+  const qaTime = Date.parse(review?.completedAt || '');
+  const devTime = Date.parse(issue.devSelfCheckAt || '');
+  const exactReview = review?.state === 'approved' && !review.overriddenBy &&
+    Number.isFinite(qaTime) && Number.isFinite(devTime) && qaTime > devTime &&
+    refs.length > 0 && refs.length === reviewed.length &&
+    new Set(refs.map((r: any) => `${r.repoFullName}#${r.prNumber}`)).size === refs.length &&
+    new Set(reviewed.map((r: any) => `${r.repoFullName}#${r.prNumber}`)).size === reviewed.length &&
+    refs.every((ref: any) => ref.repoFullName && ref.prNumber && /^[a-f0-9]{40}$/.test(ref.headSha || '') &&
+      reviewed.some((pr: any) => pr.repoFullName === ref.repoFullName && pr.prNumber === ref.prNumber && pr.headSha === ref.headSha));
+  const results: any[] = Array.isArray(review?.criteriaResults) ? review.criteriaResults : [];
+  const passed = new Set(exactReview ? results.filter((c: any) => c.result === 'pass' && results.filter((other: any) => other.criterionId === c.criterionId).length === 1).map((c: any) => c.criterionId) : []);
   return (issue.devSelfCheck || [])
-    .filter((c: any) => c?.result === 'not_met' && !covered.has(c.criterionId))
+    .filter((c: any) => c?.result === 'not_met' && !covered.has(c.criterionId) && !passed.has(c.criterionId))
     .map((c: any) => c.criterionId);
 }
 
