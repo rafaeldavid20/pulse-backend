@@ -94,6 +94,13 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    match /saved_views/{viewId} {
+      allow read: if isMember(resource.data.workspaceId)
+        && exists(/databases/$(database)/documents/members/$(resource.data.workspaceId + '_' + request.auth.uid))
+        && (resource.data.shared == true || resource.data.ownerId == request.auth.uid);
+      allow write: if false;
+    }
+
     // Projects collection — same as issues, Admin SDK only.
     match /projects/{projectId} {
       allow read: if isMember(resource.data.workspaceId);

@@ -1,7 +1,7 @@
 name: Verify Pulse Backend PR
 on:
   pull_request:
-    branches: [main]
+    branches: [main, 'pul/tes-145-pql-mcp']
 permissions:
   contents: read
 defaults:
@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: rafaeldavid20/pulse-app
-          ref: ${{ github.head_ref == 'pul/tes-145-pql-mcp' && 'pul/tes-145-pql-sync' || 'main' }}
+          ref: ${{ (github.head_ref == 'pul/tes-145-pql-mcp' || github.head_ref == 'pul/tes-144-saved-views') && 'pul/tes-145-pql-sync' || 'main' }}
           path: .pql-frontend
           persist-credentials: false
       - uses: actions/setup-node@v4
@@ -40,6 +40,9 @@ jobs:
       - run: npm test 2>&1 | tee -a ../verify-output.txt
         working-directory: functions
       - run: npm install --global firebase-tools@13.22.1
+      - name: Verify saved views and PQL in Firestore emulator
+        run: firebase emulators:exec --project demo-pulse-views --only firestore 'node --test --test-concurrency=1 lib/integration/saved-views.test.js lib/integration/pql-search.test.js lib/rules/saved-views.test.js' 2>&1 | tee -a ../verify-output.txt
+        working-directory: functions
       - run: npm run test:rules 2>&1 | tee -a ../verify-output.txt
         working-directory: functions
       - run: npm run test:integration 2>&1 | tee -a ../verify-output.txt
