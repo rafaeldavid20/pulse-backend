@@ -32,9 +32,12 @@ como si estuviera vacía.
 
 La fuente y el corpus viven en `pulse-app/src/lib/pql`. Desde ese checkout,
 `PQL_BACKEND_ROOT=/ruta/al/worktree-backend npm run sync:pql` actualiza copia
-y manifiestos. `npm run check:pql` verifica los hashes y, si el backend está
-disponible, compara todos los archivos; en Functions `npm run check:pql`
-valida la copia para CI/deploy sin depender de rutas externas. Los tests de
-ambos repos ejecutan el mismo corpus. El despliegue y el smoke en producción
+y manifiestos. `npm run check:pql` exige un checkout backend y compara todos
+los archivos y manifiestos; los workflows descargan la revisión del otro repo
+y hacen fallar la verificación si difieren. El workflow backend ejecuta además
+el corpus usando el contexto y adaptador reales del frontend y compara IDs,
+orden y diagnósticos con las respuestas MCP en el emulador. En Functions,
+`npm run check:pql` valida también la copia para el deploy aislado.
+El despliegue y el smoke en producción
 deben registrarse por separado cuando estén disponibles; el emulador no es
 evidencia de despliegue.
