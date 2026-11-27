@@ -227,6 +227,15 @@ test('releasing incomplete QA corrections keeps the issue in progress and retrya
   assert.equal(result.data!.mode, 'rework');
 });
 
+test('releasing a returned human review also keeps the correction in progress', async () => {
+  const f = await fixture();
+  await db.collection('issues').doc(f.issueId).update({ status: 'in_progress', agent: { state: 'idle' }, runBudgetResetBy: f.owner, runBudgetResetAt: new Date().toISOString(), review: { state: 'pending', attempt: 0, history: [{ ...f.review, state: 'needs_human' }] } });
+  const released = await new ReleaseIssueAction({ actionCode: 'issues.release', data: { id: f.issueId, reason: 'Quedan correcciones.' } }, f.owner).run();
+  assert.equal(released.success, true, JSON.stringify(released));
+  assert.equal((await db.collection('issues').doc(f.issueId).get()).get('status'), 'in_progress');
+  assert.equal((await development(f, 'resume-returned-review')).data!.mode, 'rework');
+});
+
 for (const status of ['todo', 'in_progress']) {
   test(`manual development selects task or all QA corrections from ${status}`, async () => {
     const fresh = await fixture();

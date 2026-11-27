@@ -1,6 +1,7 @@
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
+import { returnedDevelopmentReview } from '../../common/utils/human-rework';
 
 export class ReleaseIssueAction extends PlatformActionHandler {
   private issueId?: string;
@@ -45,7 +46,7 @@ export class ReleaseIssueAction extends PlatformActionHandler {
     // siempre. Una corrección de QA incompleta también conserva el estado y
     // la asignación para que el responsable pueda continuarla desde la UI.
     const hasPendingHandoff = (issue.pendingRepoWork || []).some((e: any) => !e.dispatchedAt);
-    const hasOpenReview = issue.review?.state === 'changes_requested';
+    const hasOpenReview = issue.review?.state === 'changes_requested' || !!returnedDevelopmentReview(issue);
     const nextStatus = hasPendingHandoff || hasOpenReview ? issue.status : issue.status === 'in_progress' ? 'todo' : issue.status;
     await issueRef.update({
       assigneeId: hasPendingHandoff || hasOpenReview ? issue.assigneeId ?? null : null,
