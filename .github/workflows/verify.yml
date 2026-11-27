@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: rafaeldavid20/pulse-app
-          ref: ${{ github.head_ref == 'pul/tes-145-pql-mcp' && 'pul/tes-145-pql-sync' || 'main' }}
+          ref: ${{ (github.head_ref == 'pul/tes-145-pql-mcp' || github.head_ref == 'pul/tes-144-saved-views') && 'pul/tes-145-pql-sync' || 'main' }}
           path: .pql-frontend
           persist-credentials: false
       - uses: actions/setup-node@v4
