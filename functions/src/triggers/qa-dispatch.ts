@@ -1,4 +1,4 @@
-import { reviewRequestRefs } from '../common/utils/review-request';
+import { hasCurrentApproval, reviewRequestRefs } from '../common/utils/review-request';
 import { isTransientRunnerPreflight, runnerPreflight } from '../common/utils/runner-preflight';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
@@ -73,7 +73,7 @@ export async function dispatchPendingQa(issueId: string) {
   const db = getFirestore();
   const after = (await db.collection('issues').doc(issueId).get()).data();
   if (!after || after.manualBudgetHold || after.status !== 'in_review' || after.review?.manualRequest ||
-      ['running', 'needs_human', 'approved'].includes(after.review?.state)) return;
+      ['running', 'needs_human'].includes(after.review?.state) || hasCurrentApproval(after)) return;
   const startedAt = new Date().toISOString();
   try {
     const prs = reviewablePrs(after);
@@ -87,7 +87,7 @@ export async function dispatchPendingQa(issueId: string) {
     const recordDispatchError = async (message: string, busyRunnerIds: string[] = []) => {
       await db.runTransaction(async (tx) => {
         const current = await tx.get(issueRef);
-        if (current.data()?.review?.manualRequest || ['running', 'approved'].includes(current.data()?.review?.state)) return;
+        if (current.data()?.review?.manualRequest || current.data()?.review?.state === 'running' || (current.data() && hasCurrentApproval(current.data()!))) return;
         const data = current.data();
         if (data?.status !== 'in_review' || data?.qaAssigneeId !== after.qaAssigneeId ||
             (data?.review?.attempt || 0) !== (after.review?.attempt || 0) ||
@@ -220,7 +220,7 @@ export async function dispatchPendingQa(issueId: string) {
           const current = (await tx.get(issueRef)).data();
           if (current?.status !== 'in_review' || current.qaAssigneeId !== after.qaAssigneeId ||
               !reviewablePrs(current) || reviewRequestRefs(current) !== reviewRequestRefs(after) ||
-              current.review?.manualRequest || ['running', 'approved'].includes(current.review?.state) || (current.review?.attempt ?? 0) !== attempt) return;
+              current.review?.manualRequest || current.review?.state === 'running' || hasCurrentApproval(current) || (current.review?.attempt ?? 0) !== attempt) return;
           tx.update(issueRef, { 'review.state': 'needs_human', updatedAt: new Date().toISOString() });
         });
       }
@@ -242,7 +242,7 @@ export async function dispatchPendingQa(issueId: string) {
           const current = (await tx.get(issueRef)).data();
           if (current?.status !== 'in_review' || current.qaAssigneeId !== after.qaAssigneeId ||
               !reviewablePrs(current) || reviewRequestRefs(current) !== reviewRequestRefs(after) ||
-              current.review?.manualRequest || ['running', 'approved'].includes(current.review?.state) || (current.review?.attempt ?? 0) !== attempt) return;
+              current.review?.manualRequest || current.review?.state === 'running' || hasCurrentApproval(current) || (current.review?.attempt ?? 0) !== attempt) return;
           tx.update(issueRef, { ...escalation, 'review.state': 'needs_human' });
         });
       } else {
@@ -304,7 +304,7 @@ export async function dispatchPendingQa(issueId: string) {
     // del último veredicto usando el SHA recién leído arriba.
     const lastReviewedPrs: Array<{ repoFullName: string; prNumber: number; headSha: string }> = review?.prs || [];
     if (attempt >= 1 && lastReviewedPrs.length > 0) {
-      const anyChanged = prs.some((pr, i) => {
+      const anyChanged = prs.length !== lastReviewedPrs.length || prs.some((pr, i) => {
         const last = lastReviewedPrs.find((p) => p.repoFullName === pr.repoFullName && p.prNumber === pr.prNumber);
         return !last || last.headSha !== prOrigins[i].headSha;
       });

@@ -206,3 +206,37 @@ test('an already approved review is not escalated when a merge retriggers automa
   assert.equal((await current(f)).review.state, 'approved');
   assert.equal((await qaJobs(f)).length, 0);
 });
+
+for (const change of ['added', 'replaced', 'removed', 'head']) {
+  test(`an approval with ${change} PR scope does not bypass the attempt limit`, async () => {
+    const f = await fixture();
+    const a = {repoFullName:'owner/repo',prNumber:1,branch:'pul/test',prState:'open',headSha};
+    const b = {...a, prNumber:2};
+    const refs = change === 'added' ? [a, b] : change === 'replaced' ? [a, {...b, prNumber:3}] : change === 'removed' ? [a] : [a, {...b, headSha:'c'.repeat(40)}];
+    const reviewed = change === 'added' ? [a] : [a, b];
+    await db.collection('issues').doc(f.id).update({review:{state:'approved',attempt:3,prs:reviewed},gitRefs:refs});
+    await db.collection('runner_jobs').doc(f.devJob).update({status:'completed'});
+    await dispatchPendingQa(f.id);
+    assert.equal((await current(f)).review.state, 'needs_human');
+    assert.equal((await qaJobs(f)).length, 0);
+  });
+}
+
+test('a partial merge preserves approval for the same complete PR heads', async () => {
+  const f = await fixture();
+  const a = {repoFullName:'owner/repo',prNumber:1,branch:'pul/test',prState:'merged',headSha};
+  const b = {...a, prNumber:2, prState:'open'};
+  await db.collection('issues').doc(f.id).update({review:{state:'approved',attempt:3,prs:[a,b]},gitRefs:[a,b]});
+  await dispatchPendingQa(f.id);
+  assert.equal((await current(f)).review.state, 'approved');
+  assert.equal((await qaJobs(f)).length, 0);
+});
+
+test('a removed PR permits another review when attempts remain', async () => {
+  const f = await fixture();
+  const a = {repoFullName:'owner/repo',prNumber:1,branch:'pul/test',prState:'open',headSha};
+  await db.collection('issues').doc(f.id).update({review:{state:'approved',attempt:1,prs:[a,{...a,prNumber:2}]},gitRefs:[a]});
+  await db.collection('runner_jobs').doc(f.devJob).update({status:'completed'});
+  await dispatchPendingQa(f.id);
+  assert.equal((await qaJobs(f)).length, 1);
+});
