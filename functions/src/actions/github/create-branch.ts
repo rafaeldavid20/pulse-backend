@@ -93,30 +93,29 @@ export class CreateBranchAction extends PlatformActionHandler {
       lastSyncedAt: now,
     };
 
-    const nextRefs = upsertGitRef(issue.gitRefs || (issue.git?.repoFullName ? [issue.git] : []), ref);
-    const updates: Record<string, any> = {
-      gitRefs: nextRefs,
-      ...invalidateChangedApproval(issue, nextRefs, now),
-      updatedAt: now,
-    };
-
-    // La rama del repo de ruteo ES la principal, así que se escribe en `git`
-    // aunque ya hubiera una registrada. Antes solo se escribía "la primera
-    // vez": si `git.branch` quedaba apuntando a una rama que ya no existe —como
-    // en TES-130—, crear la rama nueva no la reemplazaba nunca. Una rama en un
-    // repo *distinto* al de ruteo va solo a `gitRefs`, que es el caso para el
-    // que existe la guarda.
-    const isPrimaryRepo = !issue.git?.repoFullName || issue.git.repoFullName === result.repoFullName;
-    if (isPrimaryRepo) {
-      updates['git.repoFullName'] = result.repoFullName;
-      updates['git.branch'] = result.branch;
-      updates['git.branchUrl'] = result.branchUrl;
-      updates['git.baseBranch'] = result.baseBranch;
-      updates['git.lastSyncedAt'] = now;
-    }
-
-    await issueRef.update(updates);
-
-    return { issueId: data.issueId, ...result, gitRefs: updates.gitRefs };
+    // GitHub can take long enough for QA or another branch update to finish.
+    // Re-read in a transaction so the new reference and approval invalidation
+    // are based on the same current issue, not the pre-network snapshot.
+    const nextRefs = await db.runTransaction(async tx => {
+      const current = (await tx.get(issueRef)).data();
+      if (!current || current.workspaceId !== issue.workspaceId || current.projectId !== issue.projectId) {
+        throw new Error('La issue cambió de workspace o proyecto durante la creación de la rama.');
+      }
+      const refs = upsertGitRef(current.gitRefs || (current.git?.repoFullName ? [current.git] : []), ref);
+      const updates: Record<string, any> = {
+        gitRefs: refs, ...invalidateChangedApproval(current, refs, now), updatedAt: now,
+      };
+      const isPrimaryRepo = !current.git?.repoFullName || current.git.repoFullName === result.repoFullName;
+      if (isPrimaryRepo) {
+        updates['git.repoFullName'] = result.repoFullName;
+        updates['git.branch'] = result.branch;
+        updates['git.branchUrl'] = result.branchUrl;
+        updates['git.baseBranch'] = result.baseBranch;
+        updates['git.lastSyncedAt'] = now;
+      }
+      tx.update(issueRef, updates);
+      return refs;
+    });
+    return { issueId: data.issueId, ...result, gitRefs: nextRefs };
   }
 }

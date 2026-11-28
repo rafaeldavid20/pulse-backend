@@ -9,6 +9,7 @@ import * as client from '../github/client';
 import { validateRepoForWorkspace } from '../common/utils/repo-field';
 import { runnerProjectRepoAccess } from '../common/utils/project-repos';
 import { SyncFromWebhookAction } from '../actions/github/sync-from-webhook';
+import { CreateBranchAction } from '../actions/github/create-branch';
 import { qaDispatchTrigger } from '../triggers/qa-dispatch';
 import { GithubStatusAction } from '../actions/github/github-status';
 
@@ -239,4 +240,21 @@ test('shadow QA approval does not erase an unmet self-check at final merge', asy
   await new Webhook({actionCode:'github.syncFromWebhook',data:{event:'pull_request',prAction:'closed',repoFullName:ref.repoFullName,branch,prNumber:1,headSha:sha,merged:true}}).execute();
   const issue=(await db.collection('issues').doc(id).get()).data()!;
   assert.equal(issue.status,'in_review'); assert.equal(issue.review.state,'approved');
+});
+
+test('branch creation rechecks QA approval after GitHub returns', async () => {
+  const f=await fixture(); const id=`issue-branch-race-${f.id}`, sha='a'.repeat(40);
+  await db.collection('github_installations').doc(f.id).update({repositoryFullNames:f.repos.slice(0,2),repositories:f.details.slice(0,2)});
+  const ref={repoFullName:f.repos[0],branch:'pul/tes-379-main',prNumber:1,prState:'open',headSha:sha};
+  await db.collection('issues').doc(id).set({workspaceId:f.a,identifier:'TES-379',title:'Scope',status:'in_review',git:ref,gitRefs:[ref],review:{state:'running',attempt:1}});
+  const stub=mock.method(client,'createBranch',async (_installation: string,repo: string,branch: string) => {
+    await db.collection('issues').doc(id).update({review:{state:'approved',attempt:1,prs:[ref]}});
+    return {repoFullName:repo,branch,baseBranch:'main',branchUrl:`https://github.com/${repo}/tree/${branch}`};
+  });
+  try {
+    const result=await new CreateBranchAction({actionCode:'github.createBranch',data:{issueId:id,repoFullName:f.repos[1],branch:'pul/tes-379-second'}},f.uid).run();
+    assert.equal(result.success,true,JSON.stringify(result));
+    const issue=(await db.collection('issues').doc(id).get()).data()!;
+    assert.equal(issue.review.state,'stale'); assert.ok(issue.reviewScopeInvalidatedAt); assert.equal(issue.gitRefs.length,2);
+  } finally {stub.mock.restore();}
 });
