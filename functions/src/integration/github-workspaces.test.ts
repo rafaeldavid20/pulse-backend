@@ -215,8 +215,12 @@ test('a changed approved PR scope never closes on later merges, even without pen
   for(let i=0;i<2;i++) {
     await new Webhook({actionCode:'github.syncFromWebhook',data:{event:'pull_request',prAction:'closed',repoFullName:refs[i].repoFullName,branch,prNumber:refs[i].prNumber,headSha:refs[i].headSha,merged:true}}).execute();
     const issue=(await db.collection('issues').doc(id).get()).data()!;
-    assert.equal(issue.review.state, i === 0 ? 'stale' : 'needs_human'); assert.ok(issue.review.scopeInvalidatedAt);
+    assert.equal(issue.review.state, i === 0 ? 'stale' : 'running'); assert.ok(issue.reviewScopeInvalidatedAt);
     assert.equal(issue.status,'in_review');
-    if (i === 0) await db.collection('issues').doc(id).update({'review.state':'needs_human'});
+    if (i === 0) await db.collection('issues').doc(id).update({review:{state:'running',attempt:2}});
   }
+  const current = (await db.collection('issues').doc(id).get()).data()!;
+  await db.collection('issues').doc(id).update({review:{state:'approved',attempt:2,prs:current.gitRefs}});
+  await new Webhook({actionCode:'github.syncFromWebhook',data:{event:'pull_request',prAction:'closed',repoFullName:refs[1].repoFullName,branch,prNumber:refs[1].prNumber,headSha:refs[1].headSha,merged:true}}).execute();
+  assert.equal((await db.collection('issues').doc(id).get()).data()!.status,'done');
 });

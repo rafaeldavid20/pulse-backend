@@ -175,7 +175,7 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
     const uncovered = uncoveredNotMetCriteria({ ...issue, gitRefs: nextRefs });
     const orphans = orphanPendingWork(issue);
     const openBlockers = openBlockerFindings(issue);
-    const invalidReviewScope = !!issue.review?.scopeInvalidatedAt || reviewGoesStale;
+    const invalidReviewScope = reviewGoesStale || (!!issue.reviewScopeInvalidatedAt && !hasCurrentApproval({ ...issue, gitRefs: nextRefs }));
     const blockedFromClosing =
       afterRepoWork === 'done' && (invalidReviewScope || uncovered.length > 0 || orphans.length > 0 || openBlockers.length > 0);
     const desiredStatus = blockedFromClosing ? 'in_review' : afterRepoWork;
@@ -226,7 +226,7 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
 
     if (reviewGoesStale || reviewIsOrphaned) {
       updates['review.state'] = 'stale';
-      if (reviewGoesStale) updates['review.scopeInvalidatedAt'] = now;
+      if (reviewGoesStale) updates.reviewScopeInvalidatedAt = now;
     }
     if (reviewIsOrphaned) {
       updates['review.attempt'] = 0;
