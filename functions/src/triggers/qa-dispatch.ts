@@ -1,3 +1,5 @@
+import { orphanPendingWork, uncoveredNotMetCriteria } from '../common/utils/pending-work';
+import { openBlockerFindings } from '../common/utils/review-findings';
 import { hasCurrentApproval, reviewRequestRefs } from '../common/utils/review-request';
 import { isTransientRunnerPreflight, runnerPreflight } from '../common/utils/runner-preflight';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
@@ -342,6 +344,27 @@ export async function dispatchPendingQa(issueId: string) {
   }
 }
 
+/** Reconcile a merge that completed while QA was reviewing. */
+export async function reconcileApprovedMergedIssue(issueId: string): Promise<boolean> {
+  const db = getFirestore();
+  return db.runTransaction(async tx => {
+    const ref = db.collection('issues').doc(issueId);
+    const issue = (await tx.get(ref)).data();
+    if (!issue || issue.status !== 'in_review' || !issue.reviewScopeInvalidatedAt || issue.review?.overriddenBy ||
+        !hasCurrentApproval(issue) || (issue.pendingRepoWork || []).length || orphanPendingWork(issue).length ||
+        uncoveredNotMetCriteria(issue).length || openBlockerFindings(issue).length ||
+        (issue.git?.lastSyncedStatus && issue.git.lastSyncedStatus !== issue.status)) return false;
+    const refs = issue.gitRefs?.length ? issue.gitRefs : issue.git ? [issue.git] : [];
+    if (!refs.length || !refs.every((r: any) => r.prState === 'merged')) return false;
+    const reviewerId = issue.review?.reviewerId;
+    if (typeof reviewerId !== 'string' || !reviewerId) return false;
+    const reviewer = (await tx.get(db.collection('agents').doc(reviewerId))).data();
+    if (!reviewer || reviewer.workspaceId !== issue.workspaceId || reviewer.role !== 'qa' || reviewer.qaMode !== 'enforce') return false;
+    tx.update(ref, {status:'done', 'git.lastSyncedStatus':'done', 'agent.state':'idle', updatedBy:'qa', updatedAt:new Date().toISOString()});
+    return true;
+  });
+}
+
 const dispatchSecrets = [githubAppId, githubAppPrivateKeyB64, runnerJobSigningPrivateKey];
 export const qaDispatchTrigger = onDocumentWritten(
   { document: 'issues/{issueId}', region: 'us-east4', secrets: dispatchSecrets },
@@ -349,6 +372,7 @@ export const qaDispatchTrigger = onDocumentWritten(
     const before = event.data?.before.data();
     const after = event.data?.after.data();
     if (!after || after.status !== 'in_review') return;
+    if (after.reviewScopeInvalidatedAt && after.review?.state === 'approved' && await reconcileApprovedMergedIssue(event.params.issueId)) return;
     // Wake on entry or changed review context, never on our diagnostic write.
     if (before?.status !== 'in_review' || after.qaAssigneeId !== before?.qaAssigneeId ||
         JSON.stringify(after.gitRefs || after.git) !== JSON.stringify(before?.gitRefs || before?.git) ||

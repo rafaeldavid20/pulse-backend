@@ -9,6 +9,7 @@ import * as client from '../github/client';
 import { validateRepoForWorkspace } from '../common/utils/repo-field';
 import { runnerProjectRepoAccess } from '../common/utils/project-repos';
 import { SyncFromWebhookAction } from '../actions/github/sync-from-webhook';
+import { qaDispatchTrigger } from '../triggers/qa-dispatch';
 import { GithubStatusAction } from '../actions/github/github-status';
 
 if (!process.env.FIRESTORE_EMULATOR_HOST) throw new Error('Firestore emulator required.');
@@ -220,7 +221,10 @@ test('a changed approved PR scope never closes on later merges, even without pen
     if (i === 0) await db.collection('issues').doc(id).update({review:{state:'running',attempt:2}});
   }
   const current = (await db.collection('issues').doc(id).get()).data()!;
-  await db.collection('issues').doc(id).update({review:{state:'approved',attempt:2,prs:current.gitRefs}});
-  await new Webhook({actionCode:'github.syncFromWebhook',data:{event:'pull_request',prAction:'closed',repoFullName:refs[1].repoFullName,branch,prNumber:refs[1].prNumber,headSha:refs[1].headSha,merged:true}}).execute();
+  const reviewerId = `qa-merge-${f.id}`;
+  await db.collection('agents').doc(reviewerId).set({workspaceId:f.a,role:'qa',qaMode:'enforce'});
+  await db.collection('issues').doc(id).update({review:{state:'approved',attempt:2,reviewerId,prs:current.gitRefs}});
+  const after = (await db.collection('issues').doc(id).get()).data()!;
+  await qaDispatchTrigger.run({params:{issueId:id},data:{before:{data:()=>current},after:{data:()=>after}}} as any);
   assert.equal((await db.collection('issues').doc(id).get()).data()!.status,'done');
 });

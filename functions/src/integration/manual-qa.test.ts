@@ -220,3 +220,17 @@ test('expired manual jobs cannot authorize a claim; a new explicit request can r
   assert.equal((await request(f)).success, true); assert.equal((await start(f)).data?.attempt, 3);
   assert.equal((await current(f)).review.history.length, 2);
 });
+
+for (const mode of ['enforce','shadow']) test(`QA ${mode} reconciles a merge completed during review without another webhook`, async () => {
+  const f = await fixture(mode);
+  assert.equal((await request(f)).success, true);
+  assert.equal((await start(f)).success, true);
+  const refs = f.issue.gitRefs.map((r: any) => ({...r, prState:'merged', headSha:String(r.prNumber).repeat(40)}));
+  await db.collection('issues').doc(f.id).update({status:'in_review',gitRefs:refs,reviewScopeInvalidatedAt:'2026-01-01T00:00:00Z'});
+  const before = await current(f);
+  await submit(f);
+  const approved = await current(f);
+  assert.equal(approved.review.state,'approved');
+  await qaDispatchTrigger.run({params:{issueId:f.id},data:{before:{data:()=>before},after:{data:()=>approved}}} as any);
+  assert.equal((await current(f)).status,mode === 'enforce' ? 'done' : 'in_review');
+});

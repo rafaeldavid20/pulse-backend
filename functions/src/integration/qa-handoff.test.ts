@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { generateKeyPairSync, randomBytes } from 'crypto';
 import { initializeApp, getApps } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
-import { dispatchPendingQa, qaCapacityTrigger, qaRunnerAvailableTrigger, retryPendingQa } from '../triggers/qa-dispatch';
+import { dispatchPendingQa, qaCapacityTrigger, qaRunnerAvailableTrigger, retryPendingQa, reconcileApprovedMergedIssue } from '../triggers/qa-dispatch';
 import { runnerJobSigningPrivateKey } from '../common/secrets';
 import { todayKey } from '../common/utils/dispatch-counter';
 import * as github from '../github/client';
@@ -240,3 +240,23 @@ test('a removed PR permits another review when attempts remain', async () => {
   await dispatchPendingQa(f.id);
   assert.equal((await qaJobs(f)).length, 1);
 });
+
+for (const scenario of ['shadow','head','pending-repo','orphan','blocker','not-met','human-override','manual-status']) {
+  test(`merge reconciliation respects ${scenario} guard`, async () => {
+    const f = await fixture('TES-379', scenario === 'shadow' ? 'shadow' : 'enforce');
+    const sha = 'a'.repeat(40);
+    const ref = {repoFullName:'owner/repo',prNumber:1,branch:'pul/test',prState:'merged',headSha:sha};
+    const issue = {status:'in_review',gitRefs:[ref],reviewScopeInvalidatedAt:'2026-01-01T00:00:00Z',review:{state:'approved',reviewerId:f.qa,prs:[{repoFullName:ref.repoFullName,prNumber:1,headSha:sha}]}};
+    await db.collection('issues').doc(f.id).update(issue);
+    const doc = db.collection('issues').doc(f.id);
+    if (scenario === 'head') await doc.update({'review.prs':[{repoFullName:ref.repoFullName,prNumber:1,headSha:'b'.repeat(40)}]});
+    if (scenario === 'pending-repo') await doc.update({pendingRepoWork:[{repoFullName:'owner/other'}]});
+    if (scenario === 'orphan') await doc.update({pendingWork:[{id:'pending'}]});
+    if (scenario === 'blocker') await doc.update({'review.findings':[{severity:'blocker',status:'open'}]});
+    if (scenario === 'not-met') await doc.update({devSelfCheck:[{criterionId:'criterion',result:'not_met'}]});
+    if (scenario === 'human-override') await doc.update({'review.overriddenBy':'human'});
+    if (scenario === 'manual-status') await doc.update({'git.lastSyncedStatus':'in_progress'});
+    assert.equal(await reconcileApprovedMergedIssue(f.id),false);
+    assert.equal((await current(f)).status,'in_review');
+  });
+}
