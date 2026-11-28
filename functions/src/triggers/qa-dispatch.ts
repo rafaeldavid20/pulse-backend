@@ -350,7 +350,7 @@ export async function reconcileApprovedMergedIssue(issueId: string): Promise<boo
   return db.runTransaction(async tx => {
     const ref = db.collection('issues').doc(issueId);
     const issue = (await tx.get(ref)).data();
-    if (!issue || issue.status !== 'in_review' || issue.review?.overriddenBy ||
+    if (!issue || issue.status !== 'in_review' || issue.review?.overriddenBy || issue.review?.qaMode !== 'enforce' ||
         !hasCurrentApproval(issue) || (issue.pendingRepoWork || []).length || orphanPendingWork(issue).length ||
         uncoveredNotMetCriteria(issue).length || openBlockerFindings(issue).length ||
         (issue.git?.lastSyncedStatus && issue.git.lastSyncedStatus !== issue.status)) return false;

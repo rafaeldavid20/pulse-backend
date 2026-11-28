@@ -223,7 +223,7 @@ test('a changed approved PR scope never closes on later merges, even without pen
   const current = (await db.collection('issues').doc(id).get()).data()!;
   const reviewerId = `qa-merge-${f.id}`;
   await db.collection('agents').doc(reviewerId).set({workspaceId:f.a,role:'qa',qaMode:'enforce'});
-  await db.collection('issues').doc(id).update({review:{state:'approved',attempt:2,reviewerId,prs:current.gitRefs}});
+  await db.collection('issues').doc(id).update({review:{state:'approved',qaMode:'enforce',attempt:2,reviewerId,prs:current.gitRefs}});
   const after = (await db.collection('issues').doc(id).get()).data()!;
   await qaDispatchTrigger.run({params:{issueId:id},data:{before:{data:()=>current},after:{data:()=>after}}} as any);
   assert.equal((await db.collection('issues').doc(id).get()).data()!.status,'done');
