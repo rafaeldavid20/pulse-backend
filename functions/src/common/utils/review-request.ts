@@ -3,8 +3,10 @@ export function reviewRequestRefs(issue: Record<string, any>, allowDraft = false
   if ((issue.pendingRepoWork || []).length) throw new Error('Esperá a que termine el trabajo pendiente en otros repos antes de solicitar QA.');
   const refs = issue.gitRefs?.length ? issue.gitRefs : issue.git ? [issue.git] : [];
   const allowed = allowDraft ? ['open', 'draft', 'merged'] : ['open', 'merged'];
-  if (!refs.length || refs.some((r: any) => !r.repoFullName || !r.prNumber || !allowed.includes(r.prState)) || (refs.every((r: any) => r.prState === 'merged') && !(allowDraft && issue.reviewScopeInvalidatedAt))) {
-    throw new Error('QA requiere PRs elegibles; si todos están mergeados, solo puede solicitarse manualmente para una aprobación desactualizada.');
+  const legacyUnverified = issue.review?.state === 'approved' && issue.review?.qaMode === undefined &&
+    (issue.devSelfCheck || []).some((c: any) => c?.result === 'not_met');
+  if (!refs.length || refs.some((r: any) => !r.repoFullName || !r.prNumber || !allowed.includes(r.prState)) || (refs.every((r: any) => r.prState === 'merged') && !(allowDraft && (issue.reviewScopeInvalidatedAt || legacyUnverified)))) {
+    throw new Error('QA requiere PRs elegibles; si todos están mergeados, solo puede solicitarse manualmente para una aprobación desactualizada o histórica sin modo verificable.');
   }
   return JSON.stringify(refs.map((r: any) => [r.repoFullName, r.prNumber, r.branch || '', r.prState]).sort());
 }

@@ -262,3 +262,16 @@ for (const mode of ['enforce','shadow']) test(`first QA ${mode} reconciles an ea
   await qaDispatchTrigger.run({params:{issueId:f.id},data:{before:{data:()=>before},after:{data:()=>approved}}} as any);
   assert.equal((await current(f)).status,mode === 'enforce' ? 'done' : 'in_review');
 });
+
+test('legacy approval without recorded mode is re-reviewed after merge rather than trusted as enforce', async () => {
+  const f = await fixture('enforce');
+  const refs=f.issue.gitRefs.map((r: any)=>({...r,prState:'merged',headSha:String(r.prNumber).repeat(40)}));
+  const oldReview={state:'approved',attempt:2,reviewerId:f.qa,completedAt:'2026-01-02T00:00:00Z',prs:refs,criteriaResults:[{criterionId:'criterion',result:'pass'}]};
+  await db.collection('issues').doc(f.id).update({status:'in_review',gitRefs:refs,review:oldReview,devSelfCheckAt:'2026-01-01T00:00:00Z',devSelfCheck:[{criterionId:'criterion',result:'not_met'}]});
+  assert.equal((await request(f)).success,true);
+  assert.equal((await start(f)).success,true);
+  const before=await current(f); await submit(f); const approved=await current(f);
+  assert.equal(approved.review.qaMode,'enforce');
+  await qaDispatchTrigger.run({params:{issueId:f.id},data:{before:{data:()=>before},after:{data:()=>approved}}} as any);
+  assert.equal((await current(f)).status,'done');
+});
