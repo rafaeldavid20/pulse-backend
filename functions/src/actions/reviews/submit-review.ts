@@ -180,7 +180,7 @@ export class ReviewsSubmitAction extends PlatformActionHandler {
       completedAt: now,
     };
 
-    const nextReview: IssueReview = {
+    const nextReview: IssueReview & { qaMode?: 'enforce' | 'shadow' } = {
       ...closedAttempt,
       history: review.history,
     };
@@ -197,6 +197,7 @@ export class ReviewsSubmitAction extends PlatformActionHandler {
     // re-trabajo (D9) se gatea aparte, en `agentDispatchTrigger`, porque ese
     // trigger reacciona a `review.state` y no pasa por acá.
     const qaMode = agent.qaMode === 'enforce' ? 'enforce' : 'shadow';
+    nextReview.qaMode = qaMode;
 
     let needsHumanLeadId: string | undefined;
     if (qaMode === 'enforce') {

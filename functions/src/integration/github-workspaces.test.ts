@@ -9,6 +9,8 @@ import * as client from '../github/client';
 import { validateRepoForWorkspace } from '../common/utils/repo-field';
 import { runnerProjectRepoAccess } from '../common/utils/project-repos';
 import { SyncFromWebhookAction } from '../actions/github/sync-from-webhook';
+import { CreateBranchAction } from '../actions/github/create-branch';
+import { qaDispatchTrigger } from '../triggers/qa-dispatch';
 import { GithubStatusAction } from '../actions/github/github-status';
 
 if (!process.env.FIRESTORE_EMULATOR_HOST) throw new Error('Firestore emulator required.');
@@ -183,4 +185,76 @@ test('a workspace on a deleted installation can reuse the replacement without ov
   assert.equal((await db.collection('github_installations').doc(replacement).get()).data()!.workspaceId,f.c);
   assert.equal((await db.collection('github_installations').doc(replacement).get()).data()!.tokenCache.token,'synthetic-new-token');
   assert.deepEqual((await db.collection('github_installations').where('workspaceId','==',f.a).get()).docs[0].data().repositoryFullNames,[f.repos[0]]);
+});
+
+test('approved multi-repo heads survive partial and final merge despite an older unmet self-check', async () => {
+  const f = await fixture();
+  await db.collection('github_installations').doc(f.id).update({repositoryFullNames:[f.repos[0],f.repos[1]]});
+  const sha1 = 'a'.repeat(40), sha2 = 'b'.repeat(40), branch = 'pul/tes-379-test';
+  const refs = [{repoFullName:f.repos[0],branch,prNumber:1,prState:'open',headSha:sha1}, {repoFullName:f.repos[1],branch,prNumber:2,prState:'open',headSha:sha2}];
+  const id = `issue-merge-${f.id}`;
+  await db.collection('issues').doc(id).set({workspaceId:f.a,teamId:'team-test',identifier:'TES-379',status:'in_review',
+    git:{repoFullName:f.repos[0],branch,lastSyncedStatus:'in_review'},gitRefs:refs,
+    devSelfCheckAt:'2026-01-01T00:00:00Z',devSelfCheck:[{criterionId:'criterion',result:'not_met'}],
+    review:{state:'approved',qaMode:'enforce',completedAt:'2026-01-02T00:00:00Z',prs:refs,criteriaResults:[{criterionId:'criterion',result:'pass'}]},
+  });
+  for (let i=0;i<2;i++) {
+    await new Webhook({actionCode:'github.syncFromWebhook',data:{event:'pull_request',prAction:'closed',repoFullName:refs[i].repoFullName,branch,prNumber:refs[i].prNumber,headSha:refs[i].headSha,merged:true}}).execute();
+    const issue = (await db.collection('issues').doc(id).get()).data()!;
+    assert.equal(issue.review.state,'approved');
+    assert.equal(issue.status, i === 0 ? 'in_review' : 'done');
+  }
+});
+
+test('a changed approved PR scope never closes on later merges, even without pending self-check', async () => {
+  const f = await fixture();
+  await db.collection('github_installations').doc(f.id).update({repositoryFullNames:f.repos});
+  const branch='pul/tes-379-stale', hashes=['a'.repeat(40),'b'.repeat(40),'c'.repeat(40)];
+  const refs=f.repos.map((repoFullName,i)=>({repoFullName,branch,prNumber:i+1,prState:i===2?'merged':'open',headSha:hashes[i]}));
+  const id=`issue-stale-${f.id}`;
+  await db.collection('issues').doc(id).set({workspaceId:f.a,teamId:'team-test',identifier:'TES-379',status:'in_review',git:{repoFullName:f.repos[0],branch,lastSyncedStatus:'in_review'},gitRefs:refs,
+    review:{state:'approved',attempt:1,prs:refs.slice(0,2),criteriaResults:[]}});
+  for(let i=0;i<2;i++) {
+    await new Webhook({actionCode:'github.syncFromWebhook',data:{event:'pull_request',prAction:'closed',repoFullName:refs[i].repoFullName,branch,prNumber:refs[i].prNumber,headSha:refs[i].headSha,merged:true}}).execute();
+    const issue=(await db.collection('issues').doc(id).get()).data()!;
+    assert.equal(issue.review.state, i === 0 ? 'stale' : 'running'); assert.ok(issue.reviewScopeInvalidatedAt);
+    assert.equal(issue.status,'in_review');
+    if (i === 0) await db.collection('issues').doc(id).update({review:{state:'running',attempt:2}});
+  }
+  const current = (await db.collection('issues').doc(id).get()).data()!;
+  const reviewerId = `qa-merge-${f.id}`;
+  await db.collection('agents').doc(reviewerId).set({workspaceId:f.a,role:'qa',qaMode:'enforce'});
+  await db.collection('issues').doc(id).update({review:{state:'approved',qaMode:'enforce',attempt:2,reviewerId,prs:current.gitRefs}});
+  const after = (await db.collection('issues').doc(id).get()).data()!;
+  await qaDispatchTrigger.run({params:{issueId:id},data:{before:{data:()=>current},after:{data:()=>after}}} as any);
+  assert.equal((await db.collection('issues').doc(id).get()).data()!.status,'done');
+});
+
+test('shadow QA approval does not erase an unmet self-check at final merge', async () => {
+  const f=await fixture(); const branch='pul/tes-379-shadow',sha='a'.repeat(40),id=`issue-shadow-${f.id}`;
+  const ref={repoFullName:f.repos[0],branch,prNumber:1,prState:'open',headSha:sha};
+  await db.collection('issues').doc(id).set({workspaceId:f.a,teamId:'team-test',identifier:'TES-379',status:'in_review',
+    git:{...ref,lastSyncedStatus:'in_review'},gitRefs:[ref],
+    devSelfCheckAt:'2026-01-01T00:00:00Z',devSelfCheck:[{criterionId:'criterion',result:'not_met'}],
+    review:{state:'approved',qaMode:'shadow',completedAt:'2026-01-02T00:00:00Z',prs:[ref],criteriaResults:[{criterionId:'criterion',result:'pass'}]}});
+  await new Webhook({actionCode:'github.syncFromWebhook',data:{event:'pull_request',prAction:'closed',repoFullName:ref.repoFullName,branch,prNumber:1,headSha:sha,merged:true}}).execute();
+  const issue=(await db.collection('issues').doc(id).get()).data()!;
+  assert.equal(issue.status,'in_review'); assert.equal(issue.review.state,'approved');
+});
+
+test('branch creation rechecks QA approval after GitHub returns', async () => {
+  const f=await fixture(); const id=`issue-branch-race-${f.id}`, sha='a'.repeat(40);
+  await db.collection('github_installations').doc(f.id).update({repositoryFullNames:f.repos.slice(0,2),repositories:f.details.slice(0,2)});
+  const ref={repoFullName:f.repos[0],branch:'pul/tes-379-main',prNumber:1,prState:'open',headSha:sha};
+  await db.collection('issues').doc(id).set({workspaceId:f.a,identifier:'TES-379',title:'Scope',status:'in_review',git:ref,gitRefs:[ref],review:{state:'running',attempt:1}});
+  const stub=mock.method(client,'createBranch',async (_installation: string,repo: string,branch: string) => {
+    await db.collection('issues').doc(id).update({review:{state:'approved',attempt:1,prs:[ref]}});
+    return {repoFullName:repo,branch,baseBranch:'main',branchUrl:`https://github.com/${repo}/tree/${branch}`};
+  });
+  try {
+    const result=await new CreateBranchAction({actionCode:'github.createBranch',data:{issueId:id,repoFullName:f.repos[1],branch:'pul/tes-379-second'}},f.uid).run();
+    assert.equal(result.success,true,JSON.stringify(result));
+    const issue=(await db.collection('issues').doc(id).get()).data()!;
+    assert.equal(issue.review.state,'stale'); assert.ok(issue.reviewScopeInvalidatedAt); assert.equal(issue.gitRefs.length,2);
+  } finally {stub.mock.restore();}
 });

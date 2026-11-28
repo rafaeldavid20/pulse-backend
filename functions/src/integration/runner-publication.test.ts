@@ -137,3 +137,13 @@ test('old Runners retain default draft jobs and refuse ready publication', async
   await db.collection('runners').doc(f.input.runnerId).update({'readiness.prPublicationModeVersion':1});
   assert.equal((await enqueueRunnerJob(db,f.input,key)).prPublicationMode,'ready');
 });
+
+test('Runner linking a new PR invalidates an earlier approval atomically', async () => {
+  const f=await fixture();
+  const entry=f.report.repositories[0];
+  await db.collection('issues').doc(f.input.issueId).update({gitRefs:[{repoFullName:entry.repo,prNumber:42,branch:entry.branch,headSha:entry.sha,prState:'open'}],review:{state:'approved',prs:[{repoFullName:entry.repo,prNumber:42,headSha:entry.sha}]}});
+  const added=f.report.repositories[1];
+  assert.equal((await call(pulseRunnerLinkPr,f.credential,{jobId:f.job.id,...added,prNumber:43,prUrl:`https://github.com/${added.repo}/pull/43`})).code,200);
+  const result=(await db.collection('issues').doc(f.input.issueId).get()).data()!;
+  assert.equal(result.review.state,'stale'); assert.ok(result.reviewScopeInvalidatedAt);
+});

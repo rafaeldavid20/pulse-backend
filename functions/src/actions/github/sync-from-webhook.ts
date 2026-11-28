@@ -6,6 +6,7 @@ import { findIssue } from '../../mcp/tools/read';
 import { identifierFromBranch, identifierFromClosesKeyword } from '../../common/utils/issue-refs';
 import { upsertGitRef, statusFromGitRefs } from '../../common/utils/project-repos';
 import { orphanPendingWork, uncoveredNotMetCriteria } from '../../common/utils/pending-work';
+import { hasCurrentApproval } from '../../common/utils/review-request';
 import { openBlockerFindings } from '../../common/utils/review-findings';
 import { MANUAL_WORK_LABEL, MANUAL_WORK_LABEL_COLOR, ensureLabel, withLabel } from '../../common/utils/labels';
 import { resolveReviewLead } from '../../common/utils/review-escalation';
@@ -96,7 +97,8 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
     // Push nuevo sobre una revisión ya aprobada (D3/D10): la aprobación era de
     // otro código, así que no puede seguir contando como vigente.
     const isNewPush = input.event === 'pull_request' && input.prAction === 'synchronize';
-    const reviewGoesStale = isNewPush && issue.review?.state === 'approved';
+    const reviewGoesStale = issue.review?.state === 'approved' &&
+      (isNewPush || !hasCurrentApproval({ ...issue, gitRefs: nextRefs }));
 
     // El veredicto vigente revisó un PR que ya no es de este issue (TES-242).
     // Pasa cuando una rama ajena se emparejó por convención de nombre, QA la
@@ -170,11 +172,12 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
     //    findings pasa a ser trámite;
     //  - un finding `disputed`: el dev ya dejó por escrito por qué no está de
     //    acuerdo, y eso es una conversación entre personas, no un candado.
-    const uncovered = uncoveredNotMetCriteria(issue);
+    const uncovered = uncoveredNotMetCriteria({ ...issue, gitRefs: nextRefs });
     const orphans = orphanPendingWork(issue);
     const openBlockers = openBlockerFindings(issue);
+    const invalidReviewScope = reviewGoesStale || (!!issue.reviewScopeInvalidatedAt && !hasCurrentApproval({ ...issue, gitRefs: nextRefs }));
     const blockedFromClosing =
-      afterRepoWork === 'done' && (uncovered.length > 0 || orphans.length > 0 || openBlockers.length > 0);
+      afterRepoWork === 'done' && (invalidReviewScope || uncovered.length > 0 || orphans.length > 0 || openBlockers.length > 0);
     const desiredStatus = blockedFromClosing ? 'in_review' : afterRepoWork;
 
     // Manual-override guard: if a human moved the status away from the
@@ -223,6 +226,7 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
 
     if (reviewGoesStale || reviewIsOrphaned) {
       updates['review.state'] = 'stale';
+      if (reviewGoesStale) updates.reviewScopeInvalidatedAt = now;
     }
     if (reviewIsOrphaned) {
       updates['review.attempt'] = 0;
@@ -243,7 +247,7 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
     await issueDoc.ref.update(updates);
 
     if (blockedFromClosing) {
-      await this.notifyBlockedClose(db, issue, issueDoc.id, uncovered, orphans.length, openBlockers.length);
+      await this.notifyBlockedClose(db, issue, issueDoc.id, uncovered, orphans.length, openBlockers.length, invalidReviewScope);
     }
 
     if (input.event === 'pull_request' && input.prAction === 'closed') {
@@ -255,6 +259,7 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
       // suya en vez de un texto genérico: un finding no se resuelve creando
       // un follow-up, ni un pendiente se resuelve descartando nada.
       const reasons: string[] = [];
+      if (invalidReviewScope) reasons.push('la aprobación de QA corresponde a otro conjunto de PR o commits. Se requiere una revisión actual');
       if (openBlockers.length) {
         reasons.push(
           `la revisión de QA dejó ${openBlockers.length} finding(s) **bloqueante(s)** sin resolver. ` +
@@ -303,7 +308,7 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
         db,
         workspaceId,
         issueDoc.id,
-        `GitHub: ${this.describeEvent(input)} → la aprobación de QA quedó desactualizada (\`stale\`), había código nuevo después de aprobar.`
+        `GitHub: ${this.describeEvent(input)} → la aprobación de QA quedó desactualizada (\`stale\`), cambiaron los PR o commits después de aprobar.`
       );
     } else if (overriddenManually) {
       await this.postComment(
@@ -330,14 +335,15 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
     issueId: string,
     uncovered: string[],
     orphanCount: number,
-    blockerCount: number
+    blockerCount: number,
+    invalidReviewScope: boolean
   ): Promise<void> {
     const responsibleId = await resolveReviewLead(db, issue);
     if (!responsibleId) return;
     // Los findings van primero: "la revisión dijo que esto está mal" es una
     // señal más fuerte que "falta trabajo en otro lado", y es la que hay que
     // leer primero si se dan las dos juntas.
-    const body = blockerCount
+    const body = invalidReviewScope ? 'El PR se mergeó pero la aprobación QA corresponde a otros PR o commits.' : blockerCount
       ? `El PR se mergeó pero la revisión de QA dejó ${blockerCount} finding(s) bloqueante(s) sin resolver.`
       : uncovered.length
         ? `El PR se mergeó pero ${uncovered.length} criterio(s) siguen declarados como no cumplidos y nadie los heredó.`
@@ -348,7 +354,9 @@ export class SyncFromWebhookAction extends PlatformActionHandler {
       actorId: 'github',
       issueId,
       type: 'needs_human',
-      title: blockerCount
+      title: invalidReviewScope
+        ? `${issue.identifier} no se cerró: QA desactualizado`
+        : blockerCount
         ? `${issue.identifier} no se cerró: quedaron findings bloqueantes`
         : `${issue.identifier} no se cerró: quedó trabajo sin dueño`,
       body,

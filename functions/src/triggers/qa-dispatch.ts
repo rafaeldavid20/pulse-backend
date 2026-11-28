@@ -1,4 +1,6 @@
-import { reviewRequestRefs } from '../common/utils/review-request';
+import { orphanPendingWork, uncoveredNotMetCriteria } from '../common/utils/pending-work';
+import { openBlockerFindings } from '../common/utils/review-findings';
+import { hasCurrentApproval, reviewRequestRefs } from '../common/utils/review-request';
 import { isTransientRunnerPreflight, runnerPreflight } from '../common/utils/runner-preflight';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
@@ -73,7 +75,7 @@ export async function dispatchPendingQa(issueId: string) {
   const db = getFirestore();
   const after = (await db.collection('issues').doc(issueId).get()).data();
   if (!after || after.manualBudgetHold || after.status !== 'in_review' || after.review?.manualRequest ||
-      ['running', 'needs_human'].includes(after.review?.state)) return;
+      ['running', 'needs_human'].includes(after.review?.state) || hasCurrentApproval(after)) return;
   const startedAt = new Date().toISOString();
   try {
     const prs = reviewablePrs(after);
@@ -87,7 +89,7 @@ export async function dispatchPendingQa(issueId: string) {
     const recordDispatchError = async (message: string, busyRunnerIds: string[] = []) => {
       await db.runTransaction(async (tx) => {
         const current = await tx.get(issueRef);
-        if (current.data()?.review?.manualRequest || current.data()?.review?.state === 'running') return;
+        if (current.data()?.review?.manualRequest || current.data()?.review?.state === 'running' || (current.data() && hasCurrentApproval(current.data()!))) return;
         const data = current.data();
         if (data?.status !== 'in_review' || data?.qaAssigneeId !== after.qaAssigneeId ||
             (data?.review?.attempt || 0) !== (after.review?.attempt || 0) ||
@@ -220,7 +222,7 @@ export async function dispatchPendingQa(issueId: string) {
           const current = (await tx.get(issueRef)).data();
           if (current?.status !== 'in_review' || current.qaAssigneeId !== after.qaAssigneeId ||
               !reviewablePrs(current) || reviewRequestRefs(current) !== reviewRequestRefs(after) ||
-              current.review?.manualRequest || current.review?.state === 'running' || (current.review?.attempt ?? 0) !== attempt) return;
+              current.review?.manualRequest || current.review?.state === 'running' || hasCurrentApproval(current) || (current.review?.attempt ?? 0) !== attempt) return;
           tx.update(issueRef, { 'review.state': 'needs_human', updatedAt: new Date().toISOString() });
         });
       }
@@ -242,7 +244,7 @@ export async function dispatchPendingQa(issueId: string) {
           const current = (await tx.get(issueRef)).data();
           if (current?.status !== 'in_review' || current.qaAssigneeId !== after.qaAssigneeId ||
               !reviewablePrs(current) || reviewRequestRefs(current) !== reviewRequestRefs(after) ||
-              current.review?.manualRequest || current.review?.state === 'running' || (current.review?.attempt ?? 0) !== attempt) return;
+              current.review?.manualRequest || current.review?.state === 'running' || hasCurrentApproval(current) || (current.review?.attempt ?? 0) !== attempt) return;
           tx.update(issueRef, { ...escalation, 'review.state': 'needs_human' });
         });
       } else {
@@ -304,7 +306,7 @@ export async function dispatchPendingQa(issueId: string) {
     // del último veredicto usando el SHA recién leído arriba.
     const lastReviewedPrs: Array<{ repoFullName: string; prNumber: number; headSha: string }> = review?.prs || [];
     if (attempt >= 1 && lastReviewedPrs.length > 0) {
-      const anyChanged = prs.some((pr, i) => {
+      const anyChanged = prs.length !== lastReviewedPrs.length || prs.some((pr, i) => {
         const last = lastReviewedPrs.find((p) => p.repoFullName === pr.repoFullName && p.prNumber === pr.prNumber);
         return !last || last.headSha !== prOrigins[i].headSha;
       });
@@ -342,6 +344,27 @@ export async function dispatchPendingQa(issueId: string) {
   }
 }
 
+/** Reconcile a merge that completed while QA was reviewing. */
+export async function reconcileApprovedMergedIssue(issueId: string): Promise<boolean> {
+  const db = getFirestore();
+  return db.runTransaction(async tx => {
+    const ref = db.collection('issues').doc(issueId);
+    const issue = (await tx.get(ref)).data();
+    if (!issue || issue.status !== 'in_review' || issue.review?.overriddenBy || issue.review?.qaMode !== 'enforce' ||
+        !hasCurrentApproval(issue) || (issue.pendingRepoWork || []).length || orphanPendingWork(issue).length ||
+        uncoveredNotMetCriteria(issue).length || openBlockerFindings(issue).length ||
+        (issue.git?.lastSyncedStatus && issue.git.lastSyncedStatus !== issue.status)) return false;
+    const refs = issue.gitRefs?.length ? issue.gitRefs : issue.git ? [issue.git] : [];
+    if (!refs.length || !refs.every((r: any) => r.prState === 'merged')) return false;
+    const reviewerId = issue.review?.reviewerId;
+    if (typeof reviewerId !== 'string' || !reviewerId) return false;
+    const reviewer = (await tx.get(db.collection('agents').doc(reviewerId))).data();
+    if (!reviewer || reviewer.workspaceId !== issue.workspaceId || reviewer.role !== 'qa' || reviewer.qaMode !== 'enforce') return false;
+    tx.update(ref, {status:'done', 'git.lastSyncedStatus':'done', 'agent.state':'idle', updatedBy:'qa', updatedAt:new Date().toISOString()});
+    return true;
+  });
+}
+
 const dispatchSecrets = [githubAppId, githubAppPrivateKeyB64, runnerJobSigningPrivateKey];
 export const qaDispatchTrigger = onDocumentWritten(
   { document: 'issues/{issueId}', region: 'us-east4', secrets: dispatchSecrets },
@@ -349,6 +372,7 @@ export const qaDispatchTrigger = onDocumentWritten(
     const before = event.data?.before.data();
     const after = event.data?.after.data();
     if (!after || after.status !== 'in_review') return;
+    if (after.review?.state === 'approved' && await reconcileApprovedMergedIssue(event.params.issueId)) return;
     // Wake on entry or changed review context, never on our diagnostic write.
     if (before?.status !== 'in_review' || after.qaAssigneeId !== before?.qaAssigneeId ||
         JSON.stringify(after.gitRefs || after.git) !== JSON.stringify(before?.gitRefs || before?.git) ||

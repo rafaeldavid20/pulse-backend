@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { generateKeyPairSync, randomBytes } from 'crypto';
 import { initializeApp, getApps } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
-import { dispatchPendingQa, qaCapacityTrigger, qaRunnerAvailableTrigger, retryPendingQa } from '../triggers/qa-dispatch';
+import { dispatchPendingQa, qaCapacityTrigger, qaRunnerAvailableTrigger, retryPendingQa, reconcileApprovedMergedIssue } from '../triggers/qa-dispatch';
 import { runnerJobSigningPrivateKey } from '../common/secrets';
 import { todayKey } from '../common/utils/dispatch-counter';
 import * as github from '../github/client';
@@ -195,3 +195,68 @@ test('Runner availability signals recover pending QA once without waiting for th
   await Promise.all([qaRunnerAvailableTrigger.run(event),qaRunnerAvailableTrigger.run(event)]);
   assert.equal((await qaJobs(f)).length,1);assert.equal(await spent(f),1);
 });
+
+test('an already approved review is not escalated when a merge retriggers automatic QA after the attempt limit', async () => {
+  const f = await fixture();
+  await db.collection('issues').doc(f.id).update({
+    review: {state:'approved', attempt:3, prs:[{repoFullName:'owner/repo',prNumber:1,headSha}]},
+    gitRefs: [{repoFullName:'owner/repo',prNumber:1,branch:'pul/test',prState:'open',headSha}],
+  });
+  await dispatchPendingQa(f.id);
+  assert.equal((await current(f)).review.state, 'approved');
+  assert.equal((await qaJobs(f)).length, 0);
+});
+
+for (const change of ['added', 'replaced', 'removed', 'head']) {
+  test(`an approval with ${change} PR scope does not bypass the attempt limit`, async () => {
+    const f = await fixture();
+    const a = {repoFullName:'owner/repo',prNumber:1,branch:'pul/test',prState:'open',headSha};
+    const b = {...a, prNumber:2};
+    const refs = change === 'added' ? [a, b] : change === 'replaced' ? [a, {...b, prNumber:3}] : change === 'removed' ? [a] : [a, {...b, headSha:'c'.repeat(40)}];
+    const reviewed = change === 'added' ? [a] : [a, b];
+    await db.collection('issues').doc(f.id).update({review:{state:'approved',attempt:3,prs:reviewed},gitRefs:refs});
+    await db.collection('runner_jobs').doc(f.devJob).update({status:'completed'});
+    await dispatchPendingQa(f.id);
+    assert.equal((await current(f)).review.state, 'needs_human');
+    assert.equal((await qaJobs(f)).length, 0);
+  });
+}
+
+test('a partial merge preserves approval for the same complete PR heads', async () => {
+  const f = await fixture();
+  const a = {repoFullName:'owner/repo',prNumber:1,branch:'pul/test',prState:'merged',headSha};
+  const b = {...a, prNumber:2, prState:'open'};
+  await db.collection('issues').doc(f.id).update({review:{state:'approved',attempt:3,prs:[a,b]},gitRefs:[a,b]});
+  await dispatchPendingQa(f.id);
+  assert.equal((await current(f)).review.state, 'approved');
+  assert.equal((await qaJobs(f)).length, 0);
+});
+
+test('a removed PR permits another review when attempts remain', async () => {
+  const f = await fixture();
+  const a = {repoFullName:'owner/repo',prNumber:1,branch:'pul/test',prState:'open',headSha};
+  await db.collection('issues').doc(f.id).update({review:{state:'approved',attempt:1,prs:[a,{...a,prNumber:2}]},gitRefs:[a]});
+  await db.collection('runner_jobs').doc(f.devJob).update({status:'completed'});
+  await dispatchPendingQa(f.id);
+  assert.equal((await qaJobs(f)).length, 1);
+});
+
+for (const scenario of ['shadow','head','pending-repo','orphan','blocker','not-met','human-override','manual-status']) {
+  test(`merge reconciliation respects ${scenario} guard`, async () => {
+    const f = await fixture('TES-379', scenario === 'shadow' ? 'shadow' : 'enforce');
+    const sha = 'a'.repeat(40);
+    const ref = {repoFullName:'owner/repo',prNumber:1,branch:'pul/test',prState:'merged',headSha:sha};
+    const issue = {status:'in_review',gitRefs:[ref],reviewScopeInvalidatedAt:'2026-01-01T00:00:00Z',review:{state:'approved',qaMode:scenario === 'shadow' ? 'shadow' : 'enforce',reviewerId:f.qa,prs:[{repoFullName:ref.repoFullName,prNumber:1,headSha:sha}]}};
+    await db.collection('issues').doc(f.id).update(issue);
+    const doc = db.collection('issues').doc(f.id);
+    if (scenario === 'head') await doc.update({'review.prs':[{repoFullName:ref.repoFullName,prNumber:1,headSha:'b'.repeat(40)}]});
+    if (scenario === 'pending-repo') await doc.update({pendingRepoWork:[{repoFullName:'owner/other'}]});
+    if (scenario === 'orphan') await doc.update({pendingWork:[{id:'pending'}]});
+    if (scenario === 'blocker') await doc.update({'review.findings':[{severity:'blocker',status:'open'}]});
+    if (scenario === 'not-met') await doc.update({devSelfCheck:[{criterionId:'criterion',result:'not_met'}]});
+    if (scenario === 'human-override') await doc.update({'review.overriddenBy':'human'});
+    if (scenario === 'manual-status') await doc.update({'git.lastSyncedStatus':'in_progress'});
+    assert.equal(await reconcileApprovedMergedIssue(f.id),false);
+    assert.equal((await current(f)).status,'in_review');
+  });
+}
