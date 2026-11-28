@@ -195,7 +195,7 @@ test('approved multi-repo heads survive partial and final merge despite an older
   await db.collection('issues').doc(id).set({workspaceId:f.a,teamId:'team-test',identifier:'TES-379',status:'in_review',
     git:{repoFullName:f.repos[0],branch,lastSyncedStatus:'in_review'},gitRefs:refs,
     devSelfCheckAt:'2026-01-01T00:00:00Z',devSelfCheck:[{criterionId:'criterion',result:'not_met'}],
-    review:{state:'approved',completedAt:'2026-01-02T00:00:00Z',prs:refs,criteriaResults:[{criterionId:'criterion',result:'pass'}]},
+    review:{state:'approved',qaMode:'enforce',completedAt:'2026-01-02T00:00:00Z',prs:refs,criteriaResults:[{criterionId:'criterion',result:'pass'}]},
   });
   for (let i=0;i<2;i++) {
     await new Webhook({actionCode:'github.syncFromWebhook',data:{event:'pull_request',prAction:'closed',repoFullName:refs[i].repoFullName,branch,prNumber:refs[i].prNumber,headSha:refs[i].headSha,merged:true}}).execute();
@@ -227,4 +227,16 @@ test('a changed approved PR scope never closes on later merges, even without pen
   const after = (await db.collection('issues').doc(id).get()).data()!;
   await qaDispatchTrigger.run({params:{issueId:id},data:{before:{data:()=>current},after:{data:()=>after}}} as any);
   assert.equal((await db.collection('issues').doc(id).get()).data()!.status,'done');
+});
+
+test('shadow QA approval does not erase an unmet self-check at final merge', async () => {
+  const f=await fixture(); const branch='pul/tes-379-shadow',sha='a'.repeat(40),id=`issue-shadow-${f.id}`;
+  const ref={repoFullName:f.repos[0],branch,prNumber:1,prState:'open',headSha:sha};
+  await db.collection('issues').doc(id).set({workspaceId:f.a,teamId:'team-test',identifier:'TES-379',status:'in_review',
+    git:{...ref,lastSyncedStatus:'in_review'},gitRefs:[ref],
+    devSelfCheckAt:'2026-01-01T00:00:00Z',devSelfCheck:[{criterionId:'criterion',result:'not_met'}],
+    review:{state:'approved',qaMode:'shadow',completedAt:'2026-01-02T00:00:00Z',prs:[ref],criteriaResults:[{criterionId:'criterion',result:'pass'}]}});
+  await new Webhook({actionCode:'github.syncFromWebhook',data:{event:'pull_request',prAction:'closed',repoFullName:ref.repoFullName,branch,prNumber:1,headSha:sha,merged:true}}).execute();
+  const issue=(await db.collection('issues').doc(id).get()).data()!;
+  assert.equal(issue.status,'in_review'); assert.equal(issue.review.state,'approved');
 });

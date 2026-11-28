@@ -231,6 +231,7 @@ for (const mode of ['enforce','shadow']) test(`QA ${mode} reconciles a merge com
   await submit(f);
   const approved = await current(f);
   assert.equal(approved.review.state,'approved');
+  assert.equal(approved.review.qaMode,mode);
   await qaDispatchTrigger.run({params:{issueId:f.id},data:{before:{data:()=>before},after:{data:()=>approved}}} as any);
   assert.equal((await current(f)).status,mode === 'enforce' ? 'done' : 'in_review');
 });

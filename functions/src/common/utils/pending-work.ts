@@ -308,7 +308,7 @@ export function uncoveredNotMetCriteria(issue: FirebaseFirestore.DocumentData): 
   const reviewed = Array.isArray(review?.prs) ? review.prs : [];
   const qaTime = Date.parse(review?.completedAt || '');
   const devTime = Date.parse(issue.devSelfCheckAt || '');
-  const exactReview = review?.state === 'approved' && !review.overriddenBy &&
+  const exactReview = review?.state === 'approved' && review.qaMode === 'enforce' && !review.overriddenBy &&
     Number.isFinite(qaTime) && Number.isFinite(devTime) && qaTime > devTime &&
     refs.length > 0 && refs.length === reviewed.length &&
     new Set(refs.map((r: any) => `${r.repoFullName}#${r.prNumber}`)).size === refs.length &&
