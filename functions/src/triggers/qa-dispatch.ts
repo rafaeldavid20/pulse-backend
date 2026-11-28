@@ -350,7 +350,7 @@ export async function reconcileApprovedMergedIssue(issueId: string): Promise<boo
   return db.runTransaction(async tx => {
     const ref = db.collection('issues').doc(issueId);
     const issue = (await tx.get(ref)).data();
-    if (!issue || issue.status !== 'in_review' || !issue.reviewScopeInvalidatedAt || issue.review?.overriddenBy ||
+    if (!issue || issue.status !== 'in_review' || issue.review?.overriddenBy ||
         !hasCurrentApproval(issue) || (issue.pendingRepoWork || []).length || orphanPendingWork(issue).length ||
         uncoveredNotMetCriteria(issue).length || openBlockerFindings(issue).length ||
         (issue.git?.lastSyncedStatus && issue.git.lastSyncedStatus !== issue.status)) return false;
@@ -372,7 +372,7 @@ export const qaDispatchTrigger = onDocumentWritten(
     const before = event.data?.before.data();
     const after = event.data?.after.data();
     if (!after || after.status !== 'in_review') return;
-    if (after.reviewScopeInvalidatedAt && after.review?.state === 'approved' && await reconcileApprovedMergedIssue(event.params.issueId)) return;
+    if (after.review?.state === 'approved' && await reconcileApprovedMergedIssue(event.params.issueId)) return;
     // Wake on entry or changed review context, never on our diagnostic write.
     if (before?.status !== 'in_review' || after.qaAssigneeId !== before?.qaAssigneeId ||
         JSON.stringify(after.gitRefs || after.git) !== JSON.stringify(before?.gitRefs || before?.git) ||
