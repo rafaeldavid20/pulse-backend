@@ -1,3 +1,4 @@
+import { invalidateChangedApproval } from '../../common/utils/review-request';
 import { getFirestore } from 'firebase-admin/firestore';
 import { PlatformActionHandler } from '../../common/platform-actions/handler';
 import { PlatformActionRequest } from '../../common/platform-actions/interfaces';
@@ -92,8 +93,10 @@ export class CreateBranchAction extends PlatformActionHandler {
       lastSyncedAt: now,
     };
 
+    const nextRefs = upsertGitRef(issue.gitRefs || (issue.git?.repoFullName ? [issue.git] : []), ref);
     const updates: Record<string, any> = {
-      gitRefs: upsertGitRef(issue.gitRefs, ref),
+      gitRefs: nextRefs,
+      ...invalidateChangedApproval(issue, nextRefs, now),
       updatedAt: now,
     };
 

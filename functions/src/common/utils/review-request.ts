@@ -26,3 +26,9 @@ export function hasCurrentApproval(issue: Record<string, any>): boolean {
     refs.every((r: any) => r.repoFullName && r.prNumber && /^[a-f0-9]{40}$/.test(r.headSha || '') &&
       reviewed.some((p: any) => p.repoFullName === r.repoFullName && p.prNumber === r.prNumber && p.headSha === r.headSha));
 }
+
+/** Invalidate approval atomically with a change to its recorded PR scope. */
+export function invalidateChangedApproval(issue: Record<string, any>, refs: any[], now: string): Record<string, unknown> {
+  return issue.review?.state === 'approved' && !hasCurrentApproval({ ...issue, gitRefs: refs })
+    ? { 'review.state': 'stale', reviewScopeInvalidatedAt: now } : {};
+}

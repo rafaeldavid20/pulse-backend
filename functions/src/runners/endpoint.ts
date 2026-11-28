@@ -1,3 +1,4 @@
+import { invalidateChangedApproval } from '../common/utils/review-request';
 import { runnerAvailabilityRestored } from '../common/utils/runner-signal-transition';
 import { getAuth } from 'firebase-admin/auth';
 import { getApp } from 'firebase-admin/app';
@@ -363,7 +364,8 @@ export const pulseRunnerLinkPr = onRequest(
         const issue = (await t.get(ref)).data()!;
         const now = new Date().toISOString();
         const entry = {repoFullName: repo, branch, headSha: sha, prNumber, prUrl, prState: prState === 'open' ? 'open' : 'draft', lastSyncedAt: now};
-        t.update(ref, {gitRefs: upsertGitRef(issue.gitRefs || (issue.git?.repoFullName ? [issue.git] : []), entry), ...(repo === job.repoFullName ? {git: entry} : {}), updatedAt: now});
+        const nextRefs = upsertGitRef(issue.gitRefs || (issue.git?.repoFullName ? [issue.git] : []), entry);
+        t.update(ref, {gitRefs: nextRefs, ...invalidateChangedApproval(issue, nextRefs, now), ...(repo === job.repoFullName ? {git: entry} : {}), updatedAt: now});
         t.update(snap.ref, {linkedPublications: upsertGitRef(job.linkedPublications, {...entry, sha})});
       });
       res.json({linked: true});

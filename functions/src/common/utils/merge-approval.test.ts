@@ -22,3 +22,12 @@ test('a later independent QA pass covers an old failure only on the exact full P
     (x:any) => x.review.criteriaResults = [],
   ]) { const x = issue(); change(x); assert.deepEqual(uncoveredNotMetCriteria(x), ['c']); }
 });
+
+test('non-webhook PR scope updates invalidate an approval only when its heads change', async () => {
+  const {invalidateChangedApproval} = await import('./review-request');
+  const current = issue();
+  assert.deepEqual(invalidateChangedApproval(current, current.gitRefs, 'now'), {});
+  const changed = [...current.gitRefs, {repoFullName:'owner/third', prNumber:3, headSha:'c'.repeat(40)}];
+  assert.deepEqual(invalidateChangedApproval(current, changed, 'now'), {'review.state':'stale', reviewScopeInvalidatedAt:'now'});
+  assert.deepEqual(invalidateChangedApproval({...current, review:{...current.review,state:'running'}}, changed, 'now'), {});
+});
