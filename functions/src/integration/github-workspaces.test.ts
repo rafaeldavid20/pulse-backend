@@ -203,3 +203,20 @@ test('approved multi-repo heads survive partial and final merge despite an older
     assert.equal(issue.status, i === 0 ? 'in_review' : 'done');
   }
 });
+
+test('a changed approved PR scope never closes on later merges, even without pending self-check', async () => {
+  const f = await fixture();
+  await db.collection('github_installations').doc(f.id).update({repositoryFullNames:f.repos});
+  const branch='pul/tes-379-stale', hashes=['a'.repeat(40),'b'.repeat(40),'c'.repeat(40)];
+  const refs=f.repos.map((repoFullName,i)=>({repoFullName,branch,prNumber:i+1,prState:i===2?'merged':'open',headSha:hashes[i]}));
+  const id=`issue-stale-${f.id}`;
+  await db.collection('issues').doc(id).set({workspaceId:f.a,teamId:'team-test',identifier:'TES-379',status:'in_review',git:{repoFullName:f.repos[0],branch,lastSyncedStatus:'in_review'},gitRefs:refs,
+    review:{state:'approved',attempt:1,prs:refs.slice(0,2),criteriaResults:[]}});
+  for(let i=0;i<2;i++) {
+    await new Webhook({actionCode:'github.syncFromWebhook',data:{event:'pull_request',prAction:'closed',repoFullName:refs[i].repoFullName,branch,prNumber:refs[i].prNumber,headSha:refs[i].headSha,merged:true}}).execute();
+    const issue=(await db.collection('issues').doc(id).get()).data()!;
+    assert.equal(issue.review.state, i === 0 ? 'stale' : 'needs_human'); assert.ok(issue.review.scopeInvalidatedAt);
+    assert.equal(issue.status,'in_review');
+    if (i === 0) await db.collection('issues').doc(id).update({'review.state':'needs_human'});
+  }
+});
